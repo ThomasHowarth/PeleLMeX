@@ -1,3 +1,5 @@
+
+
 <!DOCTYPE html>
 <html class="writer-html5" lang="en" data-content_root="./">
 <head>
@@ -6,20 +8,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PeleLMeX controls &mdash; PeleLMeX 22.12 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=fa44fd50" />
-      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=19f00094" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=e59714d7" />
       <link rel="stylesheet" type="text/css" href="_static/theme.css?v=df66b05f" />
 
   
-  <!--[if lt IE 9]>
-    <script src="_static/js/html5shiv.min.js"></script>
-  <![endif]-->
-  
-        <script src="_static/jquery.js?v=5d32c60e"></script>
-        <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-        <script src="_static/documentation_options.js?v=d09052ea"></script>
-        <script src="_static/doctools.js?v=9a2dae69"></script>
-        <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
-        <script async="async" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=d09052ea"></script>
+      <script src="_static/doctools.js?v=9bcbadda"></script>
+      <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script async="async" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
@@ -379,6 +377,8 @@ components is defined based on the size of the vector returned by pelelmex_setus
 <span class="n">peleLM</span><span class="o">.</span><span class="n">spark1</span><span class="o">.</span><span class="n">radius</span> <span class="o">=</span> <span class="mf">1e-3</span>            <span class="c1"># [OPT] Radius of the spark [m]</span>
 <span class="n">peleLM</span><span class="o">.</span><span class="n">spark1</span><span class="o">.</span><span class="n">duration</span> <span class="o">=</span> <span class="mf">1e-3</span>          <span class="c1"># [OPT] Duration of the spark [s]</span>
 <span class="n">peleLM</span><span class="o">.</span><span class="n">spark1</span><span class="o">.</span><span class="n">time</span> <span class="o">=</span> <span class="mf">1e-2</span>              <span class="c1"># [OPT] Time when spark starts [s]</span>
+
+<span class="n">peleLM</span><span class="o">.</span><span class="n">user_defined_ext_sources</span> <span class="o">=</span> <span class="mi">0</span>    <span class="c1"># [OPT, DEF=0] Enable user defined source terms. Requires local ProblemSpecificFunctions.cpp.</span>
 </pre></div>
 </div>
 </section>
@@ -486,6 +486,11 @@ in <code class="docutils literal notranslate"><span class="pre">Exec/RegTest/EB_
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>Note that when using isothermal EB in combination with LES, the thermal diffusion coefficient employed to compute the EB boundary thermal flux only uses the molecular contribution.</p>
+</div>
+<p>Lastly, it is possible to change the default redistribution scheme described in the <a class="reference internal" href="Model.html#ssec-geoeb"><span class="std std-ref">geometry with embedded boundaries section:</span></a></p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">peleLM</span><span class="o">.</span><span class="n">adv_redist_type</span> <span class="o">=</span> <span class="n">StateRedist</span>  <span class="c1"># [OPT, DEF=StateRedist] Redistribution scheme for advection [StateRedist, FluxRedist, NoRedist]</span>
+<span class="n">peleLM</span><span class="o">.</span><span class="n">diff_redist_type</span> <span class="o">=</span> <span class="n">FluxRedist</span>  <span class="c1"># [OPT, DEF=FluxRedist]  Redistribution scheme for diffusion [StateRedist, FluxRedist, NoRedist]</span>
+</pre></div>
 </div>
 </section>
 <section id="linear-solvers">
