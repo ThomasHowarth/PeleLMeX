@@ -151,6 +151,10 @@ public:
 
   // ResizeArray
   void resizeArray();
+
+  // Create m_transport_coefficient_function
+  void createTransportFunction();
+  
   //-----------------------------------------------------------------------------
 
   //-----------------------------------------------------------------------------
@@ -504,6 +508,12 @@ public:
    */
   void calcTurbViscosity(const PeleLM::TimeStamp& a_time);
 
+  /**
+   * \brief Create transport function based on user input
+   */
+  
+  /*std::function<void(int i, int j, int k, const amrex::Real LeInv, const amrex::Real PrInv,  amrex::Array4<const amrex::Real> const& rhoY, amrex::Array4<const amrex::Real> const& T, amrex::Array4<amrex::Real> const& rhoDi, amrex::Array4<amrex::Real> const& rhotheta, amrex::Array4<amrex::Real> const& lambda,amrex::Array4<amrex::Real> const& mu, pele::physics::transport::TransParm<pele::physics::PhysicsType::eos_type,pele::physics::PhysicsType::transport_type> const* trans_parm, pele::physics::eos::EosParm<pele::physics::PhysicsType::eos_type> const* eosparm)> createTransportFunction();*/
+  
   /**
    * \brief Compute the cell-centereds diffusivity on all levels
    * filling the specified container of Old or New LevelData
@@ -1603,17 +1613,17 @@ public:
   getLevelDataPtr(int lev, const PeleLM::TimeStamp& a_time, int useUmac = 0);
   LevelDataReact* getLevelDataReactPtr(int lev);
 
-  amrex::Real getTime(int lev, const PeleLM::TimeStamp& a_time) const
+  template<PeleLM::TimeStamp a_time>
+  amrex::Real getTime(int lev) const
   {
-    AMREX_ASSERT(
-      a_time == AmrOldTime || a_time == AmrNewTime || a_time == AmrHalfTime);
-    if (a_time == AmrOldTime) {
-      return m_t_old[lev];
+    static_assert(a_time == AmrOldTime || a_time == AmrNewTime || a_time == AmrHalfTime,"a_time not correct");
+    if constexpr(a_time == AmrOldTime) {
+	return m_t_old[lev];
+      } else if constexpr(a_time == AmrNewTime) {
+	return m_t_new[lev];
+      } else {
+      return 0.5 * (m_t_old[lev] + m_t_new[lev]);
     }
-    if (a_time == AmrNewTime) {
-      return m_t_new[lev];
-    }
-    return 0.5 * (m_t_old[lev] + m_t_new[lev]);
   }
 
   amrex::Vector<std::unique_ptr<amrex::MultiFab>>
@@ -1691,9 +1701,10 @@ public:
   amrex::BCRec m_phiV_bc;    // Store separate phiV BC from input
   amrex::BCRec m_phiV_bcpol; // Store separate phiV BC polarity from input
 #endif
-  amrex::Vector<amrex::BCRec> m_bcrec_state;
+  amrex::Array<amrex::BCRec,NVAR> m_bcrec_state;
   amrex::BCRec m_bcrec_divu;
-  amrex::Vector<amrex::BCRec> m_bcrec_force;
+  constexpr m_sizeForceBC = std::max(AMREX_SPACEDIM,NUM_SPECIES+2);
+  amrex::Array<amrex::BCRec,m_sizeForceBC> m_bcrec_force;
 
   // Advection/Diffusion types
   amrex::Vector<int>
@@ -1900,9 +1911,16 @@ public:
   amrex::Real m_Prandtl_inv = 1.0 / 0.7;
   amrex::Real m_Schmidt_inv = 1.0 / 0.7;
 
-  int m_use_wbar = 1;
+  int m_use_wbar = 1;  
   int m_use_soret = 0;
   int m_soret_boundary_override = 0;
+
+  //Function created based on user inputs
+  using TransportCoeffFunction = void (*)(int, int, int, const amrex::Real, const amrex::Real,  const amrex::Array4<const amrex::Real>&, const amrex::Array4<const amrex::Real>&, const amrex::Array4<amrex::Real>&, const amrex::Array4<amrex::Real>&, const amrex::Array4<amrex::Real>&, const amrex::Array4<amrex::Real>&, const pele::physics::transport::TransParm<pele::physics::PhysicsType::eos_type,pele::physics::PhysicsType::transport_type>*, const pele::physics::eos::EosParm<pele::physics::PhysicsType::eos_type>*);
+
+  TransportCoeffFunction m_transport_coeff_function = nullptr; 
+    //std::function<void(int i, int j, int k, const amrex::Real LeInv, const amrex::Real PrInv,  amrex::Array4<const amrex::Real> const& rhoY, amrex::Array4<const amrex::Real> const& T, amrex::Array4<amrex::Real> const& rhoDi, amrex::Array4<amrex::Real> const& rhotheta, amrex::Array4<amrex::Real> const& lambda,amrex::Array4<amrex::Real> const& mu, pele::physics::transport::TransParm<pele::physics::PhysicsType::eos_type,pele::physics::PhysicsType::transport_type> const* trans_parm, pele::physics::eos::EosParm<pele::physics::PhysicsType::eos_type> const* eosparm)> m_transport_coeff_function;
+
   // LES Model
   bool m_do_les = false;
   bool m_plot_les = false;

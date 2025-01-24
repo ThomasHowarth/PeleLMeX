@@ -5,6 +5,7 @@
 #include "PelePhysics.H"
 #include <AMReX_buildInfo.H>
 #include <PeleLMeX_ProblemSpecificFunctions.H>
+#include <PeleLMeX_K.H>
 
 #ifdef PELE_USE_EFIELD
 #include "PeleLMeX_EOS_Extension.H"
@@ -92,6 +93,7 @@ PeleLM::Setup()
       eos_parms.host_only_parm().manfunc_par;
 #endif
     trans_parms.initialize();
+    createTransportFunction();
     if ((m_les_verbose != 0) and m_do_les) { // Say what transport model we're
                                              // going to use
       amrex::Print() << "    Using LES in transport with Sc = "
@@ -1498,4 +1500,42 @@ PeleLM::resizeArray()
   // Load balancing
   m_costs.resize(max_level + 1);
   m_loadBalanceEff.resize(max_level + 1);
+}
+
+void PeleLM::createTransportFunction() {
+  
+  // Check if using Manifold first, use the default construction
+  if constexpr(std::is_same<pele::physics::PhysicsType::eos_type,pele::physics::eos::Manifold>::value) {
+
+      m_transport_coeff_function = getTransportCoeff<pele::physics::PhysicsType::eos_type>;
+      
+    } else {
+    //Otherwise, 5 different possible transport models
+    //Doing it this way means all combinations are created via templates at compile time, and the different user inputs choices aren't checked in the kernel function
+
+    constexpr bool do_fixed_Le[5] = {true,false,true,false,false};
+    constexpr bool do_fixed_Pr[5] = {true,true,false,false,false};
+    constexpr bool do_soret[5] = {false,false,false,false,true};
+    
+    if (m_fixed_Le != 0 & m_fixed_Pr != 0) {
+
+      m_transport_coeff_function = getTransportCoeff<pele::physics::PhysicsType::eos_type,do_fixed_Le[0],do_fixed_Pr[0],do_soret[0]>;
+
+    } else if (m_fixed_Pr != 0) {
+
+      m_transport_coeff_function = getTransportCoeff<pele::physics::PhysicsType::eos_type,do_fixed_Le[1],do_fixed_Pr[1],do_soret[1]>;
+
+    } else if (m_fixed_Le != 0) {
+
+      m_transport_coeff_function = getTransportCoeff<pele::physics::PhysicsType::eos_type,do_fixed_Le[2],do_fixed_Pr[2],do_soret[2]>;
+
+    } else if (m_use_soret == 0) {
+
+      m_transport_coeff_function = getTransportCoeff<pele::physics::PhysicsType::eos_type,do_fixed_Le[3],do_fixed_Pr[3],do_soret[3]>;
+
+    } else {
+
+      m_transport_coeff_function = getTransportCoeff<pele::physics::PhysicsType::eos_type,do_fixed_Le[4],do_fixed_Pr[4],do_soret[4]>;
+    }    
+  }
 }

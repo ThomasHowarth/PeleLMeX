@@ -281,12 +281,49 @@ PeleLM::calcViscosity(const TimeStamp& a_time)
   }
   Gpu::streamSynchronize();
 }
+/*
+std::function<void(int i, int j, int k, const Real LeInv, const Real PrInv,  Array4<const Real> const& rhoY, Array4<const Real> const& T, Array4<Real> const& rhoDi, Array4<Real> const& rhotheta, Array4<Real> const& lambda,Array4<Real> const& mu, pele::physics::transport::TransParm<pele::physics::PhysicsType::eos_type,pele::physics::PhysicsType::transport_type> const* trans_parm, pele::physics::eos::EosParm<pele::physics::PhysicsType::eos_type> const* eosparm)>
+PeleLM::createTransportFunction() {
 
+  std::function<void()> transportFunction;
+  
+  //Firstly check if we're using Manifold EOS, and use default choice
+  if constexpr(std::is_same<pele::physics::PhysicsType::eos_type,pele::physics::eos::Manifold>::value) {
+      return [](int i, int j, int k, const Real LeInv, const Real PrInv,  Array4<const Real> const& rhoY, Array4<const Real> const& T, Array4<Real> const& rhoDi, Array4<Real> const& rhotheta, Array4<Real> const& lambda,Array4<Real> const& mu, pele::physics::transport::TransParm<pele::physics::PhysicsType::eos_type,pele::physics::PhysicsType::transport_type> const* trans_parm, pele::physics::eos::EosParm<pele::physics::PhysicsType::eos_type> const* eosparm) { getTransportCoeff<pele::physics::PhysicsType::eos_type>(i,j,k,LeInv,PrInv, rhoY, T, rhoDi, rhotheta, lambda, mu, trans_parm, eosparm);};
+    } else {
+    //Otherwise, 5 different possible transport models
+    //Doing it this way means all combinations are created via templates at compile time, and the different choices aren't checked in the kernel function
+
+    constexpr bool do_fixed_Le[5] = {true,false,true,false,false};
+    constexpr bool do_fixed_Pr[5] = {true,true,false,false,false};
+    constexpr bool do_soret[5] = {false,false,false,false,true};
+    
+    if (m_fixed_Le != 0 & m_fixed_Pr != 0) {
+      transportFunction = [do_fixed_Le,do_fixed_Pr,do_soret]() {getTransportCoeff<pele::physics::PhysicsType::eos_type,do_fixed_Le[0],do_fixed_Pr[0],do_soret[0]>();};
+    } else if (m_fixed_Pr != 0) {
+      transportFunction = []() {getTransportCoeff<pele::physics::PhysicsType::eos_type,do_fixed_Le[1],do_fixed_Pr[1],do_soret[1]>();};
+    } else if (m_fixed_Le != 0) {
+      transportFunction = []() {getTransportCoeff<pele::physics::PhysicsType::eos_type,do_fixed_Le[2],do_fixed_Pr[2],do_soret[2]>();};
+    } else if (m_use_soret == 0) {
+      transportFunction = []() {getTransportCoeff<pele::physics::PhysicsType::eos_type,do_fixed_Le[3],do_fixed_Pr[3],do_soret[3]>();};
+    } else {
+      transportFunction = []() {getTransportCoeff<pele::physics::PhysicsType::eos_type,do_fixed_Le[4],do_fixed_Pr[4],do_soret[4]>();};
+    }
+    return transportFunction
+  }
+  
+ 
+}
+*/
 void
 PeleLM::calcDiffusivity(const TimeStamp& a_time)
 {
   BL_PROFILE("PeleLMeX::calcDiffusivity()");
-
+  
+  const amrex::Real Pr_inv = m_Prandtl_inv;
+  const amrex::Real Le_inv = m_Lewis_inv;
+  const int soret_idx = (m_use_soret != 0) ? 1 : 0;
+  
   for (int lev = 0; lev <= finest_level; ++lev) {
 
     auto* ldata_p = getLevelDataPtr(lev, a_time);
@@ -306,7 +343,7 @@ PeleLM::calcDiffusivity(const TimeStamp& a_time)
       eos.molecular_weight(mwt.arr);
     }
 #endif
-
+    /*
     const amrex::Real Pr_inv = m_Prandtl_inv;
     const amrex::Real Le_inv = m_Lewis_inv;
     const bool do_fixed_Le = (m_fixed_Le != 0);
@@ -315,21 +352,29 @@ PeleLM::calcDiffusivity(const TimeStamp& a_time)
     const int soret_idx =
       do_soret ? 1
                : 0; // pass soret array, or pass mu as dummy (won't do anything)
+    */
     amrex::ParallelFor(
       ldata_p->diff_cc, ldata_p->diff_cc.nGrowVect(),
-      [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+      [=, transportCoeffFunction = m_transport_coeff_function] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+	/*
         getTransportCoeff<pele::physics::PhysicsType::eos_type>(
           i, j, k, do_fixed_Le, do_fixed_Pr, do_soret, Le_inv, Pr_inv,
           Array4<Real const>(sma[box_no], FIRSTSPEC),
           Array4<Real const>(sma[box_no], TEMP), Array4<Real>(dma[box_no], 0),
           Array4<Real>(dma[box_no], NUM_SPECIES + 1 + soret_idx),
           Array4<Real>(dma[box_no], NUM_SPECIES),
-          Array4<Real>(dma[box_no], NUM_SPECIES + 1), ltransparm, leosparm);
+          Array4<Real>(dma[box_no], NUM_SPECIES + 1), ltransparm, leosparm);*/
+	transportCoeffFunction(i, j, k, Le_inv, Pr_inv,
+			  Array4<Real const>(sma[box_no], FIRSTSPEC),
+			  Array4<Real const>(sma[box_no], TEMP), Array4<Real>(dma[box_no], 0),
+			  Array4<Real>(dma[box_no], NUM_SPECIES + 1 + soret_idx),
+			  Array4<Real>(dma[box_no], NUM_SPECIES),
+			  Array4<Real>(dma[box_no], NUM_SPECIES + 1), ltransparm, leosparm);
 #ifdef PELE_USE_EFIELD
         getKappaSp(
-          i, j, k, mwt.arr, zk, Array4<Real const>(sma[box_no], FIRSTSPEC),
-          Array4<Real>(dma[box_no], 0), Array4<Real const>(sma[box_no], TEMP),
-          Array4<Real>(kma[box_no], 0));
+		   i, j, k, mwt.arr, zk, Array4<Real const>(sma[box_no], FIRSTSPEC),
+		   Array4<Real>(dma[box_no], 0), Array4<Real const>(sma[box_no], TEMP),
+		   Array4<Real>(kma[box_no], 0));
 #endif
       });
   }
