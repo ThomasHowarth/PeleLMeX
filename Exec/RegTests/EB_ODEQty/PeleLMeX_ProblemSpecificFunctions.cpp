@@ -25,7 +25,7 @@ set_ode_names(Vector<std::string>& a_ode_names)
 
 void
 problem_modify_ext_sources(
-  Real /*time*/,
+  Real time,
   Real /*dt*/,
   const MultiFab& state_old,
   const MultiFab& /*state_new*/,
@@ -45,10 +45,27 @@ problem_modify_ext_sources(
 
   ParallelFor(
     *ext_src, [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
-      for (int n = 0; n < NUM_ODE; n++) {
-        Real B_n = state_old_arr[box_no](i, j, k, FIRSTODE + n);
-        Real src = prob_parm.ode_srcstrength * pow(10.0, n + 1) * B_n;
-        ext_src_arr[box_no](i, j, k, FIRSTODE + n) += src;
+      if (prob_parm.ode_qty_test) {
+        for (int n = 0; n < NUM_ODE; n++) {
+          // Source terms for ODE qty test
+
+          Real B_n = state_old_arr[box_no](i, j, k, FIRSTODE + n);
+          Real src = prob_parm.ode_srcstrength * pow(10.0, n + 1) * B_n;
+          ext_src_arr[box_no](i, j, k, FIRSTODE + n) += src;
+        }
+      }
+
+      // Source terms for composition test
+      if (prob_parm.composition_test) {
+        Real src = 0.0;
+
+        if (time >= prob_parm.extRhoYCO2_ts) {
+          Real CO2 = state_old_arr[box_no](i, j, k, FIRSTSPEC + CO2_ID);
+          src = prob_parm.extRhoYCO2 * CO2;
+        }
+
+        ext_src_arr[box_no](i, j, k, FIRSTSPEC + CO2_ID) += src;
+        ext_src_arr[box_no](i, j, k, DENSITY) += src;
       }
     });
   Gpu::streamSynchronize();
