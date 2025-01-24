@@ -310,18 +310,27 @@ PeleLM::rhoHBalance()
     +m_domainRhoHFlux[2] + m_domainRhoHFlux[3],
     +m_domainRhoHFlux[4] + m_domainRhoHFlux[5]);
 
-  tmpMassFile << m_nstep << "," << m_cur_time // Time info
-              << "," << m_RhoHNew             // RhoH
-              << "," << dRhoHdt               // RhoH temporal derivative
-              << "," << rhoHFluxBalance       // domain boundaries RhoH fluxes
-              << "," << std::abs(dRhoHdt - rhoHFluxBalance) << "\n"; // balance
-  tmpMassFile.flush();
+  tmpEnergyFile << m_nstep << "," << m_cur_time // Time info
+                << "," << m_RhoHNew             // RhoH
+                << ","
+                << dRhoHdt // RhoH temporal derivative
+                     AMREX_D_TERM(
+                       << "," << m_domainRhoHFlux[0] << ","
+                       << m_domainRhoHFlux[1],
+                       << "," << m_domainRhoHFlux[2] << ","
+                       << m_domainRhoHFlux[3],
+                       << "," << m_domainRhoHFlux[4] << "," m_domainRhoHFlux[5])
+                << "," << rhoHFluxBalance // domain boundaries RhoH fluxes
+                << "," << std::abs(dRhoHdt - rhoHFluxBalance)
+                << "\n"; // balance
+  tmpEnergyFile.flush();
 }
 
 void
 PeleLM::addRhoHFluxes(
   const Array<const MultiFab*, AMREX_SPACEDIM>& a_fluxes,
-  const Geometry& a_geom)
+  const Geometry& a_geom,
+  const Real& a_factor)
 {
 
   // Do when m_nstep is -1 since m_nstep is increased by one before
@@ -409,8 +418,8 @@ PeleLM::addRhoHFluxes(
     }
     ParallelAllReduce::Sum<Real>(
       {sumLo, sumHi}, ParallelContext::CommunicatorSub());
-    m_domainRhoHFlux[2 * idim] += sumLo;
-    m_domainRhoHFlux[2 * idim + 1] -= sumHi; // Outflow, negate flux
+    m_domainRhoHFlux[2 * idim] += a_factor * sumLo;
+    m_domainRhoHFlux[2 * idim + 1] -= a_factor * sumHi; // Outflow, negate flux
   }
 }
 
@@ -642,6 +651,10 @@ PeleLM::writeTemporals()
     speciesBalance();
   }
 
+  if ((m_do_energyBalance != 0) && (m_incompressible == 0)) {
+    rhoHBalance();
+  }
+
   // Species balance
   if ((m_do_patch_mfr != 0) && (m_incompressible == 0)) {
     speciesBalancePatch();
@@ -745,6 +758,18 @@ PeleLM::openTempFile()
         tmpSpecFile << ",balance_" << PeleLM::stateVariableName(FIRSTSPEC + n);
       }
       tmpSpecFile << "\n";
+    }
+    if (m_do_energyBalance != 0) {
+      tempFileName = "temporals/tempEnergy";
+      tmpEnergyFile.open(
+        tempFileName.c_str(),
+        std::ios::out | std::ios::app | std::ios_base::binary);
+      tmpEnergyFile.precision(12);
+      tmpEnergyFile << "iter,time,rhoHnew,drhoHdt,"
+                    << AMREX_D_TERM(
+                         "xloFlux,xhiFlux", << ",yloFlux,yhiFlux",
+                                            << ",zloFlux,zhiFlux")
+                    << ",netFlux,balance\n";
     }
     if (m_do_extremas != 0) {
       tempFileName = "temporals/tempExtremas";

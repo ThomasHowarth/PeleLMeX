@@ -1013,7 +1013,8 @@ public:
     const amrex::Geometry& a_geom);
   void addRhoHFluxes(
     const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_fluxes,
-    const amrex::Geometry& a_geom);
+    const amrex::Geometry& a_geom,
+    const amrex::Real& a_factor = 1.0);
   void addRhoYFluxes(
     const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_fluxes,
     const amrex::Geometry& a_geom,
@@ -1987,6 +1988,7 @@ public:
   std::ofstream tmpExtremasFile;
   std::ofstream tmpMassFile;
   std::ofstream tmpSpecFile;
+  std::ofstream tmpEnergyFile;
   std::ofstream tmppatchmfrFile;
 
   // Number of ghost cells

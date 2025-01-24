@@ -113,10 +113,14 @@ PeleLM::computeDifferentialDiffusionTerms(
   // If doing species balances, compute face domain integrals
   // using level 0 since we've averaged down the fluxes already
   // Factor for SDC is 0.5 is for Dn and -0.5 for Dnp1
-  if (
-    (m_sdcIter == 0 || m_sdcIter == m_nSDCmax) && (m_do_speciesBalance != 0)) {
-    Real sdc_weight = (a_time == AmrOldTime) ? 0.5 : -0.5;
-    addRhoYFluxes(GetArrOfConstPtrs(fluxes[0]), geom[0], sdc_weight);
+  if ((m_sdcIter == 0 || m_sdcIter == m_nSDCmax)) {
+    const Real sdc_weight = (a_time == AmrOldTime) ? 0.5 : -0.5;
+    if (m_do_speciesBalance != 0) {
+      addRhoYFluxes(GetArrOfConstPtrs(fluxes[0]), geom[0], sdc_weight);
+    }
+    if (m_do_energyBalance != 0) {
+      addRhoHFluxes(GetArrOfConstPtrs(fluxes[0]), geom[0], sdc_weight);
+    }
   }
 
   //----------------------------------------------------------------

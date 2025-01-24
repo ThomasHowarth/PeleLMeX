@@ -634,6 +634,7 @@ PeleLM::readParameters()
     pp.query("do_extremas", m_do_extremas);
     pp.query("do_mass_balance", m_do_massBalance);
     pp.query("do_species_balance", m_do_speciesBalance);
+    pp.query("do_energy_balance", m_do_energyBalance);
     pp.query("do_patch_mfr", m_do_patch_mfr);
   }
 
