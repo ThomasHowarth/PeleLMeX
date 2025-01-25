@@ -11,7 +11,7 @@ PeleLM::computeVelocityAdvTerm(std::unique_ptr<AdvanceAdvData>& advData)
 
   //----------------------------------------------------------------
   // Create temporary containers
-  int nGrow_force = 1;
+  constexpr int nGrow_force = 1;
   Vector<MultiFab> divtau(finest_level + 1);
   Vector<MultiFab> velForces(finest_level + 1);
   Vector<Array<MultiFab, AMREX_SPACEDIM>> fluxes(finest_level + 1);
@@ -34,7 +34,7 @@ PeleLM::computeVelocityAdvTerm(std::unique_ptr<AdvanceAdvData>& advData)
 
   //----------------------------------------------------------------
   // Get viscous forces
-  int use_density = 0;
+  constexpr int use_density = 0;
   computeDivTau(AmrOldTime, GetVecOfPtrs(divtau), use_density);
 
   // Add compensating pressure gradient for periodic channel flow
@@ -51,7 +51,7 @@ PeleLM::computeVelocityAdvTerm(std::unique_ptr<AdvanceAdvData>& advData)
   //----------------------------------------------------------------
   // Gather all the velocity forces
   // F = [ (gravity+...) - gradP + divTau ] / rho
-  int add_gradP = 1;
+  constexpr int add_gradP = 1;
   getVelForces(
     AmrOldTime, GetVecOfPtrs(divtau), GetVecOfPtrs(velForces), nGrow_force,
     add_gradP);
@@ -82,6 +82,10 @@ PeleLM::computeVelocityAdvTerm(std::unique_ptr<AdvanceAdvData>& advData)
 
     //----------------------------------------------------------------
     // Compute the velocity fluxes
+    constexpr bool is_velocity = true;
+    constexpr bool fluxes_are_area_weighted = false;
+    constexpr bool knownEdgeState = false;
+    
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
 #endif
@@ -101,9 +105,6 @@ PeleLM::computeVelocityAdvTerm(std::unique_ptr<AdvanceAdvData>& advData)
       auto const& vel_arr = ldata_p->state.const_array(mfi, VELX);
       auto const& force_arr = velForces[lev].const_array(mfi);
 
-      bool is_velocity = true;
-      bool fluxes_are_area_weighted = false;
-      bool knownEdgeState = false;
       HydroUtils::ComputeFluxesOnBoxFromState(
         bx, AMREX_SPACEDIM, mfi, vel_arr, AMREX_D_DECL(fx, fy, fz),
         AMREX_D_DECL(facex, facey, facez), knownEdgeState,
@@ -196,19 +197,19 @@ PeleLM::updateVelocity(std::unique_ptr<AdvanceAdvData>& advData)
     divtau[lev].define(
       grids[lev], dmap[lev], AMREX_SPACEDIM, 0, MFInfo(), Factory(lev));
   }
-  int use_density = 0;
+  constexpr int use_density = 0;
   Real CrankNicholsonFactor = 0.5;
   computeDivTau(
     AmrOldTime, GetVecOfPtrs(divtau), use_density, CrankNicholsonFactor);
 
   //----------------------------------------------------------------
   // Get velocity forcing at half time including lagged grad P term
-  int nGrow_force = 1;
+  constexpr int nGrow_force = 1;
   Vector<MultiFab> velForces(finest_level + 1);
   for (int lev = 0; lev <= finest_level; ++lev) {
     velForces[lev].define(grids[lev], dmap[lev], AMREX_SPACEDIM, nGrow_force);
   }
-  int add_gradP = 1;
+  constexpr int add_gradP = 1;
   getVelForces(
     AmrHalfTime, GetVecOfPtrs(divtau), GetVecOfPtrs(velForces), nGrow_force,
     add_gradP);
@@ -223,6 +224,19 @@ PeleLM::updateVelocity(std::unique_ptr<AdvanceAdvData>& advData)
     // Compute provisional new velocity
     // velForce holds: 1/\rho^{n+1/2} [(gravity+...)^{n+1/2} - \nabla pi^{n} +
     // 0.5 * divTau^{n}]
+
+    const Real dt_loc = m_dt;
+    auto const& vel_old = ldataOld_p->state.const_arrays(VELX);
+    auto const& vel_aofs = advData->AofS[lev].const_arrays(VELX);
+    auto const& force = velForces[lev].const_arrays();
+    auto const& vel_new = ldataNew_p->state.arrays(VELX);
+    
+    amrex::ParallelFor(ldataOld_p->state,[=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+	vel_new[box_no](i, j, k, n) =
+	  vel_old[box_no](i, j, k, n) +
+	  dt_loc * (vel_aofs[box_no](i, j, k, n) + force[box_no](i, j, k, n));
+      });
+    /*    
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
 #endif
@@ -242,7 +256,7 @@ PeleLM::updateVelocity(std::unique_ptr<AdvanceAdvData>& advData)
             vel_old(i, j, k, n) +
             dt_loc * (vel_aofs(i, j, k, n) + force(i, j, k, n));
         });
-    }
+	}*/
   }
 }
 
@@ -258,6 +272,22 @@ PeleLM::getScalarAdvForce(
     auto* ldataR_p = getLevelDataReactPtr(lev);
     auto const* leosparm = eos_parms.device_parm();
 
+    auto const& rho = ldata_p->state.const_arrays(DENSITY);
+    auto const& rhoY = ldata_p->state.const_arrays(FIRSTSPEC);
+    auto const& T = ldata_p->state.const_arrays(TEMP);
+    auto const& dn = diffData->Dn[lev].const_arrays();
+    auto const& ddn = diffData->Dn[lev].const_arrays(NUM_SPECIES + 1);
+    auto const& r = ldataR_p->I_R.const_arrays();
+    auto const& extRhoY = m_extSource[lev]->const_arrays(FIRSTSPEC);
+    auto const& extRhoH = m_extSource[lev]->const_arrays(RHOH);
+    auto const& fY = advData->Forcing[lev].arrays(0);
+    auto const& fT = advData->Forcing[lev].arrays(NUM_SPECIES);
+    
+    amrex::ParallelFor(advData->Forcing[lev],[=,dp0dt=m_dp0dt] AMREX_GPU_DEVICE(int box_no,int i, intj, int k) noexcept {
+	buildAdvectionForcingK(box_no,i,j,k,rho,rhoY,Y,dn,ddn,r,extRhoY,extRhoH,dp0dt,fY,fT,leosparm);
+      });
+
+    /*
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
 #endif
@@ -285,7 +315,7 @@ PeleLM::getScalarAdvForce(
         });
     }
   }
-
+    */
   // Fill forcing ghost cells
   if (advData->Forcing[0].nGrow() > 0) {
     fillpatch_forces(
