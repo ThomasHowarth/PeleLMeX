@@ -4,6 +4,12 @@
 #ifdef AMREX_USE_EB
 #include <AMReX_EB_utils.H>
 #endif
+#ifdef PELE_USE_TURBFORCE
+#include <TurbulentForcing_def.H>
+#endif
+#ifdef PELE_USE_VELOCITY
+#include <PltFileManager.H>
+#endif
 
 using namespace amrex;
 
@@ -18,6 +24,11 @@ PeleLM::Init()
   // Check run parameters
   checkRunParams();
 
+#ifdef PELE_USE_TURBFORCE
+  // Initialise the turbulent forcing parameters
+  TurbulentForcing::init_turbulent_forcing(geom[0].data());
+#endif
+  
   // Initialize data
   initData();
 }
@@ -355,20 +366,77 @@ PeleLM::initLevelData(int lev)
   auto const* lpmfdata = pmf_data.device_parm();
   auto const local_m_incompressible = m_incompressible;
 
+#ifdef PELE_USE_VELOCITY
+  //
+  // load a turbulent velocity from a plot file to add
+  //
+
+  // get plotfile name
+  ParmParse pp("peleLM");
+  std::string velocity_plotfile;
+  pp.query("velocity_plotfile", velocity_plotfile);
+  if (!velocity_plotfile.empty())
+    amrex::Print() << "initLevelData: reading data from: " << velocity_plotfile << '\n';
+  // allow multiplicative scaling of the velocity
+  Real velocity_plotfile_scale(1.);
+  pp.query("velocity_plotfile_scale", velocity_plotfile_scale);
+
+  // use PelePhysics file manager
+  pele::physics::pltfilemanager::PltFileManager pltData(velocity_plotfile);
+
+  // do some compatibility checks
+  if (pltData.getNlev() < lev)
+    amrex::Abort("USE_VELOCITY: not enough levels in plotfile");
+  if (pltData.getGeom(lev).Domain() != geomdata.Domain())
+    amrex::Abort("USE_VELOCITY: problem domains do not match");
+
+  // find velocity in the plotfile
+  int idXvel = -1;
+  Vector<std::string> plt_vars = pltData.getVariableList();
+  for (int i = 0; i < plt_vars.size(); ++i) {
+    if (plt_vars[i] == "x_velocity") idXvel = i;
+  }
+  if (idXvel == -1)
+    amrex::Abort("Could not find velocity fields in supplied velocity_plotfile");
+
+  // load data from plot file
+  BoxArray tmpVelBA(ldata_p->state.boxArray());
+  DistributionMapping tmpVelDM(tmpVelBA);
+  int nGrow0(0), sComp0(0);
+  MultiFab tmpVel(tmpVelBA, tmpVelDM, AMREX_SPACEDIM, nGrow0);
+  pltData.fillPatchFromPlt(lev, geom[lev], idXvel, sComp0, AMREX_SPACEDIM, tmpVel);
+  // scale the velocity
+  tmpVel.mult(velocity_plotfile_scale);
+#endif
+  
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
 #endif
   for (MFIter mfi(ldata_p->state, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
+
     const Box& bx = mfi.tilebox();
     FArrayBox DummyFab(bx, 1);
     auto const& state_arr = ldata_p->state.array(mfi);
     auto const& aux_arr =
       (m_nAux > 0) ? ldata_p->auxiliaries.array(mfi) : DummyFab.array();
-    amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      ProblemSpecificFunctions::initdata(
+
+#ifdef PELE_USE_VELOCITY
+    auto const& tmpVel_arr = tmpVel.array(mfi);
+#endif
+
+    amrex::ParallelFor(
+      bx, [=, local_m_incompressible = local_m_incompressible] AMREX_GPU_DEVICE(
+            int i, int j, int k) noexcept {
+        ProblemSpecificFunctions::initdata(
         i, j, k, local_m_incompressible, state_arr, aux_arr, geomdata,
         *lprobparm, lpmfdata);
-    });
+	
+#ifdef PELE_USE_VELOCITY
+	// add the velocity loaded from plotfile
+	for (int n=0; n<AMREX_SPACEDIM; n++)
+	  state_arr(i,j,k,XVEL+n) += tmpVel_arr(i,j,k,n);
+#endif
+      });
   }
 
   if (local_m_incompressible == 0) {

@@ -50,6 +50,13 @@ ifeq ($(USE_PLASMA),TRUE)
    DEFINES += -DPELE_USE_PLASMA
    LMdirs += Source/Plasma Source/Plasma/GMRES Source/Plasma/LinOps
 endif
+ifeq ($(USE_TURBULENT_FORCING),TRUE)
+   DEFINES += -DPELE_USE_TURBFORCE
+   LMdirs += Source/TurbForce
+endif
+ifeq ($(USE_VELOCITY),TRUE)
+   DEFINES += -DPELE_USE_VELOCITY
+endif
 ifeq ($(USE_PARTICLES), TRUE)
    ifdef SPRAY_FUEL_NUM
       # This tells PeleMP that PeleC is not being used

@@ -1,6 +1,10 @@
 #include <PeleLMeX.H>
 #include <PeleLMeX_K.H>
 
+#ifdef PELE_USE_TURBFORCE
+#include <TurbulentForcing_params.H>
+#endif
+
 using namespace amrex;
 
 // Return velocity forces scaled by rhoInv
@@ -60,9 +64,19 @@ PeleLM::getVelForces(
     const auto& bx = mfi.tilebox();
     FArrayBox DummyFab(bx, 1);
     const auto& vel_arr = ldata_p->state.const_array(mfi, VELX);
+#if PELE_USE_TURBFORCE
+    // if using turbforce and is incompressible
+    // a DummyFab cannot be used
+    FArrayBox DensityFab(bx,1);
+    DensityFab.setVal(m_rho);
     const auto& rho_arr = (m_incompressible) != 0
-                            ? DummyFab.array()
+                            ? DensityFab.array()
                             : ldata_p->state.const_array(mfi, DENSITY);
+#else
+    const auto& rho_arr = (m_incompressible) != 0
+	                    ? DummyFab.array()
+                            : ldata_p->state.const_array(mfi, DENSITY);
+#endif
     const auto& rhoY_arr = (m_incompressible) != 0
                              ? DummyFab.array()
                              : ldata_p->state.const_array(mfi, FIRSTSPEC);
@@ -87,6 +101,10 @@ PeleLM::getVelForces(
     addLorentzVelForces(lev, bx, time, force_arr, rhoY_arr, phiV_arr, ne_arr);
 #endif
 
+#ifdef PELE_USE_TURBFORCE
+    TurbulentForcing::addTurbVelForces(geom[lev].data(), bx, time, force_arr, rho_arr);
+#endif
+    
     // Add pressure gradient and viscous forces (if req.) and scale by density.
     int is_incomp = m_incompressible;
     Real incomp_rho_inv = 1.0 / m_rho;

@@ -17,6 +17,10 @@
 #include "SootModel.H"
 #endif
 
+#ifdef PELE_USE_TURBFORCE
+#include <TurbulentForcing_params.H>
+#endif
+
 using namespace amrex;
 
 static Box
@@ -1200,6 +1204,13 @@ PeleLM::derivedSetup()
     "mag_vort", IndexType::TheCellType(), 1, pelelmex_dermgvort,
     grow_box_by_two);
 
+#ifdef PELE_USE_TURBFORCE
+  // Forcing
+  Vector<std::string> var_names_forcing({AMREX_D_DECL("forcex", "forcey", "forcez")});
+  derive_lst.add("turbforce", IndexType::TheCellType(), AMREX_SPACEDIM, var_names_forcing,
+		 TurbulentForcing::deriveForcing, the_same_box);
+#endif
+  
   // Spatial coordinates
   {
     Vector<std::string> var_names({AMREX_D_DECL("x", "y", "z")});
