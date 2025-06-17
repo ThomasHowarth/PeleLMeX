@@ -1,0 +1,65 @@
+#---------------------- DOMAIN DEFINITION ------------------------
+geometry.is_periodic = 1 1 1                        # For each dir, 0: non-perio, 1: periodic
+geometry.coord_sys   = 0                            # 0 => cart, 1 => RZ
+geometry.prob_lo     = 0.0      0.0      0.0        # x_lo y_lo (z_lo)
+geometry.prob_hi     = 0.008416 0.008416 0.033664   # x_hi y_hi (z_hi)
+
+
+#---------------------- BC FLAGS ---------------------------------
+# Interior, Inflow, Outflow, Symmetry,
+# SlipWallAdiab, NoSlipWallAdiab, SlipWallIsotherm, NoSlipWallIsotherm
+peleLM.lo_bc = Interior Interior Interior           # bc in x_lo y_lo (z_lo)
+peleLM.hi_bc = Interior Interior Interior           # bc in x_hi y_hi (z_hi)
+
+
+#---------------------- AMR CONTROL ------------------------------
+amr.n_cell          = 128 128 512         # Level 0 number of cells in each direction
+amr.n_cell          = 64 64 256           # Level 0 number of cells in each direction
+amr.max_level       = 0                   # maximum level number allowed
+amr.ref_ratio       = 2 2 2 2             # refinement ratio
+amr.regrid_int      = 5                   # how often to regrid
+amr.n_error_buf     = 1 1 2 2             # number of buffer cells in error est
+amr.grid_eff        = 0.7                 # what constitutes an efficient grid
+amr.blocking_factor = 16                  # block factor in grid generation (min box size)
+amr.max_grid_size   = 64                  # max box size
+
+
+#---------------------- Problem ----------------------------------
+prob.P_mean = 101325.0
+peleLM.rho = 20.5
+peleLM.mu = 0.0000183
+
+
+#---------------------- PeleLMeX CONTROL -------------------------
+peleLM.v = 3                              # PeleLMeX verbose
+peleLM.memory_checks=1                    # Show memory usage
+peleLM.num_init_iter = 3                  # Number of initial iterations
+peleLM.incompressible = 1
+
+
+#---------------------- Time Stepping CONTROL --------------------
+amr.max_step = 0                          # Maximum number of time steps
+amr.cfl = 0.7                             # CFL number for hyperbolic system
+amr.dt_shrink = 1.0                       # Scale back initial timestep
+amr.dt_change_max = 1.1                   # Maximum dt increase btw successive steps
+
+
+#---------------------- IO CONTROL -------------------------------
+#amr.restart   = chk01000                   # Restart checkpoint file
+amr.check_int = 500                         # Frequency of checkpoint output
+amr.plot_int  = 5                           # Frequency of pltfile output
+amr.derive_plot_vars = turbforce
+
+
+#----------------------- TURBULENT PARAMETERS---------------------
+turb.urms=2.1
+turb.timeoffset=0.0
+turb.hack_lz=0
+
+turb.v=1
+turb.spectrum_type=2
+turb.forcing_epsilon=0.1
+turb.mode_start=0
+turb.ff_factor=4
+turb.nmodes=4
+turb.div_free_force=1

@@ -4,6 +4,12 @@
 #ifdef AMREX_USE_EB
 #include <AMReX_EB_utils.H>
 #endif
+#ifdef PELE_USE_TURBFORCE
+#include <TurbulentForcing_def.H>
+#endif
+#ifdef PELE_USE_VELOCITY
+#include <PltFileManager.H>
+#endif
 
 using namespace amrex;
 
@@ -18,6 +24,11 @@ PeleLM::Init()
   // Check run parameters
   checkRunParams();
 
+#ifdef PELE_USE_TURBFORCE
+  // Initialise the turbulent forcing parameters
+  TurbulentForcing::init_turbulent_forcing(geom[0].data());
+#endif
+  
   // Initialize data
   initData();
 }
@@ -72,8 +83,9 @@ PeleLM::MakeNewLevelFromScratch(
   if (max_level > 0 && lev != max_level) {
     m_coveredMask[lev] =
       std::make_unique<iMultiFab>(grids[lev], dmap[lev], 1, 0);
-    m_resetCoveredMask = 1;
   }
+  m_resetCoveredMask = 1;
+
   if (m_do_react != 0) {
     m_leveldatareact[lev] =
       std::make_unique<LevelDataReact>(grids[lev], dmap[lev], *m_factory[lev]);
@@ -83,7 +95,7 @@ PeleLM::MakeNewLevelFromScratch(
     m_leveldatareact[lev]->I_R.setVal(0.0);
   }
 
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
   m_leveldatanlsolve[lev].reset(
     new LevelDataNLSolve(grids[lev], dmap[lev], *m_factory[lev], m_nGrowState));
   if (m_do_extraEFdiags) {
@@ -216,6 +228,14 @@ PeleLM::initData()
     averageDownState(AmrNewTime);
     fillPatchState(AmrNewTime);
 
+    if (m_nAux > 0) {
+      averageDownAux(AmrNewTime);
+      fillPatchAux(AmrNewTime);
+    }
+
+    if (m_plot_init_state) {
+      WritePlotFile();
+    }
     //----------------------------------------------------------------
     // If performing UnitTest, let's stop here
     if (runMode() != "normal") {
@@ -251,6 +271,9 @@ PeleLM::initData()
 
     Print() << PrettyLine;
 
+    // Diagnostics
+    doDiagnostics();
+
   } else {
     //----------------------------------------------------------------
     // Read starting configuration from chk file.
@@ -264,8 +287,8 @@ PeleLM::initData()
       RadInit();
     }
 #endif
-#ifdef PELE_USE_EFIELD
-    // If restarting from a non efield simulation
+#ifdef PELE_USE_PLASMA
+    // If restarting from a non plasma simulation
     if (m_restart_nonEF) {
       // either pass Y_ne -> nE or initialize nE for electro-neutral
       if (m_restart_electroneutral) {
@@ -341,26 +364,82 @@ PeleLM::initLevelData(int lev)
   // Prob/PMF data
   ProbParm const* lprobparm = prob_parm_d;
   auto const* lpmfdata = pmf_data.device_parm();
+  auto const local_m_incompressible = m_incompressible;
 
+#ifdef PELE_USE_VELOCITY
+  //
+  // load a turbulent velocity from a plot file to add
+  //
+
+  // get plotfile name
+  ParmParse pp("peleLM");
+  std::string velocity_plotfile;
+  pp.query("velocity_plotfile", velocity_plotfile);
+  if (!velocity_plotfile.empty())
+    amrex::Print() << "initLevelData: reading data from: " << velocity_plotfile << '\n';
+  // allow multiplicative scaling of the velocity
+  Real velocity_plotfile_scale(1.);
+  pp.query("velocity_plotfile_scale", velocity_plotfile_scale);
+
+  // use PelePhysics file manager
+  pele::physics::pltfilemanager::PltFileManager pltData(velocity_plotfile);
+
+  // do some compatibility checks
+  if (pltData.getNlev() < lev)
+    amrex::Abort("USE_VELOCITY: not enough levels in plotfile");
+  if (pltData.getGeom(lev).Domain() != geomdata.Domain())
+    amrex::Abort("USE_VELOCITY: problem domains do not match");
+
+  // find velocity in the plotfile
+  int idXvel = -1;
+  Vector<std::string> plt_vars = pltData.getVariableList();
+  for (int i = 0; i < plt_vars.size(); ++i) {
+    if (plt_vars[i] == "x_velocity") idXvel = i;
+  }
+  if (idXvel == -1)
+    amrex::Abort("Could not find velocity fields in supplied velocity_plotfile");
+
+  // load data from plot file
+  BoxArray tmpVelBA(ldata_p->state.boxArray());
+  DistributionMapping tmpVelDM(tmpVelBA);
+  int nGrow0(0), sComp0(0);
+  MultiFab tmpVel(tmpVelBA, tmpVelDM, AMREX_SPACEDIM, nGrow0);
+  pltData.fillPatchFromPlt(lev, geom[lev], idXvel, sComp0, AMREX_SPACEDIM, tmpVel);
+  // scale the velocity
+  tmpVel.mult(velocity_plotfile_scale);
+#endif
+  
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
 #endif
   for (MFIter mfi(ldata_p->state, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
+
     const Box& bx = mfi.tilebox();
     FArrayBox DummyFab(bx, 1);
     auto const& state_arr = ldata_p->state.array(mfi);
     auto const& aux_arr =
       (m_nAux > 0) ? ldata_p->auxiliaries.array(mfi) : DummyFab.array();
+
+#ifdef PELE_USE_VELOCITY
+    auto const& tmpVel_arr = tmpVel.array(mfi);
+#endif
+
     amrex::ParallelFor(
-      bx, [=, m_incompressible = m_incompressible] AMREX_GPU_DEVICE(
+      bx, [=, local_m_incompressible = local_m_incompressible] AMREX_GPU_DEVICE(
             int i, int j, int k) noexcept {
-        pelelmex_initdata(
-          i, j, k, m_incompressible, state_arr, aux_arr, geomdata, *lprobparm,
-          lpmfdata);
+        ProblemSpecificFunctions::initdata(
+        i, j, k, local_m_incompressible, state_arr, aux_arr, geomdata,
+        *lprobparm, lpmfdata);
+	
+#ifdef PELE_USE_VELOCITY
+	// add the velocity loaded from plotfile
+	for (int n=0; n<AMREX_SPACEDIM; n++)
+	  state_arr(i,j,k,XVEL+n) += tmpVel_arr(i,j,k,n);
+#endif
       });
   }
 
-  if (m_incompressible == 0) {
+  if (local_m_incompressible == 0) {
     // Initialize thermodynamic pressure
     setThermoPress(lev, AmrNewTime);
     if (m_has_divu != 0) {
@@ -374,7 +453,7 @@ PeleLM::projectInitSolution()
 {
   const int is_init = 1;
 
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
   poissonSolveEF(AmrNewTime);
   fillPatchPhiV(AmrNewTime);
 #endif
@@ -397,7 +476,7 @@ PeleLM::projectInitSolution()
       std::unique_ptr<AdvanceDiffData> diffData;
       diffData = std::make_unique<AdvanceDiffData>(
         finest_level, grids, dmap, m_factory, m_nGrowAdv, m_use_wbar,
-        m_use_soret, is_initialization);
+        m_use_soret, m_nAux, is_initialization);
       calcDivU(
         is_initialization, computeDiffusionTerm, do_avgDown, AmrNewTime,
         diffData);
@@ -452,7 +531,7 @@ PeleLM::projectInitSolution()
         std::unique_ptr<AdvanceDiffData> diffData;
         diffData = std::make_unique<AdvanceDiffData>(
           finest_level, grids, dmap, m_factory, m_nGrowAdv, m_use_wbar,
-          m_use_soret, is_initialization);
+          m_use_soret, m_nAux, is_initialization);
         calcDivU(
           is_initialization, computeDiffusionTerm, do_avgDown, AmrNewTime,
           diffData);

@@ -1,0 +1,155 @@
+#---------------------- DOMAIN DEFINITION ------------------------
+geometry.is_periodic = 1 1 0                        # For each dir, 0: non-perio, 1: periodic
+geometry.coord_sys   = 0                            # 0 => cart, 1 => RZ
+geometry.prob_lo     = 0.0      0.0      0.0        # x_lo y_lo (z_lo)
+geometry.prob_hi     = 0.008416 0.008416 0.033664   # x_hi y_hi (z_hi)
+
+
+#---------------------- BC FLAGS ---------------------------------
+# Interior, Inflow, Outflow, Symmetry,
+# SlipWallAdiab, NoSlipWallAdiab, SlipWallIsotherm, NoSlipWallIsotherm
+peleLM.lo_bc = Interior Interior SlipWallAdiab     # bc in x_lo y_lo (z_lo)
+peleLM.hi_bc = Interior Interior Outflow           # bc in x_hi y_hi (z_hi)
+
+
+#---------------------- AMR CONTROL ------------------------------
+amr.n_cell          = 128 128 512         # Level 0 number of cells in each direction
+amr.max_level       = 0                   # maximum level number allowed
+amr.ref_ratio       = 2 2 2 2             # refinement ratio
+amr.regrid_int      = 5                   # how often to regrid
+amr.n_error_buf     = 1 1 2 2             # number of buffer cells in error est
+amr.grid_eff        = 0.7                 # what constitutes an efficient grid
+amr.blocking_factor = 16                  # block factor in grid generation (min box size)
+amr.max_grid_size   = 64                  # max box size
+
+
+#---------------------- Problem ----------------------------------
+prob.P_mean = 101325.0
+prob.standoff = 0.028
+prob.pertmag = 0.0001
+prob.pertlength = 0.0
+transport.use_soret=1
+pmf.datafile = "pmf-BurkeDryer-phi0.4-T300.0-p1.0-soret.dat"
+
+
+#---------------------- PeleLMeX CONTROL -------------------------
+peleLM.v = 3                              # PeleLMeX verbose
+peleLM.memory_checks=1                    # Show memory usage
+peleLM.use_wbar = 1                       # Include Wbar term in species diffusion fluxes
+peleLM.sdc_iterMax = 1                    # Number of SDC iterations
+peleLM.num_init_iter = 3                  # Number of initial iterations
+
+
+#---------------------- Temporal CONTROL -------------------------
+peleLM.do_temporals     = 1                # Turn temporals ON/OFF
+peleLM.temporal_int     = 5                # Frequency of temporals
+#peleLM.do_extremas = 1                    # Compute state extremas
+#peleLM.do_mass_balance = 1                # Compute mass balance
+#peleLM.do_species_balance = 1             # Compute species balance
+
+
+#---------------------- Time Stepping CONTROL --------------------
+amr.max_step = 0                          # Maximum number of time steps
+amr.cfl = 0.3                             # CFL number for hyperbolic system
+amr.dt_shrink = 0.1                       # Scale back initial timestep
+amr.dt_change_max = 1.1                   # Maximum dt increase btw successive steps
+
+
+#---------------------- IO CONTROL -------------------------------
+#amr.restart   = chk01000                   # Restart checkpoint file
+amr.check_int = 500                         # Frequency of checkpoint output
+amr.plot_int  = 10                          # Frequency of pltfile output
+amr.derive_plot_vars = avg_pressure mass_fractions turbforce
+
+
+#---------------------- Derived CONTROLS -------------------------
+peleLM.fuel_name = H2
+#peleLM.mixtureFraction.format = Cantera
+#peleLM.mixtureFraction.type   = mole
+#peleLM.mixtureFraction.oxidTank = O2:0.21 N2:0.79
+#peleLM.mixtureFraction.fuelTank = H2:1
+
+
+#---------------------- Reactor CONTROL --------------------------
+peleLM.chem_integrator = "ReactorCvode"
+peleLM.use_typ_vals_chem = 1              # Use species/temp typical values in CVODE
+ode.rtol = 1.0e-6                         # Relative tolerance of the chemical solve
+ode.atol = 1.0e-5                         # Absolute tolerance factor applied on typical values
+cvode.solve_type = denseAJ_direct         # CVODE Linear solve type (for Newton direction)
+cvode.max_order  = 4                      # CVODE max BDF order.
+
+
+#---------------------- Linear solver CONTROL --------------------
+nodal_proj.verbose = 1
+nodal_proj.rtol = 1.0e-11                    # [OPT, DEF=1e-11] Relative tolerance of the nodal projection
+#nodal_proj.atol = 1.0e-14                   # [OPT, DEF=1e-14] Absolute tolerance of the nodal projection
+
+mac_proj.verbose = 1
+mac_proj.rtol = 1.0e-11                      # [OPT, DEF=1e-11] Relative tolerance of the MAC projection
+#mac_proj.atol = 1.0e-14                     # [OPT, DEF=1e-14] Absolute tolerance of the MAC projection
+
+diffusion.verbose = 1
+diffusion.rtol = 1.0e-11                     # [OPT, DEF=1e-11] Relative tolerance of the scalar diffusion solve
+#diffusion.atol = 1.0e-14                    # [OPT, DEF=1e-14] Absolute tolerance of the scalar diffusion solve
+
+tensor_diffusion.verbose = 1
+tensor_diffusion.rtol = 1.0e-11              # [OPT, DEF=1e-11] Relative tolerance of the velocity tensor diffusion solve
+#tensor_diffusion.atol = 1.0e-14             # [OPT, DEF=1e-14] Absolute tolerance of the velocity tensor diffusion solve
+
+
+#---------------------- Refinement CONTROL------------------------
+amr.refinement_indicators = yHO2
+amr.yHO2.max_level     = 3
+amr.yHO2.value_greater = 10.0e-6
+amr.yHO2.field_name    = Y(HO2)
+
+
+#---------------------- Debug/HPC CONTROL-------------------------
+#amrex.fpe_trap_invalid = 1
+#amrex.fpe_trap_zero = 1
+#amrex.fpe_trap_overflow = 1
+
+
+#---------------------- AC CONTROL -------------------------------
+active_control.on = 0                    # Use AC ?
+active_control.use_temp = 0              # Default in fuel mass, rather use iso-T position ?
+#active_control.temperature = 800.0      # Value of iso-T ?
+active_control.height = 0.01             # Where is the flame held ? Default assumes coordinate along Y in 2D or Z in 3D.
+active_control.v = 1                     # verbose
+active_control.method = 1                # Controller: 1 - Linear, 2 - Quadratic, 3 - Weighted quadratic
+active_control.velMax = 10.0             # Optional: limit inlet velocity
+active_control.changeMax = 10.           # Optional: limit inlet velocity changes (absolute m/s)
+active_control.flow_dir  = 1             # Optional: flame main direction. Default: AMREX_SPACEDIM-1
+active_control.pseudo_gravity = 1        # Optional: add density proportional force to compensate for the acceleration
+                                         #           of the gas due to inlet velocity changes
+active_control.tau = 3.e-4               # set this to about 10 times the time step
+active_control.AC_history  = AC_History.dat
+active_control.npoints_average = 3       # number of previous steps using to estimate new velocity
+
+
+#---------------------- Sometimes Needed for ICs or Difficult Conditions  --------------------
+#amr.max_step = 0                             # Maximum number of time steps
+#peleLM.verbose = 3
+#nodal_proj.verbose = 2
+#mac_proj.verbose = 2
+
+diffusion.verbose = 1
+nodal_proj.rtol = 1.0e-10
+mac_proj.rtol = 1.0e-10
+diffusion.rtol = 1.0e-11
+
+#peleLM.deltaT_crashIfFailing = 0  # workaround for the NASA polynomials that sometimes strugle with H2
+
+
+#----------------------- TURBULENT PARAMETERS---------------------
+turb.urms=2.1
+turb.timeoffset=0.0
+turb.hack_lz=0
+
+turb.v=1
+turb.spectrum_type=2
+turb.forcing_epsilon=0.1
+turb.mode_start=0
+turb.ff_factor=4
+turb.nmodes=4
+turb.div_free_force=1
