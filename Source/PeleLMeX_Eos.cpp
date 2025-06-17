@@ -24,6 +24,7 @@ PeleLM::setThermoPress(int lev, const TimeStamp& a_time)
 
   auto* ldata_p = getLevelDataPtr(lev, a_time);
   auto const& sma = ldata_p->state.arrays();
+  auto const* leosparm = eos_parms.device_parm();
 
   amrex::ParallelFor(
     ldata_p->state,
@@ -31,8 +32,8 @@ PeleLM::setThermoPress(int lev, const TimeStamp& a_time)
       getPGivenRTY(
         i, j, k, Array4<Real const>(sma[box_no], DENSITY),
         Array4<Real const>(sma[box_no], FIRSTSPEC),
-        Array4<Real const>(sma[box_no], TEMP),
-        Array4<Real>(sma[box_no], RHORT));
+        Array4<Real const>(sma[box_no], TEMP), Array4<Real>(sma[box_no], RHORT),
+        leosparm);
     });
   Gpu::streamSynchronize();
 }
@@ -75,7 +76,7 @@ PeleLM::calcDivU(
         }
       } else { // Regular    -> use instantaneous RR
         RhoYdot.define(grids[lev], dmap[lev], nCompIR(), 0);
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
         computeInstantaneousReactionRateEF(lev, a_time, &RhoYdot);
 #else
         computeInstantaneousReactionRate(lev, a_time, &RhoYdot);
@@ -121,6 +122,7 @@ PeleLM::calcDivU(
       auto const& extRhoH = m_extSource[lev]->const_array(mfi, RHOH);
       auto const& divu = ldata_p->divu.array(mfi);
       int use_react = ((m_do_react != 0) && (m_skipInstantRR == 0)) ? 1 : 0;
+      auto const* leosparm = eos_parms.device_parm();
 
 #ifdef AMREX_USE_EB
       if (flagfab.getType(bx) == FabType::covered) { // Covered boxes
@@ -132,24 +134,26 @@ PeleLM::calcDivU(
                                                             // boxes
         amrex::ParallelFor(
           bx, [rhoY, T, SpecD, Fourier, DiffDiff, r, extRhoY, extRhoH, divu,
-               use_react, flag] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+               use_react, flag,
+               leosparm] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
             if (flag(i, j, k).isCovered()) {
               divu(i, j, k) = 0.0;
             } else {
-              compute_divu(
+              compute_divu<pele::physics::PhysicsType::eos_type>(
                 i, j, k, rhoY, T, SpecD, Fourier, DiffDiff, r, extRhoY, extRhoH,
-                divu, use_react);
+                divu, use_react, leosparm);
             }
           });
       } else
 #endif
       {
         amrex::ParallelFor(
-          bx, [rhoY, T, SpecD, Fourier, DiffDiff, r, extRhoY, extRhoH, divu,
-               use_react] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-            compute_divu(
+          bx,
+          [rhoY, T, SpecD, Fourier, DiffDiff, r, extRhoY, extRhoH, divu,
+           use_react, leosparm] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+            compute_divu<pele::physics::PhysicsType::eos_type>(
               i, j, k, rhoY, T, SpecD, Fourier, DiffDiff, r, extRhoY, extRhoH,
-              divu, use_react);
+              divu, use_react, leosparm);
           });
       }
     }
@@ -190,10 +194,9 @@ PeleLM::setRhoToSumRhoY(int lev, const TimeStamp& a_time)
   amrex::ParallelFor(
     ldata_p->state,
     [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
-      sma[box_no](i, j, k, DENSITY) = 0.0;
-      for (int n = 0; n < NUM_SPECIES; n++) {
-        sma[box_no](i, j, k, DENSITY) += sma[box_no](i, j, k, FIRSTSPEC + n);
-      }
+      pele::physics::PhysicsType::eos_type::RY2R(
+        sma[box_no].cellData(i, j, k), sma[box_no](i, j, k, DENSITY),
+        FIRSTSPEC);
     });
   Gpu::streamSynchronize();
 }
@@ -219,6 +222,7 @@ PeleLM::setTemperature(int lev, const TimeStamp& a_time)
 
   auto* ldata_p = getLevelDataPtr(lev, a_time);
   auto const& sma = ldata_p->state.arrays();
+  auto const* leosparm = eos_parms.device_parm();
 
   amrex::ParallelFor(
     ldata_p->state,
@@ -226,7 +230,8 @@ PeleLM::setTemperature(int lev, const TimeStamp& a_time)
       getTfromHY(
         i, j, k, Array4<Real const>(sma[box_no], DENSITY),
         Array4<Real const>(sma[box_no], FIRSTSPEC),
-        Array4<Real const>(sma[box_no], RHOH), Array4<Real>(sma[box_no], TEMP));
+        Array4<Real const>(sma[box_no], RHOH), Array4<Real>(sma[box_no], TEMP),
+        leosparm);
     });
   Gpu::streamSynchronize();
 }
@@ -286,6 +291,7 @@ PeleLM::adjustPandDivU(std::unique_ptr<AdvanceAdvData>& advData)
     auto const& tma = ThetaHalft[lev]->arrays();
     auto const& sma_o = getLevelDataPtr(lev, AmrOldTime)->state.const_arrays();
     auto const& sma_n = getLevelDataPtr(lev, AmrNewTime)->state.const_arrays();
+    auto const* leosparm = eos_parms.device_parm();
 
     amrex::ParallelFor(
       *ThetaHalft[lev], [=, pOld = m_pOld, pNew = m_pNew] AMREX_GPU_DEVICE(
@@ -293,10 +299,10 @@ PeleLM::adjustPandDivU(std::unique_ptr<AdvanceAdvData>& advData)
         auto theta = tma[box_no];
         Real gammaInv_o = getGammaInv(
           i, j, k, Array4<Real const>(sma_o[box_no], FIRSTSPEC),
-          Array4<Real const>(sma_o[box_no], TEMP));
+          Array4<Real const>(sma_o[box_no], TEMP), leosparm);
         Real gammaInv_n = getGammaInv(
           i, j, k, Array4<Real const>(sma_n[box_no], FIRSTSPEC),
-          Array4<Real const>(sma_n[box_no], TEMP));
+          Array4<Real const>(sma_n[box_no], TEMP), leosparm);
         theta(i, j, k) = 0.5 * (gammaInv_o / pOld + gammaInv_n / pNew);
       });
   }

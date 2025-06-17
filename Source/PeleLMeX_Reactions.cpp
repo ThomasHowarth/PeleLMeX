@@ -1,6 +1,6 @@
 #include <PeleLMeX.H>
 #include <PeleLMeX_K.H>
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
 #include <PeleLMeX_EF_Constants.H>
 #endif
 
@@ -78,13 +78,13 @@ PeleLM::advanceChemistry(int lev, const Real& a_dt, MultiFab& a_extForcing)
         extF_rhoH(i, j, k) *= 10.0;
       });
 
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
     // Pass nE -> rhoY_e & FnE -> FrhoY_e
     auto const& nE_o = ldataOld_p->state.const_array(mfi, NE);
     auto const& FnE = a_extForcing.array(mfi, NUM_SPECIES + 1);
     auto const& rhoYe_n = ldataNew_p->state.array(mfi, FIRSTSPEC + E_ID);
     auto const& FrhoYe = a_extForcing.array(mfi, E_ID);
-    auto eos = pele::physics::PhysicsType::eos();
+    auto eos = pele::physics::PhysicsType::eos(&eos_parms.host_parm());
     Real mwt[NUM_SPECIES] = {0.0};
     eos.molecular_weight(mwt);
     ParallelFor(
@@ -119,7 +119,7 @@ PeleLM::advanceChemistry(int lev, const Real& a_dt, MultiFab& a_extForcing)
         extF_rhoH(i, j, k) *= 0.1;
       });
 
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
     // rhoY_e -> nE and set rhoY_e to zero
     auto const& nE_n = ldataNew_p->state.array(mfi, NE);
     Real invmwt[NUM_SPECIES] = {0.0};
@@ -159,7 +159,7 @@ PeleLM::advanceChemistry(int lev, const Real& a_dt, MultiFab& a_extForcing)
           extF_rhoY(i, j, k, n);
       });
 
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
     auto const& nE_o = ldataOld_p->state.const_array(mfi, NE);
     auto const& nE_n = ldataNew_p->state.const_array(mfi, NE);
     auto const& FnE = a_extForcing.const_array(mfi, NUM_SPECIES + 1);
@@ -191,7 +191,7 @@ PeleLM::advanceChemistryBAChem(
   MultiFab chemState(*m_baChem[lev], *m_dmapChem[lev], NUM_SPECIES + 3, 0);
   MultiFab chemForcing(*m_baChem[lev], *m_dmapChem[lev], nCompForcing(), 0);
   MultiFab functC(*m_baChem[lev], *m_dmapChem[lev], 1, 0);
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
   MultiFab chemnE(*m_baChem[lev], *m_dmapChem[lev], 1, 0);
 #endif
 
@@ -206,7 +206,7 @@ PeleLM::advanceChemistryBAChem(
   // ParallelCopy into chem MFs
   chemState.ParallelCopy(ldataOld_p->state, FIRSTSPEC, 0, NUM_SPECIES + 3);
   chemForcing.ParallelCopy(a_extForcing, 0, 0, nCompForcing());
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
   chemnE.ParallelCopy(ldataOld_p->state, NE, 0, 1);
 #endif
 
@@ -239,13 +239,13 @@ PeleLM::advanceChemistryBAChem(
         extF_rhoH(i, j, k) *= 10.0;
       });
 
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
     // Pass nE -> rhoY_e & FnE -> FrhoY_e
     auto const& nE_o = chemnE.array(mfi);
     auto const& FnE = chemForcing.array(mfi, NUM_SPECIES + 1);
     auto const& rhoYe_o = chemState.array(mfi, E_ID);
     auto const& FrhoYe = chemForcing.array(mfi, E_ID);
-    auto eos = pele::physics::PhysicsType::eos();
+    auto eos = pele::physics::PhysicsType::eos(&eos_parms.host_parm());
     Real mwt[NUM_SPECIES] = {0.0};
     eos.molecular_weight(mwt);
     ParallelFor(
@@ -288,7 +288,7 @@ PeleLM::advanceChemistryBAChem(
         rhoH_o(i, j, k) *= 0.1;
       });
 
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
     // rhoY_e -> nE and set rhoY_e to zero
     Real invmwt[NUM_SPECIES] = {0.0};
     eos.inv_molecular_weight(invmwt);
@@ -310,7 +310,7 @@ PeleLM::advanceChemistryBAChem(
   MultiFab StateTemp(grids[lev], dmap[lev], NUM_SPECIES + 3, 0);
   StateTemp.ParallelCopy(chemState, 0, 0, NUM_SPECIES + 3);
   ldataR_p->functC.ParallelCopy(functC, 0, 0, 1);
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
   MultiFab nETemp(grids[lev], dmap[lev], 1, 0);
   nETemp.ParallelCopy(chemnE, 0, 0, 1);
 #endif
@@ -347,7 +347,7 @@ PeleLM::advanceChemistryBAChem(
         }
       });
 
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
     auto const& nE_arr = nETemp.const_array(mfi);
     auto const& nE_o = ldataOld_p->state.const_array(mfi, NE);
     auto const& nE_n = ldataNew_p->state.array(mfi, NE);
@@ -371,7 +371,7 @@ PeleLM::computeInstantaneousReactionRate(
   const Vector<MultiFab*>& I_R, const TimeStamp& a_time)
 {
   for (int lev = 0; lev <= finest_level; ++lev) {
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
     computeInstantaneousReactionRateEF(lev, a_time, I_R[lev]);
 #else
     computeInstantaneousReactionRate(lev, a_time, I_R[lev]);
@@ -385,6 +385,7 @@ PeleLM::computeInstantaneousReactionRate(
 {
   BL_PROFILE("PeleLMeX::computeInstantaneousReactionRate()");
   auto* ldata_p = getLevelDataPtr(lev, a_time);
+  auto const* leosparm = eos_parms.device_parm();
 
 #ifdef AMREX_USE_EB
   auto const& ebfact = EBFactory(lev);
@@ -411,23 +412,23 @@ PeleLM::computeInstantaneousReactionRate(
         });
     } else if (flagfab.getType(bx) != FabType::regular) { // EB containing boxes
       amrex::ParallelFor(
-        bx, [rhoY, rhoH, T, rhoYdot,
-             flag] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+        bx, [rhoY, rhoH, T, rhoYdot, flag,
+             leosparm] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
           if (flag(i, j, k).isCovered()) {
             for (int n = 0; n < NUM_SPECIES; n++) {
               rhoYdot(i, j, k, n) = 0.0;
             }
           } else {
-            reactionRateRhoY(i, j, k, rhoY, rhoH, T, rhoYdot);
+            reactionRateRhoY(i, j, k, rhoY, rhoH, T, rhoYdot, leosparm);
           }
         });
     } else
 #endif
     {
       amrex::ParallelFor(
-        bx, [rhoY, rhoH, T,
-             rhoYdot] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-          reactionRateRhoY(i, j, k, rhoY, rhoH, T, rhoYdot);
+        bx, [rhoY, rhoH, T, rhoYdot,
+             leosparm] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+          reactionRateRhoY(i, j, k, rhoY, rhoH, T, rhoYdot, leosparm);
         });
     }
   }
@@ -478,6 +479,7 @@ PeleLM::getHeatRelease(int a_lev, MultiFab* a_HR)
 {
   auto* ldataNew_p = getLevelDataPtr(a_lev, AmrNewTime);
   auto* ldataR_p = getLevelDataReactPtr(a_lev);
+  auto const* leosparm = eos_parms.device_parm();
 
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
@@ -491,8 +493,9 @@ PeleLM::getHeatRelease(int a_lev, MultiFab* a_HR)
       auto const& Hi = EnthFab.array();
       auto const& HRR = a_HR->array(mfi);
       amrex::ParallelFor(
-        bx, [T, Hi, HRR, react] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-          getHGivenT(i, j, k, T, Hi);
+        bx, [T, Hi, HRR, react,
+             leosparm] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+          getHGivenT(i, j, k, T, Hi, leosparm);
           HRR(i, j, k) = 0.0;
           for (int n = 0; n < NUM_SPECIES; n++) {
             HRR(i, j, k) -= Hi(i, j, k, n) * react(i, j, k, n);

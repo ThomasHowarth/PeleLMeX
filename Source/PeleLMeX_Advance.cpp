@@ -66,10 +66,11 @@ PeleLM::Advance(int is_initIter)
   // Data for the advance, only live for the duration of the advance
   std::unique_ptr<AdvanceDiffData> diffData;
   diffData = std::make_unique<AdvanceDiffData>(
-    finest_level, grids, dmap, m_factory, m_nGrowAdv, m_use_wbar, m_use_soret);
+    finest_level, grids, dmap, m_factory, m_nGrowAdv, m_use_wbar, m_use_soret,
+    m_nAux);
   std::unique_ptr<AdvanceAdvData> advData;
   advData = std::make_unique<AdvanceAdvData>(
-    finest_level, grids, dmap, m_factory, m_incompressible, m_nGrowAdv,
+    finest_level, grids, dmap, m_factory, m_incompressible, m_nAux, m_nGrowAdv,
     m_nGrowMAC);
 
   for (int lev = 0; lev <= finest_level; lev++) {
@@ -97,40 +98,29 @@ PeleLM::Advance(int is_initIter)
   averageDownState(AmrOldTime);
   fillPatchState(AmrOldTime);
 
+  if (m_nAux > 0) {
+    averageDownAux(AmrOldTime);
+    fillPatchAux(AmrOldTime);
+  }
+
   // compute t^{n} data
   calcViscosity(AmrOldTime);
   if (m_incompressible == 0) {
     calcDiffusivity(AmrOldTime);
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
     poissonSolveEF(AmrOldTime);
 #endif
+  }
+  if (m_do_les) {
+    calcTurbViscosity(AmrOldTime);
   }
 
   //----------------------------------------------------------------
   BL_PROFILE_VAR_STOP(PLM_SETUP);
   //----------------------------------------------------------------
 
-  if (m_n_sparks > 0) {
-    addSpark(AmrOldTime);
-  }
-
-#ifdef PELE_USE_SPRAY
-  if (is_initIter == 0) {
-    SprayMKD(m_cur_time, m_dt);
-  }
-#endif
-#ifdef PELE_USE_SOOT
-  if (do_soot_solve) {
-    computeSootSource(AmrOldTime, m_dt);
-  }
-#endif
-#ifdef PELE_USE_RADIATION
-  if (do_rad_solve) {
-    BL_PROFILE_VAR("PeleLM::advance::rad", PLM_RAD);
-    computeRadSource(AmrOldTime);
-    BL_PROFILE_VAR_STOP(PLM_RAD);
-  }
-#endif
+  // External sources (soot, radiation, user defined, etc.)
+  getExternalSources(is_initIter, AmrOldTime, AmrNewTime);
 
   if (m_incompressible == 0) {
     floorSpecies(AmrOldTime);
@@ -153,10 +143,17 @@ PeleLM::Advance(int is_initIter)
   copyTransportOldToNew();
   if (m_incompressible == 0) {
     copyDiffusionOldToNew(diffData);
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
     ionDriftVelocity(advData);
 #endif
   }
+
+#if NUM_ODE > 0
+  // Euler step for predicting ode qty at tnp1
+  if (m_user_defined_ext_sources) {
+    predictODEQty();
+  }
+#endif
   BL_PROFILE_VAR_STOP(PLM_SETUP);
   //----------------------------------------------------------------
 
@@ -194,11 +191,17 @@ PeleLM::Advance(int is_initIter)
     averageDownScalars(AmrNewTime);
     fillPatchState(AmrNewTime);
 
+    if (m_nAux > 0) {
+      averageDownAux(AmrNewTime);
+      fillPatchAux(AmrNewTime);
+    }
+
 #ifdef PELE_USE_SOOT
     if (do_soot_solve) {
       clipSootMoments();
     }
 #endif
+
     if (m_has_divu != 0) {
       int is_initialization = 0; // Not here
       int computeDiffusionTerm =
@@ -291,6 +294,11 @@ PeleLM::oneSDC(
     averageDownScalars(AmrNewTime);
     fillPatchState(AmrNewTime);
 
+    if (m_nAux > 0) {
+      averageDownAux(AmrNewTime);
+      fillPatchAux(AmrNewTime);
+    }
+
     calcDiffusivity(AmrNewTime);
     computeDifferentialDiffusionTerms(AmrNewTime, diffData);
     if (m_has_divu != 0) {
@@ -301,7 +309,7 @@ PeleLM::oneSDC(
         is_initialization, computeDiffusionTerm, do_avgDown, AmrNewTime,
         diffData);
     }
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
     ionDriftVelocity(advData);
 #endif
 
@@ -360,6 +368,7 @@ PeleLM::oneSDC(
   // Compute and update passive advective terms
   computePassiveAdvTerms(advData, FIRSTSOOT, NUMSOOTVAR);
 #endif
+
   // Get scalar advection SDC forcing
   getScalarAdvForce(advData, diffData);
 
@@ -405,7 +414,7 @@ PeleLM::oneSDC(
   BL_PROFILE_VAR_STOP(PLM_DIFF);
   //----------------------------------------------------------------
 
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
   //----------------------------------------------------------------
   // Solve for implicit non-linear nE/PhiV system
   //----------------------------------------------------------------

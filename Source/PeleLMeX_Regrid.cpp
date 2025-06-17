@@ -80,6 +80,7 @@ PeleLM::regrid(int lbase, amrex::Real time, bool initial)
           ParallelDescriptor::IOProcessorNumber()) {
           pmap = test_dmap.ProcessorMap();
         } else {
+#pragma GCC diagnostic ignored "-Wnull-dereference"
           pmap.resize(static_cast<std::size_t>(grids[0].size()));
         }
         ParallelDescriptor::Bcast(
@@ -245,6 +246,7 @@ PeleLM::regrid(int lbase, amrex::Real time, bool initial)
                 ParallelDescriptor::IOProcessorNumber()) {
                 pmap = test_dmap.ProcessorMap();
               } else {
+#pragma GCC diagnostic ignored "-Wnull-dereference"
                 pmap.resize(static_cast<std::size_t>(new_ba.size()));
               }
               ParallelDescriptor::Bcast(
@@ -346,6 +348,9 @@ PeleLM::MakeNewLevelFromCoarse(
 
   // Fill the leveldata_new
   fillcoarsepatch_state(lev, time, n_leveldata_new->state, m_nGrowState);
+  if (m_nAux > 0) {
+    fillcoarsepatch_aux(lev, time, n_leveldata_new->auxiliaries, m_nGrowState);
+  }
   fillcoarsepatch_gradp(lev, time, n_leveldata_new->gp, 0);
   n_leveldata_new->press.setVal(0.0);
 
@@ -387,7 +392,7 @@ PeleLM::MakeNewLevelFromCoarse(
   }
   m_resetCoveredMask = 1;
 
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
   m_leveldatanlsolve[lev].reset(
     new LevelDataNLSolve(ba, dm, *m_factory[lev], m_nGrowState));
   if (m_do_extraEFdiags) {
@@ -457,6 +462,9 @@ PeleLM::RemakeLevel(
 
   // Fill the leveldata_new
   fillpatch_state(lev, time, n_leveldata_new->state, m_nGrowState);
+  if (m_nAux > 0) {
+    fillpatch_aux(lev, time, n_leveldata_new->auxiliaries, m_nGrowState);
+  }
   fillpatch_gradp(lev, time, n_leveldata_new->gp, 0);
   n_leveldata_new->press.setVal(0.0);
 
@@ -498,7 +506,7 @@ PeleLM::RemakeLevel(
     setThermoPress(lev, AmrNewTime);
   }
 
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
   m_leveldatanlsolve[lev].reset(
     new LevelDataNLSolve(ba, dm, *m_factory[lev], m_nGrowState));
   if (m_do_extraEFdiags) {
@@ -543,7 +551,7 @@ PeleLM::ClearLevel(int lev)
   m_mcdiffusion_op.reset();
   m_diffusionTensor_op.reset();
   macproj.reset();
-#ifdef PELE_USE_EFIELD
+#ifdef PELE_USE_PLASMA
   m_leveldatanlsolve[lev].reset();
   if (m_do_extraEFdiags) {
     m_ionsFluxes[lev].reset();

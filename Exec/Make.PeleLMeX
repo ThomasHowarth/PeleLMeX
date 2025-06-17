@@ -7,13 +7,27 @@ SUNDIALS_HOME      ?= $(abspath $(lastword ${PELE_PHYSICS_HOME}/Submodules/sundi
 USE_SUNDIALS = TRUE
 BL_NO_FORT = TRUE
 
+# Raise an error if case files and source versions are incompatible
+define ERROR_MESSAGE
+    ERROR:
+    Presence of file `pelelmex_prob_parm.H` indicates you may be attempting to compile
+    case files designed for an older version of PeleLMeX (v0.25.04 or earlier) with a
+    newer version of the PeleLMeX source code (v1.0.0 or later). See instructions for
+    updating your case for compatibility with newer PeleLMeX versions in the v1.0.0
+    section of PeleLMeX/CHANGES.md or revert your version of the PeleLMeX source to
+    v0.25.04/v25.04 (`git checkout v0.25.04`).
+endef
+ifneq (,$(wildcard ./pelelmex_prob_parm.H))
+   $(error ${ERROR_MESSAGE})
+endif
+
 # AMReX definitions
 include $(AMREX_HOME)/Tools/GNUMake/Make.defs
 
 EBASE := PeleLMeX
 
-ifeq ($(USE_EFIELD),TRUE)
-   USERSuffix += .EF
+ifeq ($(USE_PLASMA),TRUE)
+   USERSuffix += .PLASMA
 endif
 
 all: $(executable)
@@ -32,9 +46,9 @@ CXXFLAGS += -std=c++17
 # PeleLM sources
 #---------------
 LMdirs := Source
-ifeq ($(USE_EFIELD),TRUE)
-   DEFINES += -DPELE_USE_EFIELD
-   LMdirs += Source/Efield Source/Efield/GMRES Source/Efield/LinOps
+ifeq ($(USE_PLASMA),TRUE)
+   DEFINES += -DPELE_USE_PLASMA
+   LMdirs += Source/Plasma Source/Plasma/GMRES Source/Plasma/LinOps
 endif
 ifeq ($(USE_TURBULENT_FORCING),TRUE)
    DEFINES += -DPELE_USE_TURBFORCE
@@ -64,6 +78,10 @@ ifeq ($(USE_RADIATION), TRUE)
    DEFINES += -DPELE_USE_RADIATION
 endif
 
+ifeq ($(shell test 0$(PELELM_NUM_ODE) -gt 0; echo $$?), 0)
+   DEFINES += -DNUM_ODE=$(PELELM_NUM_ODE)
+endif
+
 Bpack += $(foreach dir, $(LMdirs), $(PELE_HOME)/$(dir)/Make.package)
 Blocs += $(foreach dir, $(LMdirs), $(PELE_HOME)/$(dir))
 
@@ -80,6 +98,19 @@ endif
 ifeq ($(Eos_Model),$(filter $(Eos_Model),Soave-Redlich-Kwong))
    DEFINES += -DUSE_SRK_EOS
 endif
+ifeq ($(Eos_Model),$(filter $(Eos_Model),Manifold))
+   DEFINES += -DUSE_MANIFOLD_EOS
+   DEFINES += -DMANIFOLD_DIM=$(Manifold_Dim)
+   ifeq ($(Manifold_Type),Table)
+      DEFINES += -DMANIFOLD_EOS_TYPE=1
+   else
+      ifeq ($(Manifold_Type),Network)
+         DEFINES += -DMANIFOLD_EOS_TYPE=2
+      else
+         DEFINES += -DMANIFOLD_EOS_TYPE=0
+      endif
+   endif
+endif
 
 # Transport model switches
 ifeq ($(Transport_Model), Simple)
@@ -94,6 +125,9 @@ ifeq ($(Transport_Model), Constant)
 endif
 ifeq ($(Transport_Model), Sutherland)
   DEFINES += -DUSE_SUTHERLAND_TRANSPORT
+endif
+ifeq ($(Transport_Model), Manifold)
+   DEFINES += -DUSE_MANIFOLD_TRANSPORT
 endif
 
 ifeq ($(PELE_USE_KLU), TRUE)
@@ -114,6 +148,7 @@ ChemDir  = Mechanisms/$(Chemistry_Model)
 
 PPdirs := Source/Utility/PMF Source/Utility/TurbInflow Source/Utility/PltFileManager
 PPdirs += Source/Utility/Diagnostics Source/Utility/BlackBoxFunction
+PPdirs += Source/Utility/Utilities
 PPdirs += Source $(ChemDir) Source/Reactions Source/Eos Source/Transport
 Bpack += $(foreach dir, $(PPdirs), $(PELE_PHYSICS_HOME)/$(dir)/Make.package)
 Blocs += $(foreach dir, $(PPdirs), $(PELE_PHYSICS_HOME)/$(dir))

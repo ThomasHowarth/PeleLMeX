@@ -26,12 +26,21 @@ FSANITIZER = FALSE
 THREAD_SANITIZER = FALSE
 
 # PeleLMeX
-USE_EFIELD = FALSE
+USE_PLASMA = FALSE
 
 # PelePhysics
-Chemistry_Model = drm19
-Eos_Model = Fuego
-Transport_Model = Simple
+USE_MANIFOLD = FALSE
+ifeq ($(USE_MANIFOLD), TRUE)
+  Eos_Model       = Manifold
+  Chemistry_Model = Null
+  Transport_Model = Manifold
+  Manifold_Dim = 1
+  Manifold_Type = Table
+else
+  Chemistry_Model = drm19
+  Eos_Model = Fuego
+  Transport_Model = Simple
+endif
 
 PELE_HOME ?= ../../..
 include $(PELE_HOME)/Exec/Make.PeleLMeX
