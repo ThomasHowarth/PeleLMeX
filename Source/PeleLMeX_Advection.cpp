@@ -272,21 +272,25 @@ PeleLM::getScalarAdvForce(
     auto* ldataR_p = getLevelDataReactPtr(lev);
     auto const* leosparm = eos_parms.device_parm();
 
-    auto const& rho = ldata_p->state.const_arrays(DENSITY);
-    auto const& rhoY = ldata_p->state.const_arrays(FIRSTSPEC);
-    auto const& T = ldata_p->state.const_arrays(TEMP);
-    auto const& dn = diffData->Dn[lev].const_arrays();
-    auto const& ddn = diffData->Dn[lev].const_arrays(NUM_SPECIES + 1);
-    auto const& r = ldataR_p->I_R.const_arrays();
-    auto const& extRhoY = m_extSource[lev]->const_arrays(FIRSTSPEC);
-    auto const& extRhoH = m_extSource[lev]->const_arrays(RHOH);
+    auto const& sma = ldata_p->state.const_arrays();
+    auto const& dma = diffData->Dn[lev].const_arrays();
+    //auto const& rho = ldata_p->state.const_arrays(DENSITY);
+    //auto const& rhoY = ldata_p->state.const_arrays(FIRSTSPEC);
+    //auto const& T = ldata_p->state.const_arrays(TEMP);
+    //auto const& dn = diffData->Dn[lev].const_arrays();
+    //auto const& ddn = diffData->Dn[lev].const_arrays(NUM_SPECIES + 1);
+    auto const& rma = ldataR_p->I_R.const_arrays();
+    auto const& extma = m_extSource[lev]->const_arrays();
+    //auto const& extRhoY = m_extSource[lev]->const_arrays(FIRSTSPEC);
+    //auto const& extRhoH = m_extSource[lev]->const_arrays(RHOH);
+    auto const& fma = advData->Forcing[lev].arrays();
     auto const& fY = advData->Forcing[lev].arrays(0);
     auto const& fT = advData->Forcing[lev].arrays(NUM_SPECIES);
     
-    amrex::ParallelFor(advData->Forcing[lev],[=,dp0dt=m_dp0dt] AMREX_GPU_DEVICE(int box_no,int i, intj, int k) noexcept {
-	buildAdvectionForcingK(box_no,i,j,k,rho,rhoY,Y,dn,ddn,r,extRhoY,extRhoH,dp0dt,fY,fT,leosparm);
+    amrex::ParallelFor(advData->Forcing[lev],[=,dp0dt=m_dp0dt, advectionForcingFunction = m_advection_forcing_function] AMREX_GPU_DEVICE(int box_no,int i, int j, int k) noexcept {
+	advectionForcingFunction(i,j,k,Array4<Real const>(sma[box_no],DENSITY),Array4<Real const>(sma[box_no],FIRSTSPEC),Array4<Real const>(sma[box_no], TEMP),Array4<Real const>(dma[box_no],0),Array4<Real const>(dma[box_no],NUM_SPECIES+1),Array4<Real const>(rma[box_no],0),Array4<Real const>(extma[box_no],FIRSTSPEC),Array4<Real const>(extma[box_no],RHOH), dp0dt,Array4<Real>(fma[box_no],0),Array4<Real>(fma[box_no],NUM_SPECIES),leosparm);
       });
-
+    
     /*
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
@@ -314,8 +318,9 @@ PeleLM::getScalarAdvForce(
             is_closed_ch, do_react, fY, fT, leosparm);
         });
     }
-  }
     */
+  }
+    
   // Fill forcing ghost cells
   if (advData->Forcing[0].nGrow() > 0) {
     fillpatch_forces(
