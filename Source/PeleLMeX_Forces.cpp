@@ -430,6 +430,10 @@ PeleLM::getExternalSources(
       ProblemSpecificFunctions::modify_ext_sources(
         getTime(lev, a_timestamp_old), m_dt, ldata_p_old->state,
         ldata_p_new->state, ext_src, geom[lev].data(), prob_parm_d);
+      if (m_nAux > 0) {
+	auto& ext_src_aux = m_extSourceAux[lev];	
+	ProblemSpecificFunctions::modify_ext_aux_sources(getTime(lev, a_timestamp_old), m_dt, ldata_p_old->state, ldata_p_new->state,ldata_p_old->auxiliaries, ldata_p_new->auxiliaries, ext_src_aux, geom[lev].data(), prob_parm_d);	
+      }
     }
   }
 }

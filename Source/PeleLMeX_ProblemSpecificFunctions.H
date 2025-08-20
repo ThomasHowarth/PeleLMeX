@@ -230,6 +230,53 @@ struct DefaultProblemSpecificFunctions
      */
   }
 
+    /**
+   * \brief Modify the external source term in the auxiliary transport eq.
+   *
+   * \param time              current time.
+   * \param dt                current time-step.
+   * \param state_old         the old state multifab.
+   * \param state_new         the new state multifab.
+   * \param aux_old           the old auxiliary multifab.
+   * \param aux_new           the new auxiliary multifab.
+   * \param ext_src_aux       a pointer to the external src term multifab.
+   * \param geomdata          geometry data.
+   * \param prob_parm         problem specific parameters.
+   */
+  //TLH:HERE!
+  static void modify_ext_sources_aux(
+    amrex::Real /*time*/,
+    amrex::Real /*dt*/,
+    const amrex::MultiFab& /*state_old*/,
+    const amrex::MultiFab& /*state_new*/,    
+    const amrex::MultiFab& /*aux_old*/,
+    const amrex::MultiFab& /*aux_new*/,
+    std::unique_ptr<amrex::MultiFab>& /*ext_src_aux*/,
+    const amrex::GeometryData& /*geomdata*/,
+    const ProbParmDefault* /*prob_parm_d*/)
+  {
+    /** Notes:
+     *   1. ext_src contains sources from velocity forcing coming in.
+     *      This function should add to rather than overwrite ext_src.
+     *   2. Requires peleLM.user_defined_ext_sources = true in input file
+     *
+     * // Example: Exponential decay ode quantity
+     * auto ext_src_arr = ext_src->arrays();
+     * auto const& state_old_arr = state_old.const_arrays();
+     * ParallelFor(
+     *   *ext_src,
+     *   [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+     *     for (int n = 0; n < NUM_ODE; n++) {
+     *       Real B_n = state_old_arr[box_no](i, j, k, FIRSTODE + n);
+     *       Real src = -1.0 * pow(10.0, n + 1) * B_n;
+     *       ext_src_arr[box_no](i, j, k, FIRSTODE + n) += src;
+     *     }
+     *   });
+     * Gpu::streamSynchronize();
+     */
+  }
+
+
   static void patchFlowVariables(
     const amrex::Geometry& /*geom*/,
     ProbParmDefault const& /*prob_parm*/,

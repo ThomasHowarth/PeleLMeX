@@ -1751,6 +1751,7 @@ public:
 
   // External source terms
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_extSource;
+  amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_extSourceAux;
 
   // Fine-covered cells mask
   amrex::Vector<std::unique_ptr<amrex::iMultiFab>> m_coveredMask;
