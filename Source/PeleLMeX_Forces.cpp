@@ -110,7 +110,7 @@ PeleLM::getVelForces(
 
 #ifndef PELE_USE_PLASMA
   if (m_do_turbulent_forcing)
-#endif
+#enaddif
   {
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
@@ -220,7 +220,7 @@ PeleLM::addSpark(const TimeStamp a_timestamp)
             }
             eos.TY2H(spark_temp, Y, rhoh_src_loc);
             rhoh_src_loc *= rho * 1e-4 / spark_duration;
-            extma[box_no](i, j, k, RHOH) = rhoh_src_loc;
+            extma[box_no](i, j, k, RHOH) += rhoh_src_loc;
           }
         });
     }
