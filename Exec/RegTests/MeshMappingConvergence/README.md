@@ -149,9 +149,18 @@ the divU-aware projection and scalar-advection paths through thermal
 expansion of a diffusing hot bubble, without the buoyancy feedback of
 the standard HotBubble case.  Run with `Transport_Model = Simple` it
 also covers temperature-dependent viscosity and conductivity in the
-mapped tensor and Fourier operators; species diffusion with composition
-gradients (Wbar, Soret, mixture-averaged `D`) is not exercised by any
-case here.
+mapped tensor and Fourier operators.
+
+Species diffusion with a composition gradient (mixture-averaged `D` and
+the Wbar correction) is covered by the CI gate below rather than by a
+sweep here: the `TurbInflow` ConstantMap pair carries an O2-rich inflow
+core and runs with `use_wbar = 1`.  The Soret flux is not yet covered by
+any mapped-vs-unmapped comparison (it needs a light species in a
+temperature gradient; a FlameSheet-based pair is the natural case).
+
+The same field-by-field check (`compare_plotfiles.py`, tol 1e-10) runs in
+CI on that pair, so a change that reintroduces a mapped-operator drift
+fails CI rather than showing up as a slow convergence-study surprise.
 
 ## Historical caveat (resolved)
 
