@@ -110,7 +110,7 @@ PeleLM::getVelForces(
 
 #ifndef PELE_USE_PLASMA
   if (m_do_turbulent_forcing)
-#enaddif
+#endif
   {
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
