@@ -156,6 +156,14 @@ PeleLM::computeVelocityAdvTerm(const std::unique_ptr<AdvanceAdvData>& advData)
 #endif
   }
 
+#ifdef PELE_USE_VOF
+  // Two-phase: momentum transported with the VOF face mass fluxes
+  if (m_incompressible != 0) {
+    VOFMomentumAdvTerm(advData, faces);
+    return;
+  }
+#endif
+
   //----------------------------------------------------------------
   // Fluxes divergence to get the velocity advection term
   for (int lev = 0; lev <= finest_level; ++lev) {

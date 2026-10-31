@@ -83,19 +83,36 @@ struct MyProblemSpecificFunctions : public DefaultProblemSpecificFunctions
   {
     constexpr amrex::Real pi = amrex::Math::pi<amrex::Real>();
     const auto pp = prob_parm;
+    if (pp.type == TwoPhaseType::Pool) {
+      // Exact fractions: the plane is then reconstructed exactly
+      const amrex::Real th = pp.tilt * pi / 180.0;
+      const amrex::Real xc = 0.5 * (geomdata.ProbLo(0) + geomdata.ProbHi(0));
+      const amrex::Real n[AMREX_SPACEDIM] = {
+        AMREX_D_DECL(std::sin(th), std::cos(th), 0.0)};
+      vof(i, j, k) = pelelmex::vof::plane_fraction(
+        i, j, k, geomdata, n, pp.depth + std::sin(th) * xc);
+      return;
+    }
+    if (pp.type == TwoPhaseType::RT) {
+      // Exact in y, quadrature in x: the liquid lies above y = eta(x)
+      const amrex::Real* prob_lo = geomdata.ProbLo();
+      const amrex::Real* dx = geomdata.CellSize();
+      const amrex::Real ylo = prob_lo[1] + j * dx[1];
+      constexpr int nq = 256;
+      amrex::Real f = 0.0;
+      for (int q = 0; q < nq; ++q) {
+        const amrex::Real x = prob_lo[0] + (i + (q + 0.5) / nq) * dx[0];
+        const amrex::Real eta =
+          pp.depth + pp.amplitude * std::cos(2.0 * pi * x / pp.wavelength);
+        f += amrex::Clamp((ylo + dx[1] - eta) / dx[1], 0.0, 1.0);
+      }
+      vof(i, j, k) = f / nq;
+      return;
+    }
     // phi > 0 inside the liquid
     auto phi = [=] AMREX_GPU_DEVICE(
                  amrex::Real x, amrex::Real y, amrex::Real z) -> amrex::Real {
       amrex::ignore_unused(z);
-      if (pp.type == TwoPhaseType::Pool) {
-        const amrex::Real th = pp.tilt * pi / 180.0;
-        const amrex::Real xc = 0.5 * (geomdata.ProbLo(0) + geomdata.ProbHi(0));
-        return pp.depth - (std::sin(th) * (x - xc) + std::cos(th) * y);
-      }
-      if (pp.type == TwoPhaseType::RT) {
-        return y - pp.depth -
-               pp.amplitude * std::cos(2.0 * pi * x / pp.wavelength);
-      }
       return amrex::min(pp.width - x, pp.height - y);
     };
     vof(i, j, k) = pelelmex::vof::cell_fraction(i, j, k, geomdata, phi, 16);

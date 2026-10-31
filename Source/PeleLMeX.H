@@ -308,6 +308,10 @@ public:
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>
       uDrift; // ions drift face velocity
 #endif
+#ifdef PELE_USE_VOF
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>
+      vof_mflux; // VOF face mass crossing over the step, per unit area
+#endif
   };
   //-----------------------------------------------------------------------------
 
@@ -541,6 +545,8 @@ public:
    * the function) \param divu pointer to the current level divU \param
    * crse_ratio refinement ratio with the next coarser level
    */
+  // Fill the umac ghost faces (periodic and coarse/fine) after a projection
+  void fillUMacGhosts(const std::unique_ptr<AdvanceAdvData>& advData);
   void create_constrained_umac_grown(
     const int a_nGrow,
     const amrex::Geometry* crse_geom,
@@ -942,7 +948,14 @@ public:
     const int dir,
     const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
       a_umac,
-    const amrex::Vector<amrex::MultiFab>& a_cmask);
+    const amrex::Vector<amrex::MultiFab>& a_cmask,
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_mflux);
+  // Conservative momentum advection term from the VOF face mass fluxes and
+  // the face velocity states
+  void VOFMomentumAdvTerm(
+    const std::unique_ptr<AdvanceAdvData>& advData,
+    const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>&
+      a_faces);
   amrex::Real estVOFDt(const PeleLM::TimeStamp a_time);
   void VOFPrescribedVelocity(
     std::unique_ptr<AdvanceAdvData>& advData,
@@ -979,6 +992,18 @@ public:
   // Face-centered mixture density (arithmetic average of the cell values)
   amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
   getVOFFaceDensity(const int lev, const amrex::Real a_time);
+  // Sharp face density from the liquid fraction of the segment joining the
+  // adjacent cell centers (PLIC); time averaged at AmrHalfTime
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
+  getVOFSharpFaceDensity(const int lev, const PeleLM::TimeStamp a_time);
+  // Balanced-force velocity projection: face-based gravity and pressure
+  // gradient, cell acceleration reconstructed from the face accelerations.
+  // a_initPress: only compute the (hydrostatic) pressure gradient.
+  void VOFVelocityProjection(const int a_initPress, const amrex::Real a_dt);
+  // umac -= beta grad phi, div(beta grad phi) = div(umac), GMRES-MLMG solve
+  void VOFFaceProjection(
+    const amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>>& a_umac,
+    const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_beta);
 
   amrex::BCRec m_bcrec_vof;
   // Phase properties; default to peleLM.rho and peleLM.mu

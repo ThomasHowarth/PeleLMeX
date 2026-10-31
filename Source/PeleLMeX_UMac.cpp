@@ -292,7 +292,7 @@ PeleLM::macProject(
   for (int lev = 0; lev <= finest_level; ++lev) {
 #ifdef PELE_USE_VOF
     if (m_incompressible != 0) {
-      rho_inv[lev] = getVOFFaceDensity(lev, getTime(lev, a_time));
+      rho_inv[lev] = getVOFSharpFaceDensity(lev, a_time);
       for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
         rho_inv[lev][idim].invert(m_dt / 2.0, 0);
       }
@@ -318,6 +318,15 @@ PeleLM::macProject(
       }
     }
   }
+
+#ifdef PELE_USE_VOF
+  if (m_incompressible != 0) {
+    // Sharp face density: GMRES-MLMG solve (see VOFFaceProjection)
+    VOFFaceProjection(GetVecOfArrOfPtrs(advData->umac), rho_inv);
+    fillUMacGhosts(advData);
+    return;
+  }
+#endif
 
   // For closed chamber, compute change in chamber pressure
   amrex::Real Sbar = 0.0;
@@ -482,6 +491,12 @@ PeleLM::macProject(
   // in uniform (Xi) space -- downstream advection consumers must apply
   // their own mesh-mapping adjustments.
 
+  fillUMacGhosts(advData);
+}
+
+void
+PeleLM::fillUMacGhosts(const std::unique_ptr<AdvanceAdvData>& advData)
+{
   // FillBoundary umac
   // Do coarse first
   AMREX_D_TERM(advData->umac[0][0].FillBoundary(geom[0].periodicity());

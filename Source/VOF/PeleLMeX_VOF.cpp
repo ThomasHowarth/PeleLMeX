@@ -3,6 +3,7 @@
 #include <PeleLMeX_VOF_K.H>
 #include <AMReX_FillPatchUtil.H>
 #include <AMReX_MultiFabUtil.H>
+#include <AMReX_GMRES_MLMG.H>
 
 // Liquid volume fraction BCs.  Components are Interior, Inflow, Outflow,
 // Symmetry, SlipWallAdiab, NoSlipWallAdiab, SlipWallIsoTherm,
@@ -214,6 +215,441 @@ PeleLM::getVOFFaceDensity(const int lev, const amrex::Real a_time)
   return rho_fc;
 }
 
+amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
+PeleLM::getVOFSharpFaceDensity(const int lev, const TimeStamp a_time)
+{
+  // The PLIC stencil of the cells on either side of a face needs 2 ghosts
+  constexpr int nGhost = 2;
+  amrex::Vector<amrex::Real> times;
+  if (a_time == AmrHalfTime) {
+    times = {m_t_old[lev], m_t_new[lev]};
+  } else {
+    times = {getTime(lev, a_time)};
+  }
+  const amrex::Real weight = 1.0 / static_cast<amrex::Real>(times.size());
+
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> rho_fc;
+  for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+    rho_fc[idim].define(
+      amrex::convert(grids[lev], amrex::IntVect::TheDimensionVector(idim)),
+      dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
+    rho_fc[idim].setVal(0.0);
+  }
+
+  // Segment liquid fraction, averaged over the requested times
+  amrex::MultiFab F(
+    grids[lev], dmap[lev], 1, nGhost, amrex::MFInfo(), Factory(lev));
+  for (const amrex::Real time : times) {
+    fillpatch_vof(lev, time, F, nGhost);
+    auto const& F_ma = F.const_arrays();
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+      auto const& fc_ma = rho_fc[idim].arrays();
+      amrex::ParallelFor(
+        rho_fc[idim], [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) {
+          fc_ma[box_no](i, j, k) +=
+            weight *
+            pelelmex::vof::face_segment_fraction(i, j, k, idim, F_ma[box_no]);
+        });
+    }
+    amrex::Gpu::streamSynchronize();
+  }
+
+  for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+    auto const& fc_ma = rho_fc[idim].arrays();
+    amrex::ParallelFor(
+      rho_fc[idim],
+      [fc_ma, rho_l = m_vof_rho_liq, rho_g = m_vof_rho_gas] AMREX_GPU_DEVICE(
+        int box_no, int i, int j, int k) {
+        fc_ma[box_no](i, j, k) =
+          rho_g + (rho_l - rho_g) * fc_ma[box_no](i, j, k);
+      });
+  }
+  amrex::Gpu::streamSynchronize();
+  return rho_fc;
+}
+
+//-----------------------------------------------------------------------------
+// Momentum advection consistent with the VOF mass transport (Rudman 1998,
+// as in Kynema-SGF): with m_f the face mass crossing over the step from the
+// VOF sweeps and u_f the Godunov face velocity,
+//   rho^{n+1} u** = rho^n u^n - sum_f m_f u_f / dx,
+//   rho^{n+1}     = rho^n     - sum_f m_f / dx,
+// so that momentum is transported with the same mass as the liquid, and a
+// uniform velocity stays uniform across the interface.  Within one cell of
+// the interface the face velocity is the upwind cell velocity at t^n (as
+// the upwind Favre flux of Kynema-SGF), bounded by the cell values where a
+// higher-order state, multiplied by the liquid mass flux, could overshoot.
+// The result is returned as the advection term
+// AofS = (u** - u^n) / dt (updateVelocity adds dt AofS).
+//-----------------------------------------------------------------------------
+void
+PeleLM::VOFMomentumAdvTerm(
+  const std::unique_ptr<AdvanceAdvData>& advData,
+  const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_faces)
+{
+  BL_PROFILE("PeleLMeX::VOFMomentumAdvTerm()");
+
+  // Momentum fluxes m_f u_f; coarse faces under fine faces take the average
+  // of the fine products
+  amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> momflux(
+    finest_level + 1);
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    amrex::MultiFab vof(grids[lev], dmap[lev], 1, 2);
+    fillpatch_vof(lev, getTime(lev, AmrOldTime), vof, 2);
+    auto const& vof_ma = vof.const_arrays();
+    auto const& vel_ma = getLevelDataPtr(lev, AmrOldTime)->state.const_arrays();
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+      const auto& mflux = advData->vof_mflux[lev][idim];
+      momflux[lev][idim].define(
+        mflux.boxArray(), dmap[lev], AMREX_SPACEDIM, 0, amrex::MFInfo(),
+        Factory(lev));
+      auto const& mom_ma = momflux[lev][idim].arrays();
+      auto const& m_ma = mflux.const_arrays();
+      auto const& face_ma = a_faces[lev][idim].const_arrays();
+      auto const& umac_ma = advData->umac[lev][idim].const_arrays();
+      const amrex::IntVect e = amrex::IntVect::TheDimensionVector(idim);
+      amrex::ParallelFor(
+        momflux[lev][idim], amrex::IntVect(0), AMREX_SPACEDIM,
+        [mom_ma, m_ma, face_ma, umac_ma, vof_ma, vel_ma,
+         e] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
+          const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
+          const amrex::IntVect ivm = iv - e;
+          amrex::Real uf = face_ma[box_no](iv, n);
+          if (
+            pelelmex::vof::interface_band(i, j, k, vof_ma[box_no]) ||
+            pelelmex::vof::interface_band(
+              i - e[0], j - e[1], k - AMREX_D_PICK(0, 0, e[2]),
+              vof_ma[box_no])) {
+            uf = (umac_ma[box_no](iv) >= 0.0) ? vel_ma[box_no](ivm, VELX + n)
+                                              : vel_ma[box_no](iv, VELX + n);
+          }
+          mom_ma[box_no](iv, n) = m_ma[box_no](iv) * uf;
+        });
+    }
+  }
+  amrex::Gpu::streamSynchronize();
+  for (int lev = finest_level; lev > 0; --lev) {
+    amrex::average_down_faces(
+      GetArrOfConstPtrs(momflux[lev]), GetArrOfPtrs(momflux[lev - 1]),
+      refRatio(lev - 1), geom[lev - 1]);
+  }
+
+  const amrex::Real dt = m_dt;
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    const auto dxinv = geom[lev].InvCellSizeArray();
+    auto* ldataOld_p = getLevelDataPtr(lev, AmrOldTime);
+    auto const& aofs_ma = advData->AofS[lev].arrays();
+    auto const& vel_ma = ldataOld_p->state.const_arrays();
+    auto const& vof_ma = ldataOld_p->vof.const_arrays();
+    AMREX_D_TERM(
+      auto const& mx_ma = advData->vof_mflux[lev][0].const_arrays();
+      , auto const& my_ma = advData->vof_mflux[lev][1].const_arrays();
+      , auto const& mz_ma = advData->vof_mflux[lev][2].const_arrays();)
+    AMREX_D_TERM(auto const& px_ma = momflux[lev][0].const_arrays();
+                 , auto const& py_ma = momflux[lev][1].const_arrays();
+                 , auto const& pz_ma = momflux[lev][2].const_arrays();)
+    amrex::ParallelFor(
+      advData->AofS[lev],
+      [=, rho_l = m_vof_rho_liq, rho_g = m_vof_rho_gas] AMREX_GPU_DEVICE(
+        int box_no, int i, int j, int k) noexcept {
+        const amrex::Real rho_o =
+          pelelmex::vof::mixture_density(vof_ma[box_no](i, j, k), rho_l, rho_g);
+        const amrex::Real rho_n =
+          rho_o -
+          (AMREX_D_TERM(
+            (mx_ma[box_no](i + 1, j, k) - mx_ma[box_no](i, j, k)) * dxinv[0],
+            +(my_ma[box_no](i, j + 1, k) - my_ma[box_no](i, j, k)) * dxinv[1],
+            +(mz_ma[box_no](i, j, k + 1) - mz_ma[box_no](i, j, k)) * dxinv[2]));
+        for (int n = 0; n < AMREX_SPACEDIM; ++n) {
+          const amrex::Real div_mom = AMREX_D_TERM(
+            (px_ma[box_no](i + 1, j, k, n) - px_ma[box_no](i, j, k, n)) *
+              dxinv[0],
+            +(py_ma[box_no](i, j + 1, k, n) - py_ma[box_no](i, j, k, n)) *
+              dxinv[1],
+            +(pz_ma[box_no](i, j, k + 1, n) - pz_ma[box_no](i, j, k, n)) *
+              dxinv[2]);
+          const amrex::Real u_o = vel_ma[box_no](i, j, k, VELX + n);
+          const amrex::Real u_n = (rho_o * u_o - div_mom) / rho_n;
+          aofs_ma[box_no](i, j, k, VELX + n) = (u_n - u_o) / dt;
+        }
+      });
+  }
+  amrex::Gpu::streamSynchronize();
+}
+
+//-----------------------------------------------------------------------------
+// Face projection umac -= beta grad phi with div(beta grad phi) = div(umac),
+// the MacProjector operator, solved with GMRES preconditioned by MLMG: plain
+// MLMG stalls on the large face-coefficient jumps of a sharp, high density
+// ratio interface.
+//-----------------------------------------------------------------------------
+void
+PeleLM::VOFFaceProjection(
+  const amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>>& a_umac,
+  const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_beta)
+{
+  BL_PROFILE("PeleLMeX::VOFFaceProjection()");
+
+  if (macproj->needInitialization()) {
+    amrex::LPInfo lpInfo;
+    lpInfo.setMaxCoarseningLevel(m_mac_mg_max_coarsening_level);
+    macproj->initProjector(lpInfo, GetVecOfArrOfConstPtrs(a_beta));
+    macproj->setDomainBC(
+      getMACProjectionBC(amrex::Orientation::low),
+      getMACProjectionBC(amrex::Orientation::high));
+  } else {
+    macproj->updateBeta(GetVecOfArrOfConstPtrs(a_beta));
+  }
+  auto& linop = macproj->getLinOp();
+  auto& mlmg = macproj->getMLMG();
+  linop.setMaxOrder(m_mac_max_order);
+  // Coarse faces under fine faces take the fine-face average, so that the
+  // composite divergence is consistent across coarse-fine interfaces
+  for (int lev = finest_level; lev > 0; --lev) {
+    amrex::average_down_faces(
+      GetArrOfConstPtrs(a_umac[lev]), a_umac[lev - 1], refRatio(lev - 1),
+      geom[lev - 1]);
+  }
+  amrex::Vector<amrex::MultiFab> phi(finest_level + 1);
+  amrex::Vector<amrex::MultiFab> rhs(finest_level + 1);
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    rhs[lev].define(grids[lev], dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
+    phi[lev].define(grids[lev], dmap[lev], 1, 1, amrex::MFInfo(), Factory(lev));
+    phi[lev].setVal(0.0);
+    amrex::computeDivergence(
+      rhs[lev], GetArrOfConstPtrs(a_umac[lev]), geom[lev]);
+    rhs[lev].mult(-1.0);
+    linop.setLevelBC(lev, nullptr);
+  }
+  // GMRESMLMG does not make a singular system solvable: remove the mean
+  // (round-off for a closed domain) as MLMG would
+  bool singular = true;
+  for (const auto& bcs :
+       {getMACProjectionBC(amrex::Orientation::low),
+        getMACProjectionBC(amrex::Orientation::high)}) {
+    for (const auto bc : bcs) {
+      if (bc == amrex::LinOpBCType::Dirichlet) {
+        singular = false;
+      }
+    }
+  }
+  if (singular) {
+    const amrex::Real mean =
+      rhs[0].sum() / static_cast<amrex::Real>(geom[0].Domain().numPts());
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      rhs[lev].plus(-mean, 0, 1);
+    }
+  }
+  {
+    amrex::GMRESMLMG gmres(mlmg);
+    gmres.setVerbose(m_macproj_verbose);
+    gmres.solve(
+      GetVecOfPtrs(phi), GetVecOfConstPtrs(rhs), m_mac_mg_rtol, m_mac_mg_atol);
+    if (m_macproj_verbose > 0) {
+      amrex::Print() << "   VOF face projection: " << gmres.getNumIters()
+                     << " GMRES iterations\n";
+    }
+  }
+  amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> flux(
+    finest_level + 1);
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+      flux[lev][idim].define(
+        a_umac[lev][idim]->boxArray(), dmap[lev], 1, 0, amrex::MFInfo(),
+        Factory(lev));
+    }
+  }
+  mlmg.prepareForFluxes(GetVecOfConstPtrs(phi));
+  mlmg.getFluxes(GetVecOfArrOfPtrs(flux), GetVecOfPtrs(phi));
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+      amrex::MultiFab::Add(*a_umac[lev][idim], flux[lev][idim], 0, 0, 1, 0);
+    }
+  }
+  for (int lev = finest_level; lev > 0; --lev) {
+    amrex::average_down_faces(
+      GetArrOfConstPtrs(a_umac[lev]), a_umac[lev - 1], refRatio(lev - 1),
+      geom[lev - 1]);
+  }
+}
+
+//-----------------------------------------------------------------------------
+// Balanced-force velocity projection (Francois et al., JCP 213, 2006).
+// Gravity and the pressure gradient act on the faces:
+//   u_f = <u*>_f + dt g,   div(dt / rho_f grad p) = div(u_f),
+//   a_f = g - grad_f p / rho_f,
+// with the sharp face density rho_f of getVOFSharpFaceDensity, so that a
+// fluid at rest with a planar interface normal to g gives a_f = 0 to solver
+// tolerance.  The cell-centered velocity is updated with the average of
+// the face accelerations of each cell, and gp holds the kinematic
+// gradient g - <a_f>, i.e. grad p / rho, used as the lagged
+// pressure-gradient forcing of the next step.  On entry the new velocity
+// contains the lagged forcing dt (g - gp^{n-1/2}), which is removed first.
+//-----------------------------------------------------------------------------
+void
+PeleLM::VOFVelocityProjection(const int a_initPress, const amrex::Real a_dt)
+{
+  BL_PROFILE("PeleLMeX::VOFVelocityProjection()");
+
+  const auto grav = m_gravity;
+
+  // Remove the lagged pressure-gradient / gravity acceleration
+  if (a_initPress == 0) {
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      auto* ldataOld_p = getLevelDataPtr(lev, AmrOldTime);
+      auto* ldataNew_p = getLevelDataPtr(lev, AmrNewTime);
+      auto const& vel_ma = ldataNew_p->state.arrays();
+      auto const& gp_ma = ldataOld_p->gp.const_arrays();
+      amrex::ParallelFor(
+        ldataNew_p->state, amrex::IntVect(0), AMREX_SPACEDIM,
+        [=, dt = a_dt] AMREX_GPU_DEVICE(
+          int box_no, int i, int j, int k, int n) noexcept {
+          vel_ma[box_no](i, j, k, VELX + n) -=
+            dt * (grav[n] - gp_ma[box_no](i, j, k, n));
+        });
+    }
+    amrex::Gpu::streamSynchronize();
+    averageDownVelocity(AmrNewTime);
+    fillPatchState(AmrNewTime);
+  }
+
+  // Face velocities before (ub) and after (umac) adding gravity
+  const auto bcRecVel = fetchBCRecArray(VELX, AMREX_SPACEDIM);
+  amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> ub(
+    finest_level + 1);
+  amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> umac(
+    finest_level + 1);
+  amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> beta(
+    finest_level + 1);
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    const amrex::Box& domain = geom[lev].Domain();
+    auto const& vel_ma = getLevelDataPtr(lev, AmrNewTime)->state.const_arrays();
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+      const amrex::BoxArray fba =
+        amrex::convert(grids[lev], amrex::IntVect::TheDimensionVector(idim));
+      ub[lev][idim].define(fba, dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
+      umac[lev][idim].define(
+        fba, dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
+      if (a_initPress != 0) {
+        ub[lev][idim].setVal(0.0);
+        continue;
+      }
+      // Dirichlet faces take the boundary velocity held in the ghost cell
+      const bool periodic = geom[lev].isPeriodic(idim);
+      const bool ext_lo =
+        !periodic && bcRecVel[idim].lo(idim) == amrex::BCType::ext_dir;
+      const bool ext_hi =
+        !periodic && bcRecVel[idim].hi(idim) == amrex::BCType::ext_dir;
+      const int dlo = domain.smallEnd(idim);
+      const int dhi = domain.bigEnd(idim) + 1;
+      auto const& ub_ma = ub[lev][idim].arrays();
+      amrex::ParallelFor(
+        ub[lev][idim], [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) {
+          const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
+          const amrex::IntVect ivm =
+            iv - amrex::IntVect::TheDimensionVector(idim);
+          const auto& v = vel_ma[box_no];
+          if (ext_lo && iv[idim] == dlo) {
+            ub_ma[box_no](i, j, k) = v(ivm, VELX + idim);
+          } else if (ext_hi && iv[idim] == dhi) {
+            ub_ma[box_no](i, j, k) = v(iv, VELX + idim);
+          } else {
+            ub_ma[box_no](i, j, k) =
+              0.5 * (v(ivm, VELX + idim) + v(iv, VELX + idim));
+          }
+        });
+    }
+  }
+  amrex::Gpu::streamSynchronize();
+  // Coarse faces under / at the boundary of fine grids see the fine faces,
+  // as the projected umac does
+  for (int lev = finest_level; lev > 0; --lev) {
+    amrex::average_down_faces(
+      GetArrOfConstPtrs(ub[lev]), GetArrOfPtrs(ub[lev - 1]), refRatio(lev - 1),
+      geom[lev - 1]);
+  }
+
+  const TimeStamp rhoTime = (a_initPress != 0) ? AmrNewTime : AmrHalfTime;
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    const amrex::Box& domain = geom[lev].Domain();
+    beta[lev] = getVOFSharpFaceDensity(lev, rhoTime);
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+      beta[lev][idim].invert(a_dt, 0);
+      // Gravity acts on all faces except those where the velocity is
+      // prescribed (walls, inflow)
+      const bool periodic = geom[lev].isPeriodic(idim);
+      const bool fixed_lo =
+        !periodic && m_phys_bc.lo(idim) != amrex::PhysBCType::outflow;
+      const bool fixed_hi =
+        !periodic && m_phys_bc.hi(idim) != amrex::PhysBCType::outflow;
+      const int dlo = domain.smallEnd(idim);
+      const int dhi = domain.bigEnd(idim) + 1;
+      const amrex::Real dtg = a_dt * grav[idim];
+      auto const& ub_ma = ub[lev][idim].const_arrays();
+      auto const& um_ma = umac[lev][idim].arrays();
+      amrex::ParallelFor(
+        umac[lev][idim], [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) {
+          const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
+          const bool fixed =
+            (fixed_lo && iv[idim] == dlo) || (fixed_hi && iv[idim] == dhi);
+          um_ma[box_no](i, j, k) = ub_ma[box_no](i, j, k) + (fixed ? 0.0 : dtg);
+        });
+    }
+  }
+  amrex::Gpu::streamSynchronize();
+
+  VOFFaceProjection(GetVecOfArrOfPtrs(umac), beta);
+
+  // Cell acceleration = average of the face accelerations
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    auto* ldataNew_p = getLevelDataPtr(lev, AmrNewTime);
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+    for (amrex::MFIter mfi(ldataNew_p->state, amrex::TilingIfNotGPU());
+         mfi.isValid(); ++mfi) {
+      const amrex::Box& bx = mfi.tilebox();
+      auto const& vel = ldataNew_p->state.array(mfi, VELX);
+      auto const& gp = ldataNew_p->gp.array(mfi);
+      amrex::GpuArray<amrex::Array4<amrex::Real const>, AMREX_SPACEDIM> uaf{
+        AMREX_D_DECL(
+          umac[lev][0].const_array(mfi), umac[lev][1].const_array(mfi),
+          umac[lev][2].const_array(mfi))};
+      amrex::GpuArray<amrex::Array4<amrex::Real const>, AMREX_SPACEDIM> ubf{
+        AMREX_D_DECL(
+          ub[lev][0].const_array(mfi), ub[lev][1].const_array(mfi),
+          ub[lev][2].const_array(mfi))};
+      const bool update_vel = (a_initPress == 0);
+      amrex::ParallelFor(
+        bx, [=, dt = a_dt] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+          const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
+          for (int n = 0; n < AMREX_SPACEDIM; ++n) {
+            const amrex::IntVect ivp =
+              iv + amrex::IntVect::TheDimensionVector(n);
+            const amrex::Real a =
+              0.5 * ((uaf[n](iv) - ubf[n](iv)) + (uaf[n](ivp) - ubf[n](ivp))) /
+              dt;
+            if (update_vel) {
+              vel(i, j, k, n) += dt * a;
+            }
+            gp(i, j, k, n) = grav[n] - a;
+          }
+        });
+    }
+  }
+  amrex::Gpu::streamSynchronize();
+
+  for (int lev = finest_level; lev > 0; --lev) {
+    amrex::average_down(
+      getLevelDataPtr(lev, AmrNewTime)->gp,
+      getLevelDataPtr(lev - 1, AmrNewTime)->gp, 0, AMREX_SPACEDIM,
+      refRatio(lev - 1));
+  }
+  if (a_initPress == 0) {
+    averageDownVelocity(AmrNewTime);
+  }
+}
+
 //-----------------------------------------------------------------------------
 // Advection: Weymouth & Yue (2010) Eulerian-implicit split sweeps with PLIC
 // fluxes.  Each sweep i updates
@@ -279,10 +715,11 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
   // Cycle the sweep ordering from one step to the next to avoid a
   // directional bias; tied to the step number so that restarts reproduce it
   // (m_nstep is -1 during the initial iterations)
+  advData->vof_mflux.resize(finest_level + 1);
   const int step = amrex::max(m_nstep, 0);
   for (int s = 0; s < AMREX_SPACEDIM; ++s) {
     const int dir = (step + s) % AMREX_SPACEDIM;
-    VOFSplitSweep(dir, umac, cmask);
+    VOFSplitSweep(dir, umac, cmask, advData->vof_mflux);
   }
 
   if (m_vof_verbose > 0) {
@@ -299,7 +736,8 @@ PeleLM::VOFSplitSweep(
   const int dir,
   const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
     a_umac,
-  const amrex::Vector<amrex::MultiFab>& a_cmask)
+  const amrex::Vector<amrex::MultiFab>& a_cmask,
+  amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_mflux)
 {
   BL_PROFILE("PeleLMeX::VOFSplitSweep()");
 
@@ -330,6 +768,25 @@ PeleLM::VOFSplitSweep(
   for (int lev = finest_level; lev > 0; --lev) {
     amrex::average_down_faces(
       flux[lev], flux[lev - 1], refRatio(lev - 1), geom[lev - 1]);
+  }
+
+  // Mass crossing each face: the gas fills the swept volume not occupied by
+  // liquid.  With c frozen over the step, the divergence of the summed sweep
+  // mass fluxes reproduces the change of the mixture density.
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    a_mflux[lev][dir].define(flux[lev].boxArray(), dmap[lev], 1, 0);
+    auto const& m_ma = a_mflux[lev][dir].arrays();
+    auto const& flux_ma = flux[lev].const_arrays();
+    auto const& umac_ma = a_umac[lev][dir]->const_arrays();
+    amrex::ParallelFor(
+      a_mflux[lev][dir],
+      [m_ma, flux_ma, umac_ma, dt, rho_g = m_vof_rho_gas,
+       drho =
+         m_vof_rho_liq -
+         m_vof_rho_gas] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+        m_ma[box_no](i, j, k) = rho_g * umac_ma[box_no](i, j, k) * dt +
+                                drho * flux_ma[box_no](i, j, k);
+      });
   }
 
   for (int lev = 0; lev <= finest_level; ++lev) {
