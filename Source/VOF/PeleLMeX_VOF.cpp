@@ -21,6 +21,29 @@ PeleLM::VOFReadParameters()
   pp.query("refine_band", m_vof_refine_band);
   pp.query("v", m_vof_verbose);
   pp.query("advect_only", m_vof_advect_only);
+
+  m_vof_rho_liq = m_vof_rho_gas = m_rho;
+  m_vof_mu_liq = m_vof_mu_gas = m_mu;
+  pp.query("rho_liquid", m_vof_rho_liq);
+  pp.query("rho_gas", m_vof_rho_gas);
+  pp.query("mu_liquid", m_vof_mu_liq);
+  pp.query("mu_gas", m_vof_mu_gas);
+  std::string mu_avg = "arithmetic";
+  pp.query("viscosity_average", mu_avg);
+  if (mu_avg == "arithmetic") {
+    m_vof_mu_harmonic = 0;
+  } else if (mu_avg == "harmonic") {
+    m_vof_mu_harmonic = 1;
+  } else {
+    amrex::Abort(
+      "peleLM.vof.viscosity_average must be 'arithmetic' or 'harmonic'");
+  }
+  if (
+    m_vof_rho_liq <= 0.0 || m_vof_rho_gas <= 0.0 || m_vof_mu_liq <= 0.0 ||
+    m_vof_mu_gas <= 0.0) {
+    amrex::Abort("peleLM.vof.{rho,mu}_{liquid,gas} must be positive");
+  }
+
   if (
     m_vof_advect_only != 0 &&
     !has_vof_vector_potential<ProblemSpecificFunctions>::value) {
@@ -106,6 +129,89 @@ amrex::Real
 PeleLM::VOFLiquidVolume(const TimeStamp a_time)
 {
   return MFSum(GetVecOfConstPtrs(getVOFVect(a_time)), 0);
+}
+
+//-----------------------------------------------------------------------------
+// Mixture properties.  The volume fraction is fillpatched at a_time (time
+// interpolated between t^n and t^{n+1}, e.g. at the half time) and mapped
+// in place to the property.
+//-----------------------------------------------------------------------------
+void
+PeleLM::fillVOFDensity(
+  const int lev,
+  const amrex::Real a_time,
+  amrex::MultiFab& a_rho,
+  const int nGhost)
+{
+  fillpatch_vof(lev, a_time, a_rho, nGhost);
+  auto const& rho_ma = a_rho.arrays();
+  amrex::ParallelFor(
+    a_rho, amrex::IntVect(nGhost),
+    [rho_ma, rho_l = m_vof_rho_liq, rho_g = m_vof_rho_gas] AMREX_GPU_DEVICE(
+      int box_no, int i, int j, int k) noexcept {
+      rho_ma[box_no](i, j, k) =
+        pelelmex::vof::mixture_density(rho_ma[box_no](i, j, k), rho_l, rho_g);
+    });
+  amrex::Gpu::streamSynchronize();
+}
+
+void
+PeleLM::fillVOFViscosity(
+  const int lev,
+  const amrex::Real a_time,
+  amrex::MultiFab& a_mu,
+  const int nGhost)
+{
+  fillpatch_vof(lev, a_time, a_mu, nGhost);
+  auto const& mu_ma = a_mu.arrays();
+  amrex::ParallelFor(
+    a_mu, amrex::IntVect(nGhost),
+    [mu_ma, mu_l = m_vof_mu_liq, mu_g = m_vof_mu_gas,
+     harmonic =
+       m_vof_mu_harmonic] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+      mu_ma[box_no](i, j, k) = pelelmex::vof::mixture_viscosity(
+        mu_ma[box_no](i, j, k), mu_l, mu_g, harmonic);
+    });
+  amrex::Gpu::streamSynchronize();
+}
+
+amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
+PeleLM::getVOFFaceDensity(const int lev, const amrex::Real a_time)
+{
+  amrex::MultiFab rho(
+    grids[lev], dmap[lev], 1, 1, amrex::MFInfo(), Factory(lev));
+  fillVOFDensity(lev, a_time, rho, 1);
+
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> rho_fc;
+  const amrex::Box& domain = geom[lev].Domain();
+  auto const& rho_ma = rho.const_arrays();
+  for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+    rho_fc[idim].define(
+      amrex::convert(grids[lev], amrex::IntVect::TheDimensionVector(idim)),
+      dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
+    // Dirichlet faces take the boundary value held in the ghost cell
+    const bool ext_lo = m_bcrec_vof.lo(idim) == amrex::BCType::ext_dir;
+    const bool ext_hi = m_bcrec_vof.hi(idim) == amrex::BCType::ext_dir;
+    const int dlo = domain.smallEnd(idim);
+    const int dhi = domain.bigEnd(idim) + 1;
+    auto const& fc_ma = rho_fc[idim].arrays();
+    amrex::ParallelFor(
+      rho_fc[idim], [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) {
+        const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
+        const amrex::IntVect ivm =
+          iv - amrex::IntVect::TheDimensionVector(idim);
+        const auto& r = rho_ma[box_no];
+        if (ext_lo && iv[idim] == dlo) {
+          fc_ma[box_no](i, j, k) = r(ivm);
+        } else if (ext_hi && iv[idim] == dhi) {
+          fc_ma[box_no](i, j, k) = r(iv);
+        } else {
+          fc_ma[box_no](i, j, k) = 0.5 * (r(ivm) + r(iv));
+        }
+      });
+  }
+  amrex::Gpu::streamSynchronize();
+  return rho_fc;
 }
 
 //-----------------------------------------------------------------------------

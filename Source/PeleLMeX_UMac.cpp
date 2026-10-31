@@ -290,6 +290,15 @@ PeleLM::macProject(
   amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> rho_inv(
     finest_level + 1);
   for (int lev = 0; lev <= finest_level; ++lev) {
+#ifdef PELE_USE_VOF
+    if (m_incompressible != 0) {
+      rho_inv[lev] = getVOFFaceDensity(lev, getTime(lev, a_time));
+      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+        rho_inv[lev][idim].invert(m_dt / 2.0, 0);
+      }
+      continue;
+    }
+#endif
     if (m_incompressible != 0) {
       amrex::Real rhoInv = m_dt / (2.0 * m_rho);
       for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {

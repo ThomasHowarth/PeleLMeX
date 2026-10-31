@@ -258,7 +258,7 @@ PeleLM::Advance(const int is_initIter)
       VelAdvStart = amrex::ParallelDescriptor::second();
     }
     // Re-evaluate viscosity only if scalar updated
-    if (m_incompressible == 0) {
+    if (densityIsField()) {
       calcViscosity(AmrNewTime);
     }
 

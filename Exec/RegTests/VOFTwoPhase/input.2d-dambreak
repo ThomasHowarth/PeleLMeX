@@ -1,0 +1,52 @@
+# Collapse of a water column (Martin & Moyce 1952, n^2 = 2; geometry of
+# Koshizuka & Oka 1996): column a = 0.146 m wide and 2a high in a
+# 4a x 4a box of air, slip walls.  The surge front position x/a is
+# compared with the experiment as a function of t sqrt(2 g / a).
+
+#----------------------DOMAIN DEFINITION------------------------
+geometry.is_periodic = 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0 0.0
+geometry.prob_hi     = 0.584 0.584
+
+peleLM.lo_bc = SlipWallAdiab SlipWallAdiab
+peleLM.hi_bc = SlipWallAdiab SlipWallAdiab
+
+#-------------------------AMR CONTROL----------------------------
+amr.n_cell          = 64 64
+amr.v               = 1
+amr.max_level       = 2
+amr.ref_ratio       = 2 2 2
+amr.regrid_int      = 2
+amr.n_error_buf     = 2 2 2
+amr.grid_eff        = 0.7
+amr.blocking_factor = 8
+amr.max_grid_size   = 64
+
+#--------------------------- Problem ----------------------------
+prob.type   = dambreak
+prob.width  = 0.146
+prob.height = 0.292
+
+#-------------------------PeleLM CONTROL-------------------------
+peleLM.v              = 1
+peleLM.incompressible = 1
+peleLM.rho            = 1.0
+peleLM.mu             = 1.0e-3
+peleLM.gravity        = 0.0 -9.81
+
+peleLM.vof.rho_liquid = 1000.0
+peleLM.vof.rho_gas    = 1.2
+peleLM.vof.mu_liquid  = 1.0e-3
+peleLM.vof.mu_gas     = 1.8e-5
+peleLM.vof.v          = 1
+
+amr.cfl       = 0.45
+amr.dt_shrink = 1.0
+amr.init_dt   = 1.0e-4
+amr.max_dt    = 1.0e-3
+amr.stop_time = 0.4
+amr.max_step  = 100000
+amr.plot_per  = 0.02
+amr.plot_file = plt_db_
+amr.check_int = -1

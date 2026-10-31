@@ -52,6 +52,9 @@ PeleLM::calcTurbViscosity(const TimeStamp a_time)
     const auto& dm = ldata_p->state.DistributionMap();
     const auto& factory = ldata_p->state.Factory();
     if (m_incompressible != 0) {
+#ifdef PELE_USE_VOF
+      dens_fc = getVOFFaceDensity(lev, getTime(lev, a_time));
+#else
       // just set density as a constant; don't need to worry about cp
       for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
         dens_fc[idim].define(
@@ -59,6 +62,7 @@ PeleLM::calcTurbViscosity(const TimeStamp a_time)
           0, amrex::MFInfo(), factory);
         dens_fc[idim].setVal(m_rho);
       }
+#endif
     } else {
       // get cp_cc (valid in 1 grow cell for interpolation to FCs)
       constexpr int ngrow = 1;
@@ -224,7 +228,12 @@ PeleLM::calcViscosity(const TimeStamp a_time)
     auto* ldata_p = getLevelDataPtr(lev, a_time);
 
     if (m_incompressible != 0) {
+#ifdef PELE_USE_VOF
+      fillVOFViscosity(
+        lev, getTime(lev, a_time), ldata_p->visc_cc, ldata_p->visc_cc.nGrow());
+#else
       ldata_p->visc_cc.setVal(m_mu);
+#endif
     } else {
 
       // Transport data pointer
