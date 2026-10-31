@@ -172,6 +172,10 @@ PeleLM::setBoundaryConditions()
     }
   }
 
+#ifdef PELE_USE_VOF
+  setVOFBoundaryConditions();
+#endif
+
   if (m_incompressible == 0) {
     // Density
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {

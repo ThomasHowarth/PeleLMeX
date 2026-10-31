@@ -62,6 +62,9 @@ PeleLM::getLevelDataPtr(
   if (m_nAux > 0) {
     fillpatch_aux(lev, time, m_leveldata_floating->auxiliaries, m_nGrowState);
   }
+#ifdef PELE_USE_VOF
+  fillpatch_vof(lev, time, m_leveldata_floating->vof, m_nGrowState);
+#endif
   return m_leveldata_floating.get();
 }
 

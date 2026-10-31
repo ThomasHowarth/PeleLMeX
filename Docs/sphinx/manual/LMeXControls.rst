@@ -384,6 +384,44 @@ Mesh Mapping
    clustering, and well below one means the injected field is aliased.
    See ``Exec/RegTests/TurbInflow`` for the round-trip and cross-map cases.
 
+.. _ssec:vofParameters:
+
+Volume of fluid
+---------------------------------------
+
+Two-phase interface capturing is compiled in with ``USE_VOF = TRUE`` (GNUmake)
+or, for the CMake test suite, ``PELE_ENABLE_VOF = ON``, which builds the cases
+whose ``CMakeLists.txt`` sets ``PELELM_USE_VOF ON``. The liquid volume fraction
+``vof`` is advected with the MAC velocities by the geometric, directionally split
+PLIC scheme of Weymouth & Yue (2010): Mixed Youngs-Centered normals and the
+analytic plane/volume relations of Scardovelli & Zaleski (2000), ported from
+Kynema-SGF (formerly AMR-Wind). The liquid volume is conserved to round-off for
+a discretely divergence-free face velocity, including across coarse/fine
+boundaries. The current implementation requires ``peleLM.incompressible = 1``,
+uniform cubic cells (no ``geometry.mesh_mapping``) and no embedded boundaries;
+the volume fraction does not yet feed back on the density, viscosity or
+momentum.
+
+::
+
+    #-----------------------Volume of fluid -----------------------
+    peleLM.vof.cfl              = 0.45  # [OPT, DEF=0.45] Per-sweep Courant number target, at most 0.5
+    peleLM.vof.refine_max_level = 2     # [OPT, DEF=amr.max_level] Interface cells are tagged on levels below this
+    peleLM.vof.refine_band      = 2     # [OPT, DEF=2] Half-width (cells) of the tagged interface band
+    peleLM.vof.advect_only      = 0     # [OPT, DEF=0] Advect with the prescribed velocity curl(A), skip the momentum update
+    peleLM.vof.v                = 1     # [OPT, DEF=0] Verbose: 1 prints the liquid volume, 2 also clipped volume
+
+The problem's ``ProblemSpecificFunctions`` must provide ``initvof(i, j, k, vof,
+geomdata, prob_parm)`` to set the initial volume fraction;
+``pelelmex::vof::cell_fraction`` (``PeleLMeX_VOF_K.H``) computes it from an
+implicit function by sub-cell sampling. ``bcnormal_vof(x, vof_ext, idir, sgn,
+time, geomdata, prob_parm)`` is optional and sets the volume fraction on
+``Inflow`` faces (pure gas by default). Walls and outflows extrapolate the volume
+fraction (90 degree contact angle). In ``advect_only`` mode the face velocities are
+the discrete curl of ``vof_vector_potential(x, time, A, prob_parm)`` (``A[2]`` is
+the stream function in 2D), used by the verification cases in
+``Exec/RegTests/VOFAdvection``.
+
 Turbulent Forcing and Velocity Plotfile
 ---------------------------------------
 
@@ -911,6 +949,7 @@ When compiling PeleLMeX, several compilation flags can be selected to help with 
     USE_PARTICLES = TRUE                 # [OPT, DEF=FALSE] Enable Lagrangian particle spray model
     USE_SOOT = TRUE                      # [OPT, DEF=FALSE] Enable soot model
     USE_RADIATION = TRUE                 # [OPT, DEF=FALSE] Enable radiation model
+    USE_VOF = TRUE                       # [OPT, DEF=FALSE] Enable the volume-of-fluid interface capturing
     PELELM_NUM_ODE = INT                 # [OPT, DEF=0] Number of user-defined ODEs to solve
 
     # If USE_PARTICLES = TRUE

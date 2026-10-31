@@ -988,6 +988,11 @@ PeleLM::readParameters()
   }
 #endif
 
+#ifdef PELE_USE_VOF
+  VOFReadParameters();
+  VOFCheckSetup();
+#endif
+
 #ifdef PELE_USE_SPRAY
   SprayReadParameters();
   if (do_spray_particles && m_mesh_mapping) {
