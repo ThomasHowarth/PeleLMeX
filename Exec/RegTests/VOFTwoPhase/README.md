@@ -17,24 +17,30 @@ mpirun -np 4 ./PeleLMeX2d.gnu.MPI.ex input.2d-pool
 
 ## Current status
 
-The variable-density path (MAC and nodal projections, gravity and pressure
-gradient divided by the mixture density, implicit viscous solve with
-`rho^{n+1/2}`) reproduces the constant-density results bit for bit when
-`rho_liquid = rho_gas`, and a uniform flow carrying a 1000:1 drop stays
-exactly uniform.  The liquid volume is conserved to round-off in all cases.
-
-Gravity is not yet *balanced* at the interface: the cell-centered gravity
-and pressure-gradient terms of the approximate projection only cancel when
-the interface is aligned with the grid.
+Gravity and the pressure gradient are balanced on the faces with a sharp
+(PLIC) face density, and momentum is advected with the VOF mass fluxes (see
+the volume of fluid section of the controls documentation).  The liquid
+volume is conserved to round-off in all cases.
 
 - `input.2d-pool` (grid-aligned surface): velocity stays at 1e-12.
 - `input.2d-pool prob.tilt=30 peleLM.gravity="-4.905 -8.49571"
-  amr.max_level=0` (surface at 30 degrees, gravity normal to it): spurious
-  velocities of 0.08 m/s (rho 3:1) and 0.4 m/s (rho 1000:1.2) after 0.2 s.
-- `input.2d-rt` with `prob.amplitude=0.01`: the linear growth rate is about
-  15% below sqrt(A k g), independently of the grid and the time step.
-- `input.2d-dambreak` is unstable at this density ratio.
+  amr.max_level=0` (surface at 30 degrees, gravity normal to it): away from
+  the walls the velocity is ~1e-5 after 0.2 s; the maximum, 2.5e-3 m/s, sits
+  at the wall contact lines, where the 90 degree contact angle of the
+  extrapolated volume fraction is inconsistent with the tilted equilibrium.
+- `input.2d-rt` with `prob.amplitude=0.01 amr.n_cell="64 256" amr.max_level=0`:
+  the amplitude of the first Fourier mode of the interface height follows
+  the viscous linear theory, `cosh(sigma t)`, to 0.7% at t = 0.4 and 2.7% at
+  t = 0.8 (the departure grows with the nonlinear saturation).  The
+  amplitude must be measured on the mode-1 Fourier coefficient: a two-point
+  difference is dominated by the PLIC height quantization at small
+  amplitudes.
+- `input.2d-dambreak` runs to t = 0.4 s through the wall impact and run-up.
+  The surge front is ahead of the Martin & Moyce data by about 0.3 column
+  widths with a similar speed, as is usual for simulations that ignore the
+  gate opening.
+- A uniform flow carrying a 1000:1 drop (`Exec/RegTests/VOFAdvection`,
+  `input.2d-translate peleLM.vof.rho_liquid=1000`) stays exactly uniform, and
+  its solution is bitwise identical to that of the equal-density case.
 
-A balanced-force (face-based) treatment of gravity and of the pressure
-gradient, and momentum advection consistent with the VOF mass fluxes, are
-the next steps.
+Surface tension is the next step.

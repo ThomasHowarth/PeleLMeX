@@ -99,7 +99,10 @@ PeleLM::getVelForces(
     });
   amrex::Gpu::streamSynchronize();
 
-  if (add_gradP != 0) {
+  // Two-phase VOF: gp is the kinematic gradient grad(p)/rho, subtracted
+  // after the division by rho below
+  const bool kinematic_gp = use_rho_vof;
+  if (add_gradP != 0 && !kinematic_gp) {
     if (m_mesh_mapping) {
       // gp is stored in Xi-space (component i = fac_i . grad_phys p_i).
       // When subtracting from the physical-space velocity force we need
@@ -176,6 +179,10 @@ PeleLM::getVelForces(
         force_ma[box_no](i, j, k, n) /= rho(i, j, k);
       });
     amrex::Gpu::streamSynchronize();
+  }
+  if (add_gradP != 0 && kinematic_gp) {
+    amrex::MultiFab::Subtract(
+      *a_velForce, ldataGP_p->gp, 0, 0, AMREX_SPACEDIM, 0);
   }
 }
 

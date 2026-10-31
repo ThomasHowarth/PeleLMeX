@@ -580,6 +580,101 @@ interface_band(
 }
 
 /**
+ * \brief Exact liquid volume fraction of cell (i,j,k) for the half space
+ *        n.x <= d (physical coordinates, n need not be normalized).
+ *        Intended for problem initialization.
+ */
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real
+plane_fraction(
+  const int i,
+  const int j,
+  const int k,
+  amrex::GeometryData const& geomdata,
+  const amrex::Real n[AMREX_SPACEDIM],
+  const amrex::Real d)
+{
+  const amrex::Real* prob_lo = geomdata.ProbLo();
+  const amrex::Real* dx = geomdata.CellSize();
+  const int idx[3] = {i, j, k};
+  amrex::Real m[3] = {0.0_rt, 0.0_rt, 0.0_rt};
+  amrex::Real alpha = d;
+  amrex::Real norm = 0.0_rt;
+  for (int a = 0; a < AMREX_SPACEDIM; ++a) {
+    m[a] = n[a] * dx[a];
+    alpha -= n[a] * (prob_lo[a] + idx[a] * dx[a]);
+    norm += std::abs(m[a]);
+  }
+  if (norm <= std::numeric_limits<amrex::Real>::min()) {
+    return (alpha >= 0.0_rt) ? 1.0_rt : 0.0_rt;
+  }
+  return amrex::Clamp(
+    cut_volume(
+      m[0] / norm, m[1] / norm, m[2] / norm, alpha / norm, 0.0_rt, 1.0_rt),
+    0.0_rt, 1.0_rt);
+}
+
+/**
+ * \brief Liquid fraction of the half segment from the center of cell
+ *        (i,j,k) to the center of its face in direction dir on side sgn
+ *        (+1 high, -1 low), from the cell's own PLIC plane.
+ */
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real
+half_segment_fraction(
+  const int i,
+  const int j,
+  const int k,
+  const int dir,
+  const int sgn,
+  amrex::Array4<amrex::Real const> const& F)
+{
+  const amrex::Real Fc = F(i, j, k);
+  if (Fc <= vof_tol) {
+    return 0.0_rt;
+  }
+  if (Fc >= 1.0_rt - vof_tol) {
+    return 1.0_rt;
+  }
+  amrex::Real m[3], alpha;
+  fit_plane(i, j, k, F, m[0], m[1], m[2], alpha);
+  // psi = m.x - alpha < 0 in the liquid, linear along the half segment
+  const amrex::Real psi_c = 0.5_rt * (m[0] + m[1] + m[2]) - alpha;
+  const amrex::Real psi_f = psi_c + 0.5_rt * sgn * m[dir];
+  if (psi_c <= 0.0_rt && psi_f <= 0.0_rt) {
+    return 1.0_rt;
+  }
+  if (psi_c > 0.0_rt && psi_f > 0.0_rt) {
+    return 0.0_rt;
+  }
+  const amrex::Real t = psi_c / (psi_c - psi_f);
+  return (psi_c <= 0.0_rt) ? t : 1.0_rt - t;
+}
+
+/**
+ * \brief Liquid fraction of the segment joining the centers of the cells on
+ *        either side of the low face of (i,j,k) in direction dir.  Exact for
+ *        a planar interface, which makes rho_face * g a discrete gradient
+ *        (hydrostatic balance) when rho_face = rho_g + (rho_l - rho_g) * this.
+ */
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real
+face_segment_fraction(
+  const int i,
+  const int j,
+  const int k,
+  const int dir,
+  amrex::Array4<amrex::Real const> const& F)
+{
+  const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
+  const amrex::IntVect ivm = iv - amrex::IntVect::TheDimensionVector(dir);
+#if AMREX_SPACEDIM == 2
+  const int km = 0;
+#else
+  const int km = ivm[2];
+#endif
+  return 0.5_rt * (half_segment_fraction(ivm[0], ivm[1], km, dir, 1, F) +
+                   half_segment_fraction(i, j, k, dir, -1, F));
+}
+
+/**
  * \brief Volume-weighted mixture density of a cell with liquid fraction F
  */
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real

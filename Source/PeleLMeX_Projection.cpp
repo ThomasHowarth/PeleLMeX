@@ -247,6 +247,14 @@ PeleLM::initialPressProjection()
     amrex::Print() << " Initial pressure projection \n";
   }
 
+#ifdef PELE_USE_VOF
+  if (m_incompressible != 0) {
+    constexpr int initPress = 1;
+    VOFVelocityProjection(initPress, 1.0);
+    return;
+  }
+#endif
+
   constexpr amrex::Real dummy_dt = 1.0;
   constexpr int incremental = 0;
   constexpr int nGhost = 1;
@@ -365,6 +373,17 @@ PeleLM::velocityProjection(
   const int is_initIter, const TimeStamp a_rhoTime, const amrex::Real a_dt)
 {
   BL_PROFILE("PeleLMeX::velocityProjection()");
+
+#ifdef PELE_USE_VOF
+  if (m_incompressible != 0) {
+    // Balanced-force projection; non-incremental, so it also serves the
+    // initial pressure iterations
+    amrex::ignore_unused(is_initIter, a_rhoTime);
+    constexpr int initPress = 0;
+    VOFVelocityProjection(initPress, a_dt);
+    return;
+  }
+#endif
 
   constexpr int nGhost = 0;
   const int incremental = (is_initIter) != 0 ? 1 : 0;

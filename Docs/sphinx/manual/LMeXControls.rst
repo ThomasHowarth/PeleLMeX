@@ -405,13 +405,32 @@ The density and viscosity are fields derived from the volume fraction,
 :math:`\mu = F \mu_l + (1 - F) \mu_g` or the harmonic average
 :math:`1/\mu = F/\mu_l + (1 - F)/\mu_g`. They replace the constant
 ``peleLM.rho`` and ``peleLM.mu`` (which are the defaults for both phases) in the
-MAC and nodal projections, the gravity and pressure-gradient terms and the
-implicit viscous solve. The MAC projection uses the arithmetic face average of the
-cell densities at :math:`t^n`; the velocity update, viscous solve and nodal
-projection use the density at :math:`t^{n+1/2}`, interpolated in time between
-the volume fractions before and after the VOF advection. Momentum is still
-advected in convective (non-conservative) form, which limits robustness at large
-density ratios.
+projections, the gravity and pressure-gradient terms and the implicit viscous
+solve; the viscous solve uses the density at :math:`t^{n+1/2}`, interpolated in
+time between the volume fractions before and after the VOF advection.
+
+Gravity and the pressure gradient are balanced on the faces (Francois et al.,
+2006), replacing the nodal projection: the MAC velocity of the provisional
+velocity plus :math:`\Delta t\, g` is projected with the face density
+:math:`\rho_f = \rho_g + (\rho_l - \rho_g)\theta`, where :math:`\theta` is the
+liquid fraction of the segment joining the two cell centers, cut by each cell's
+PLIC plane. :math:`\rho_f g` is then an exact discrete gradient for a planar
+interface, so a fluid at rest stays at rest at any interface orientation. The
+cell-centered velocity is updated with the average of the face accelerations,
+and the stored pressure gradient (``gradpx``, ... in the plotfile) is the kinematic
+:math:`\nabla p / \rho`. The predictor MAC projection uses the same face
+density. Both face projections are solved by GMRES preconditioned by MLMG
+(``mac_proj.rtol`` / ``atol``), since plain MLMG stalls on the face-coefficient
+jump of a sharp, high density ratio interface.
+
+Momentum is advected in conservative form with the mass fluxes of the VOF sweeps,
+:math:`m_f = \rho_g u_f \Delta t + (\rho_l - \rho_g) \Phi_l`, with
+:math:`\Phi_l` the swept liquid volume, as in Kynema-SGF:
+:math:`\rho^{n+1} u^{**} = \rho^n u^n - \nabla \cdot (m_f u_f)`. Its density is
+exactly that of the advected volume fraction, so momentum is carried with the
+liquid and a uniform flow stays uniform across the interface. Within one cell of
+the interface the face velocity :math:`u_f` is the upwind cell velocity, the
+Godunov face state elsewhere.
 
 ::
 
@@ -430,7 +449,8 @@ density ratios.
 The problem's ``ProblemSpecificFunctions`` must provide ``initvof(i, j, k, vof,
 geomdata, prob_parm)`` to set the initial volume fraction;
 ``pelelmex::vof::cell_fraction`` (``PeleLMeX_VOF_K.H``) computes it from an
-implicit function by sub-cell sampling. ``bcnormal_vof(x, vof_ext, idir, sgn,
+implicit function by sub-cell sampling, and ``pelelmex::vof::plane_fraction``
+exactly for a half space. ``bcnormal_vof(x, vof_ext, idir, sgn,
 time, geomdata, prob_parm)`` is optional and sets the volume fraction on
 ``Inflow`` faces (pure gas by default). Walls and outflows extrapolate the volume
 fraction (90 degree contact angle). In ``advect_only`` mode the face velocities are
