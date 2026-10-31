@@ -31,6 +31,12 @@ using namespace amrex::literals;
 // (1 - tol) pure liquid
 static constexpr amrex::Real vof_tol = 1.0e-12_rt;
 
+// Half-length of the height-function columns (7 cells); the volume fraction
+// carries one more ghost cell so that planes can be fitted in the first
+// ghost layer
+static constexpr int hf_half = 3;
+static constexpr int nghost = hf_half + 1;
+
 /**
  * \brief Analytic plane constant alpha such that the region
  *        m1*x1 + m2*x2 + m3*x3 <= alpha of the unit cube has volume volF.
@@ -417,9 +423,80 @@ myc_normal(
 #endif
 
 /**
+ * \brief Height-function normal with height direction d: the liquid heights
+ *        of the 7-cell columns through (i,j,k) and its neighbors in the
+ *        tangential directions, differenced centrally.  Exact for a planar
+ *        interface whose slope relative to d is at most 1, which holds for
+ *        the dominant normal direction.  Returns false (m untouched) when a
+ *        column does not span from pure liquid to pure gas in the same
+ *        orientation as the others.
+ */
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE bool
+height_normal(
+  const int i,
+  const int j,
+  const int k,
+  const int d,
+  amrex::Array4<amrex::Real const> const& F,
+  amrex::Real m[3])
+{
+  amrex::ignore_unused(k);
+  constexpr amrex::Real pure_tol = 1.0e-6_rt;
+  const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
+  const amrex::IntVect ed = amrex::IntVect::TheDimensionVector(d);
+  // Orientation from the center column: +1 liquid on the low side
+  const amrex::Real f_lo = F(iv - hf_half * ed);
+  const amrex::Real f_hi = F(iv + hf_half * ed);
+  amrex::Real sigma = 0.0_rt;
+  if (f_lo >= 1.0_rt - pure_tol && f_hi <= pure_tol) {
+    sigma = 1.0_rt;
+  } else if (f_lo <= pure_tol && f_hi >= 1.0_rt - pure_tol) {
+    sigma = -1.0_rt;
+  } else {
+    return false;
+  }
+  const auto column = [&](const amrex::IntVect& c, amrex::Real& H) {
+    const amrex::Real a = F(c - hf_half * ed);
+    const amrex::Real b = F(c + hf_half * ed);
+    const amrex::Real a_pure = (sigma > 0.0_rt) ? 1.0_rt - a : a;
+    const amrex::Real b_pure = (sigma > 0.0_rt) ? b : 1.0_rt - b;
+    if (a_pure > pure_tol || b_pure > pure_tol) {
+      return false;
+    }
+    H = 0.0_rt;
+    for (int s = -hf_half; s <= hf_half; ++s) {
+      H += F(c + s * ed);
+    }
+    return true;
+  };
+  amrex::Real mt[3] = {0.0_rt, 0.0_rt, 0.0_rt};
+  for (int t = 0; t < AMREX_SPACEDIM; ++t) {
+    if (t == d) {
+      continue;
+    }
+    const amrex::IntVect et = amrex::IntVect::TheDimensionVector(t);
+    amrex::Real Hm = 0.0_rt;
+    amrex::Real Hp = 0.0_rt;
+    if (!column(iv - et, Hm) || !column(iv + et, Hp)) {
+      return false;
+    }
+    // m = grad(x_d - h) (sigma = 1) or grad(h - x_d): m_t = (H- - H+) / 2
+    mt[t] = 0.5_rt * (Hm - Hp);
+  }
+  mt[d] = sigma;
+  for (int a = 0; a < 3; ++a) {
+    m[a] = mt[a];
+  }
+  return true;
+}
+
+/**
  * \brief Reconstruct the PLIC plane m.x = alpha in cell (i,j,k), in unit-cube
- *        cell coordinates with sum|m| = 1.  Only meaningful for
- *        vof_tol < F < 1 - vof_tol.
+ *        cell coordinates with sum|m| = 1.  The normal is the height-function
+ *        one along the dominant direction of the Mixed Youngs-Centered
+ *        normal, or the latter where the heights are not defined (thin or
+ *        strongly curved structures).  Reads up to hf_half cells away.  Only
+ *        meaningful for vof_tol < F < 1 - vof_tol.
  */
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void
 fit_plane(
@@ -433,6 +510,19 @@ fit_plane(
   amrex::Real& alpha)
 {
   myc_normal(i, j, k, F, mx, my, mz);
+  {
+    const amrex::Real am[3] = {std::abs(mx), std::abs(my), std::abs(mz)};
+    int d = (am[1] > am[0]) ? 1 : 0;
+    if (AMREX_SPACEDIM == 3 && am[2] > am[d]) {
+      d = 2;
+    }
+    amrex::Real mh[3];
+    if (height_normal(i, j, k, d, F, mh)) {
+      mx = mh[0];
+      my = mh[1];
+      mz = mh[2];
+    }
+  }
 
   // An isolated blob can produce a null normal: pick an arbitrary one
   amrex::Real norm = std::abs(mx) + std::abs(my) + std::abs(mz);
@@ -469,6 +559,7 @@ swept_fraction(
   const amrex::Real a,
   amrex::Array4<amrex::Real const> const& F)
 {
+  amrex::ignore_unused(k);
   if (a == 0.0_rt) {
     return 0.0_rt;
   }
@@ -611,6 +702,131 @@ plane_fraction(
     cut_volume(
       m[0] / norm, m[1] / norm, m[2] / norm, alpha / norm, 0.0_rt, 1.0_rt),
     0.0_rt, 1.0_rt);
+}
+
+/**
+ * \brief Volume fraction of the ghost cell g beyond a wall normal to dir, by
+ *        extending the PLIC plane of the interior interface: a free contact
+ *        line, exact for a planar interface.  Used when the interface meets
+ *        the wall within nsearch cells (tangentially) of g.  The plane is
+ *        that of the nearest interface cell, 1 to hf_half layers inside the
+ *        wall, whose reconstruction does not read ghost cells: height
+ *        columns normal to the wall reach hf_half cells, the other stencils
+ *        one.  With nsearch = 8 such a plane exists for contact angles
+ *        down to about 20 degrees from the wall.  Below, if allow_ghost, the
+ *        nearest interface cell of layers 0 to hf_half is used although its
+ *        reconstruction reads the current ghost values: iterating the fill
+ *        converges to the extended plane, which is a fixed point.
+ *        Otherwise the wall-adjacent value is copied (90 degrees).
+ * \param iwall index along dir of the wall-adjacent interior cell
+ * \param sgn   -1 for a low wall, +1 for a high wall
+ * \param fbox  box of the array F
+ */
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real
+wall_ghost_fraction(
+  const amrex::IntVect& g,
+  const int dir,
+  const int iwall,
+  const int sgn,
+  const amrex::Box& fbox,
+  amrex::Array4<amrex::Real const> const& F,
+  const bool allow_ghost)
+{
+  constexpr int nsearch = 8;
+  constexpr int nfar = 1000;
+  const amrex::Box rbox = amrex::grow(fbox, -hf_half);
+  amrex::IntVect iv_w = g;
+  iv_w[dir] = iwall;
+
+  const auto is_mixed = [&F](const amrex::IntVect& c) {
+    const amrex::Real f = F(c);
+    return f > vof_tol && f < 1.0_rt - vof_tol;
+  };
+
+  bool contact = false;
+  int ref_dist = nfar;
+  amrex::IntVect ref = iv_w;
+  // Fallback reading ghost cells
+  int any_dist = nfar;
+  amrex::IntVect any_ref = iv_w;
+  amrex::IntVect off_lo(-nsearch);
+  amrex::IntVect off_hi(nsearch);
+  off_lo[dir] = 0;
+  off_hi[dir] = 0;
+#if AMREX_SPACEDIM == 2
+  for (int b = 0; b <= 0; ++b) {
+#else
+  for (int b = off_lo[2]; b <= off_hi[2]; ++b) {
+#endif
+    for (int a1 = off_lo[1]; a1 <= off_hi[1]; ++a1) {
+      for (int a0 = off_lo[0]; a0 <= off_hi[0]; ++a0) {
+        const amrex::IntVect off(AMREX_D_DECL(a0, a1, b));
+        const int tdist =
+          AMREX_D_TERM(std::abs(a0), +std::abs(a1), +std::abs(b));
+        const amrex::IntVect cw = iv_w + off;
+        if (fbox.contains(cw) && is_mixed(cw)) {
+          contact = true;
+        }
+        for (int layer = 0; layer <= hf_half; ++layer) {
+          amrex::IntVect c = cw;
+          c[dir] = iwall - layer * sgn;
+          const int dist = tdist + layer;
+          if (dist >= ref_dist || !rbox.contains(c) || !is_mixed(c)) {
+            continue;
+          }
+          if (dist < any_dist) {
+            any_dist = dist;
+            any_ref = c;
+          }
+          if (layer == 0) {
+            continue;
+          }
+          if (layer < hf_half) {
+            // Height direction of fit_plane: wall-normal columns would read
+            // ghost cells
+            amrex::Real mm[3];
+#if AMREX_SPACEDIM == 2
+            myc_normal(c[0], c[1], 0, F, mm[0], mm[1], mm[2]);
+#else
+            myc_normal(c[0], c[1], c[2], F, mm[0], mm[1], mm[2]);
+#endif
+            bool normal_dominant = true;
+            for (int t = 0; t < AMREX_SPACEDIM; ++t) {
+              if (t != dir && std::abs(mm[t]) > std::abs(mm[dir])) {
+                normal_dominant = false;
+              }
+            }
+            if (normal_dominant) {
+              continue;
+            }
+          }
+          ref_dist = dist;
+          ref = c;
+        }
+      }
+    }
+  }
+  if (ref_dist == nfar && allow_ghost) {
+    ref_dist = any_dist;
+    ref = any_ref;
+  }
+  if (!contact || ref_dist == nfar) {
+    return F(iv_w);
+  }
+
+  amrex::Real m[3] = {0.0_rt, 0.0_rt, 0.0_rt};
+  amrex::Real alpha = 0.0_rt;
+#if AMREX_SPACEDIM == 2
+  fit_plane(ref[0], ref[1], 0, F, m[0], m[1], m[2], alpha);
+#else
+  fit_plane(ref[0], ref[1], ref[2], F, m[0], m[1], m[2], alpha);
+#endif
+  // Plane constant in the unit-cube coordinates of g
+  for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+    alpha -= m[d] * static_cast<amrex::Real>(g[d] - ref[d]);
+  }
+  return amrex::Clamp(
+    cut_volume(m[0], m[1], m[2], alpha, 0.0_rt, 1.0_rt), 0.0_rt, 1.0_rt);
 }
 
 /**

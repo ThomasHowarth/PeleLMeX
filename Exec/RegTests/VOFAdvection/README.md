@@ -24,23 +24,26 @@ mpirun -np 4 ./PeleLMeX2d.gnu.MPI.ex input.2d-zalesak
 ```
 
 `peleLM.vof.v = 1` prints the liquid volume and its relative change every
-step; `peleLM.vof.v = 2` also reports any volume removed by clipping the
-volume fraction to [0, 1] on uncovered cells.
+step.  The sweeps keep the volume fraction in [0, 1] up to round-off; any
+volume removed by clipping it on uncovered cells is reported as a warning
+whatever the verbosity.
 
 ## Expected results
 
 Liquid volume is conserved to round-off (relative change per step of order
-1e-16) in all cases, with and without AMR, and checkpoint restarts reproduce
-continuous runs bit for bit.
+1e-16) in all cases, with and without AMR, and no volume is clipped.
+Checkpoint restarts of the prescribed-velocity cases reproduce continuous
+runs bit for bit; with a projected velocity they agree to the linear solver
+tolerance.
 
 L1 shape error `sum |F(T) - F(0)| dV` on uniform grids (`amr.max_level = 0`;
 single vortex with `amr.fixed_dt = 0.5/n`):
 
 | n     | Zalesak  | order | single vortex | order |
 |-------|----------|-------|---------------|-------|
-| 64²   | 3.14e-3  |       | 1.93e-3       |       |
-| 128²  | 1.05e-3  | 1.58  | 4.90e-4       | 1.98  |
-| 256²  | 4.77e-4  | 1.14  | 1.43e-4       | 1.78  |
+| 64²   | 3.13e-3  |       | 1.93e-3       |       |
+| 128²  | 1.06e-3  | 1.56  | 4.87e-4       | 1.99  |
+| 256²  | 4.83e-4  | 1.14  | 1.43e-4       | 1.77  |
 
 The single vortex converges at close to second order; Zalesak's disk is
 limited to about first order by the unresolved slot corners, as expected

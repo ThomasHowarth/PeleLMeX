@@ -55,7 +55,7 @@ PeleLM::LevelData::LevelData(
     diff_aux_cc.define(ba, dm, a_nAux, 1, amrex::MFInfo(), factory);
   }
 #ifdef PELE_USE_VOF
-  vof.define(ba, dm, 1, a_nGrowState, amrex::MFInfo(), factory);
+  vof.define(ba, dm, 1, m_nGrowVOF, amrex::MFInfo(), factory);
 #endif
 }
 

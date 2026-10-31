@@ -23,11 +23,12 @@ the volume of fluid section of the controls documentation).  The liquid
 volume is conserved to round-off in all cases.
 
 - `input.2d-pool` (grid-aligned surface): velocity stays at 1e-12.
-- `input.2d-pool prob.tilt=30 peleLM.gravity="-4.905 -8.49571"
-  amr.max_level=0` (surface at 30 degrees, gravity normal to it): away from
-  the walls the velocity is ~1e-5 after 0.2 s; the maximum, 2.5e-3 m/s, sits
-  at the wall contact lines, where the 90 degree contact angle of the
-  extrapolated volume fraction is inconsistent with the tilted equilibrium.
+- `input.2d-pool prob.tilt=30 peleLM.gravity="-4.905 -8.49571"` (surface
+  at 30 degrees, gravity normal to it): the velocity stays below 1e-7 m/s
+  for any tilt from 5 to 89 degrees, with and without AMR.  The interface
+  meets the side walls at whatever angle it has (free contact line, see the
+  controls documentation); extrapolated wall ghost values would impose 90
+  degrees and drive currents of order 1e-2 m/s.
 - `input.2d-rt` with `prob.amplitude=0.01 amr.n_cell="64 256" amr.max_level=0`:
   the amplitude of the first Fourier mode of the interface height follows
   the viscous linear theory, `cosh(sigma t)`, to 0.7% at t = 0.4 and 2.7% at
@@ -38,7 +39,9 @@ volume is conserved to round-off in all cases.
 - `input.2d-dambreak` runs to t = 0.4 s through the wall impact and run-up.
   The surge front is ahead of the Martin & Moyce data by about 0.3 column
   widths with a similar speed, as is usual for simulations that ignore the
-  gate opening.
+  gate opening.  With `amr.cfl=0.9` the face Courant number exceeds 1/2 and
+  the VOF advection is sub-stepped; the volume fraction is still never
+  clipped.
 - A uniform flow carrying a 1000:1 drop (`Exec/RegTests/VOFAdvection`,
   `input.2d-translate peleLM.vof.rho_liquid=1000`) stays exactly uniform, and
   its solution is bitwise identical to that of the equal-density case.
