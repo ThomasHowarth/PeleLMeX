@@ -303,6 +303,22 @@ function(add_test_spray TEST_EXE_DIR)
     add_test(${TEST_NAME} bash -c "python3 ${CURRENT_TEST_BINARY_DIR}/multiRuns.py ${MULTIRUN_FLAGS}")
 endfunction(add_test_spray)
 
+# Volume-of-fluid test: run the number of steps set in TEST_NAME.inp and check
+# physical invariants with test_vof.py (no clipping, liquid volume conserved,
+# plus the CHECK_ARGS given, e.g. a bound on the velocity) instead of
+# comparing against gold files
+function(add_test_vof TEST_NAME TEST_EXE_DIR)
+    setup_test()
+    string(REPLACE ";" " " _check_args "${ARGN}")
+    add_test(${TEST_NAME} bash -c "set -o pipefail && rm -rf temporals && ${MPI_COMMANDS} ${CURRENT_TEST_EXE} ${MPIEXEC_POSTFLAGS} ${CURRENT_TEST_BINARY_DIR}/${TEST_NAME}.inp ${RUNTIME_OPTIONS} 2>&1 | tee ${TEST_NAME}.log && python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_vof.py ${TEST_NAME}.log --dim ${PELE_DIM} ${_check_args}")
+    set_tests_properties(${TEST_NAME} PROPERTIES
+        TIMEOUT 18000
+        PROCESSORS ${PELE_NP}
+        WORKING_DIRECTORY "${CURRENT_TEST_BINARY_DIR}/"
+        LABELS "regression;vof"
+        ATTACHED_FILES "${CURRENT_TEST_BINARY_DIR}/${TEST_NAME}.log")
+endfunction(add_test_vof)
+
 #=============================================================================
 # Regression tests
 #=============================================================================
@@ -328,6 +344,19 @@ if(NOT PELE_ENABLE_EB)
     add_test_r(hit-decay-${PELE_DIM}d HIT)
     add_test_r(hit-decay-les-${PELE_DIM}d HIT)
     add_test_r(hit-forced-${PELE_DIM}d HIT)
+  endif()
+  if(PELE_ENABLE_VOF)
+    if(PELE_DIM EQUAL 2)
+      add_test_vof(vof-zalesak-2d VOFAdvection)
+      add_test_vof(vof-translate-2d VOFAdvection
+                   --require-substeps --uniform-velocity 1.0 1.0)
+      add_test_vof(vof-pool-2d VOFTwoPhase --max-velocity 1.0e-8)
+      add_test_vof(vof-dambreak-2d VOFTwoPhase)
+    endif()
+    if(PELE_DIM EQUAL 3)
+      add_test_vof(vof-deform-3d VOFAdvection)
+      add_test_vof(vof-pool-3d VOFTwoPhase --max-velocity 1.0e-8)
+    endif()
   endif()
 else()
   if(PELE_DIM EQUAL 2)

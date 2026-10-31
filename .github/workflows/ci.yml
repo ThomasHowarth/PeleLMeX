@@ -178,6 +178,7 @@ jobs:
           -DPELE_ENABLE_MPI:BOOL=ON \
           -DMPIEXEC_PREFLAGS:STRING=--oversubscribe \
           -DPELE_ENABLE_EB:BOOL=${{matrix.use_eb}} \
+          -DPELE_ENABLE_VOF:BOOL=ON \
           -DPELE_ENABLE_FCOMPARE_FOR_TESTS:BOOL=OFF \
           -DPELE_SAVE_GOLDS:BOOL=${{matrix.reference_comparison}} \
           -DPELE_SAVED_GOLDS_DIRECTORY=${{runner.workspace}}/build-${{matrix.dim}}d-${{matrix.os}}-${{matrix.build_type}}-${{matrix.enable_eb}} \
@@ -389,6 +390,7 @@ jobs:
             -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON \
             -DPELE_ENABLE_MPI:BOOL=OFF \
             -DPELE_ENABLE_CUDA:BOOL=ON \
+            -DPELE_ENABLE_VOF:BOOL=ON \
             -DPELE_ENABLE_EB:BOOL=${{matrix.use_eb}} \
             -DAMReX_CUDA_ERROR_CAPTURE_THIS:BOOL=ON \
             -DCMAKE_CUDA_ARCHITECTURES:STRING=80 \
@@ -456,6 +458,7 @@ jobs:
           -DCMAKE_C_COMPILER:STRING=$(which clang) \
           -DPELE_ENABLE_MPI:BOOL=OFF \
           -DPELE_ENABLE_HIP:BOOL=ON \
+          -DPELE_ENABLE_VOF:BOOL=ON \
           -DAMReX_AMD_ARCH:STRING=gfx90a \
           -DCMAKE_HIP_ARCHITECTURES:STRING=gfx90a \
           -DAMDGPU_TARGETS:STRING=gfx90a \
@@ -525,6 +528,7 @@ jobs:
             -DPELE_ENABLE_MPI:BOOL=OFF \
             -DPELE_ENABLE_FCOMPARE_FOR_TESTS:BOOL=OFF \
             -DPELE_ENABLE_SYCL:BOOL=ON \
+            -DPELE_ENABLE_VOF:BOOL=ON \
             -DCMAKE_CXX_COMPILER_LAUNCHER:STRING=ccache \
             ${{github.workspace}}
       - name: Build

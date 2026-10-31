@@ -46,4 +46,13 @@ volume is conserved to round-off in all cases.
   `input.2d-translate peleLM.vof.rho_liquid=1000`) stays exactly uniform, and
   its solution is bitwise identical to that of the equal-density case.
 
+## Regression tests
+
+The `vof-*.inp` inputs are short versions of these cases registered with
+CTest when configuring with `-DPELE_ENABLE_VOF=ON` (`ctest -L vof`).
+`Tests/test_vof.py` checks physical invariants rather than gold files: no
+clipping, liquid volume conserved to 1e-13 per step, and for the tilted
+pools, a velocity below 1e-8 m/s (without the free contact line it reaches
+6e-3 m/s within 20 steps).
+
 Surface tension is the next step.
