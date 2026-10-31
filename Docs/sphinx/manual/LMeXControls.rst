@@ -393,11 +393,18 @@ Two-phase interface capturing is compiled in with ``USE_VOF = TRUE`` (GNUmake)
 or, for the CMake test suite, ``PELE_ENABLE_VOF = ON``, which builds the cases
 whose ``CMakeLists.txt`` sets ``PELELM_USE_VOF ON``. The liquid volume fraction
 ``vof`` is advected with the MAC velocities by the geometric, directionally split
-PLIC scheme of Weymouth & Yue (2010): Mixed Youngs-Centered normals and the
-analytic plane/volume relations of Scardovelli & Zaleski (2000), ported from
-Kynema-SGF (formerly AMR-Wind). The liquid volume is conserved to round-off for
-a discretely divergence-free face velocity, including across coarse/fine
-boundaries. The current implementation requires ``peleLM.incompressible = 1``,
+PLIC scheme of Weymouth & Yue (2010), with the analytic plane/volume relations
+of Scardovelli & Zaleski (2000) ported from Kynema-SGF (formerly AMR-Wind). The
+interface normals come from height functions over 7-cell columns, which are
+exact for any planar interface, with Mixed Youngs-Centered normals where the
+heights are undefined (thin or strongly curved structures); the volume fraction
+carries 4 ghost cells. The liquid volume is conserved to round-off for a
+discretely divergence-free face velocity, including across coarse/fine
+boundaries, and the volume fraction stays in [0, 1] without clipping for a
+per-sweep face Courant number of at most 1/2. The time step uses the
+cell-centered velocity (``peleLM.vof.cfl``); when the face velocity used by the
+sweeps exceeds that limit, the advection is sub-stepped. Any volume removed by
+clipping is reported as a warning. The current implementation requires ``peleLM.incompressible = 1``,
 uniform cubic cells (no ``geometry.mesh_mapping``) and no embedded boundaries.
 
 The density and viscosity are fields derived from the volume fraction,
@@ -439,7 +446,7 @@ Godunov face state elsewhere.
     peleLM.vof.refine_max_level = 2     # [OPT, DEF=amr.max_level] Interface cells are tagged on levels below this
     peleLM.vof.refine_band      = 2     # [OPT, DEF=2] Half-width (cells) of the tagged interface band
     peleLM.vof.advect_only      = 0     # [OPT, DEF=0] Advect with the prescribed velocity curl(A), skip the momentum update
-    peleLM.vof.v                = 1     # [OPT, DEF=0] Verbose: 1 prints the liquid volume, 2 also clipped volume
+    peleLM.vof.v                = 1     # [OPT, DEF=0] Verbose: 1 prints the liquid volume
     peleLM.vof.rho_liquid       = 1000. # [OPT, DEF=peleLM.rho] Liquid (F = 1) density
     peleLM.vof.rho_gas          = 1.2   # [OPT, DEF=peleLM.rho] Gas (F = 0) density
     peleLM.vof.mu_liquid        = 1e-3  # [OPT, DEF=peleLM.mu] Liquid dynamic viscosity
@@ -452,8 +459,13 @@ geomdata, prob_parm)`` to set the initial volume fraction;
 implicit function by sub-cell sampling, and ``pelelmex::vof::plane_fraction``
 exactly for a half space. ``bcnormal_vof(x, vof_ext, idir, sgn,
 time, geomdata, prob_parm)`` is optional and sets the volume fraction on
-``Inflow`` faces (pure gas by default). Walls and outflows extrapolate the volume
-fraction (90 degree contact angle). In ``advect_only`` mode the face velocities are
+``Inflow`` faces (pure gas by default). Outflows extrapolate the volume
+fraction. At walls the contact line is free: wall ghost cells take the PLIC plane
+of the nearest interface cell, extended through the wall, so the interface meets
+the wall at whatever angle it has, as appropriate without surface tension
+(extrapolation would impose 90 degrees and unbalance gravity at a tilted
+interface). Interfaces within about 20 degrees of the wall are extended from
+ghost planes iteratively. In ``advect_only`` mode the face velocities are
 the discrete curl of ``vof_vector_potential(x, time, A, prob_parm)`` (``A[2]`` is
 the stream function in 2D), used by the verification cases in
 ``Exec/RegTests/VOFAdvection``. Two-phase cases with gravity (resting pool,

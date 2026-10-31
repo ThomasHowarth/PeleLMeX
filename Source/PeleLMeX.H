@@ -946,6 +946,7 @@ public:
   void advanceVOF(std::unique_ptr<AdvanceAdvData>& advData);
   void VOFSplitSweep(
     const int dir,
+    const amrex::Real a_dt,
     const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
       a_umac,
     const amrex::Vector<amrex::MultiFab>& a_cmask,
@@ -975,6 +976,8 @@ public:
     amrex::MultiFab& a_vof,
     const int nGhost);
   void averageDownVOF(const PeleLM::TimeStamp a_time);
+  // Free-contact-line wall ghost cells, after a fill
+  void VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost);
   amrex::Vector<std::unique_ptr<amrex::MultiFab>>
   getVOFVect(const PeleLM::TimeStamp a_time);
   // Mixture density / viscosity from the volume fraction at a_time, in
@@ -2559,6 +2562,11 @@ public:
   static constexpr int m_nGrowState = 4;
 #else
   static constexpr int m_nGrowState = 3;
+#endif
+#ifdef PELE_USE_VOF
+  // Volume fraction ghost cells: 7-cell height-function columns evaluated
+  // up to the first ghost layer (pelelmex::vof::nghost)
+  static constexpr int m_nGrowVOF = 4;
 #endif
   static constexpr int m_nGrowAdv = 1;
   static constexpr int m_nGrowdivu = 1;

@@ -63,7 +63,7 @@ PeleLM::getLevelDataPtr(
     fillpatch_aux(lev, time, m_leveldata_floating->auxiliaries, m_nGrowState);
   }
 #ifdef PELE_USE_VOF
-  fillpatch_vof(lev, time, m_leveldata_floating->vof, m_nGrowState);
+  fillpatch_vof(lev, time, m_leveldata_floating->vof, m_nGrowVOF);
 #endif
   return m_leveldata_floating.get();
 }
