@@ -48,3 +48,12 @@ single vortex with `amr.fixed_dt = 0.5/n`):
 The single vortex converges at close to second order; Zalesak's disk is
 limited to about first order by the unresolved slot corners, as expected
 for PLIC schemes.
+
+## Regression tests
+
+The `vof-*.inp` inputs are short versions of these cases registered with
+CTest when configuring with `-DPELE_ENABLE_VOF=ON` (`ctest -L vof`).
+`Tests/test_vof.py` checks physical invariants rather than gold files: no
+clipping, liquid volume conserved to 1e-13 per step, and for
+`vof-translate-2d`, a velocity that stays exactly uniform while the
+advection is sub-stepped.
