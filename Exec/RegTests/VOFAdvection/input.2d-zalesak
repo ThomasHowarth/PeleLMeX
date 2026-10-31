@@ -1,0 +1,49 @@
+# Zalesak's slotted disk in solid-body rotation, one revolution, with AMR.
+# The disk returns to its initial position at t = prob.period.
+
+#----------------------DOMAIN DEFINITION------------------------
+geometry.is_periodic = 1 1
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0 0.0
+geometry.prob_hi     = 1.0 1.0
+
+peleLM.lo_bc = Interior Interior
+peleLM.hi_bc = Interior Interior
+
+#-------------------------AMR CONTROL----------------------------
+amr.n_cell          = 64 64
+amr.v               = 1
+amr.max_level       = 2
+amr.ref_ratio       = 2 2
+amr.regrid_int      = 4
+amr.n_error_buf     = 2 2
+amr.grid_eff        = 0.7
+amr.blocking_factor = 8
+amr.max_grid_size   = 64
+
+#--------------------------- Problem ----------------------------
+prob.type        = zalesak
+prob.center      = 0.5 0.75
+prob.radius      = 0.15
+prob.slot_width  = 0.05
+prob.slot_length = 0.25
+prob.period      = 1.0
+
+#-------------------------PeleLM CONTROL-------------------------
+peleLM.v              = 1
+peleLM.incompressible = 1
+peleLM.rho            = 1.0
+peleLM.mu             = 1.0e-3
+peleLM.do_init_proj   = 0
+peleLM.num_init_iter  = 0
+
+peleLM.vof.advect_only = 1
+peleLM.vof.v           = 1
+
+amr.cfl       = 0.45
+amr.dt_shrink = 1.0
+amr.stop_time = 1.0
+amr.max_step  = 100000
+amr.plot_per  = 0.25
+amr.plot_file = plt_zalesak_
+amr.check_int = -1

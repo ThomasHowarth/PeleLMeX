@@ -35,6 +35,10 @@ PeleLM::computeDt(const int is_init, const TimeStamp a_time)
       amrex::Real dtspray = SprayEstDt();
       estdt = amrex::min<amrex::Real>(estdt, dtspray);
 #endif
+#ifdef PELE_USE_VOF
+      amrex::Real dtvof = estVOFDt(a_time);
+      estdt = amrex::min<amrex::Real>(estdt, dtvof);
+#endif
       if (m_verbose != 0) {
         amrex::Print() << " Est. time step - Conv: " << dtconv
                        << ", divu: " << dtdivU
@@ -43,6 +47,9 @@ PeleLM::computeDt(const int is_init, const TimeStamp a_time)
 #endif
 #ifdef PELE_USE_SPRAY
                        << ", sprays: " << dtspray
+#endif
+#ifdef PELE_USE_VOF
+                       << ", vof: " << dtvof
 #endif
                        << "\n";
       }

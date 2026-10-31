@@ -1,0 +1,49 @@
+# Sphere in LeVeque's 3D deformation field, time-reversed: maximum
+# deformation at t = period/2, back to a sphere at t = period.
+# Build with DIM = 3.
+
+#----------------------DOMAIN DEFINITION------------------------
+geometry.is_periodic = 1 1 1
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0 0.0 0.0
+geometry.prob_hi     = 1.0 1.0 1.0
+
+peleLM.lo_bc = Interior Interior Interior
+peleLM.hi_bc = Interior Interior Interior
+
+#-------------------------AMR CONTROL----------------------------
+amr.n_cell          = 32 32 32
+amr.v               = 1
+amr.max_level       = 2
+amr.ref_ratio       = 2 2
+amr.regrid_int      = 4
+amr.n_error_buf     = 2 2
+amr.grid_eff        = 0.7
+amr.blocking_factor = 8
+amr.max_grid_size   = 32
+
+#--------------------------- Problem ----------------------------
+prob.type   = vortex
+prob.center = 0.35 0.35 0.35
+prob.radius = 0.15
+prob.period = 3.0
+
+#-------------------------PeleLM CONTROL-------------------------
+peleLM.v              = 1
+peleLM.incompressible = 1
+peleLM.rho            = 1.0
+peleLM.mu             = 1.0e-3
+peleLM.do_init_proj   = 0
+peleLM.num_init_iter  = 0
+
+peleLM.vof.advect_only = 1
+peleLM.vof.v           = 1
+
+# The velocity passes through zero at t = period/2: use a fixed time step,
+# Courant number 0.5 at the peak speed (2) on the finest level (dx = 1/128)
+amr.fixed_dt  = 0.001953125
+amr.stop_time = 3.0
+amr.max_step  = 100000
+amr.plot_per  = 0.75
+amr.plot_file = plt_deform_
+amr.check_int = -1

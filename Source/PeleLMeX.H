@@ -201,6 +201,9 @@ public:
                                  // others) (dim:m_nAux)
     amrex::MultiFab gp;          // pressure gradient (dim:AMREX_SPACEDIM)
     amrex::MultiFab divu;        // Velocity divergence constraint
+#ifdef PELE_USE_VOF
+    amrex::MultiFab vof; // Liquid volume fraction (dim:1)
+#endif
 
     // node-centered state multifabs
     amrex::MultiFab press; // nodal pressure (dim:1)
@@ -925,6 +928,56 @@ public:
   // State used for spray interpolation
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_spraysource;
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_spraystate;
+  //-----------------------------------------------------------------------------
+#endif
+#ifdef PELE_USE_VOF
+  //-----------------------------------------------------------------------------
+  // Volume of fluid
+  void VOFReadParameters();
+  void VOFCheckSetup();
+  void setVOFBoundaryConditions();
+  void initLevelVOF(const int lev);
+  void advanceVOF(std::unique_ptr<AdvanceAdvData>& advData);
+  void VOFSplitSweep(
+    const int dir,
+    const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
+      a_umac,
+    const amrex::Vector<amrex::MultiFab>& a_cmask);
+  amrex::Real estVOFDt(const PeleLM::TimeStamp a_time);
+  void VOFPrescribedVelocity(
+    std::unique_ptr<AdvanceAdvData>& advData,
+    const amrex::Real a_umac_time,
+    const amrex::Real a_cc_time);
+  void VOFTagInterface(const int lev, amrex::TagBoxArray& tags);
+  amrex::Real VOFLiquidVolume(const PeleLM::TimeStamp a_time);
+  void fillPatchVOF(const PeleLM::TimeStamp a_time);
+  void fillpatch_vof(
+    const int lev,
+    const amrex::Real a_time,
+    amrex::MultiFab& a_vof,
+    const int nGhost);
+  void fillcoarsepatch_vof(
+    const int lev,
+    const amrex::Real a_time,
+    amrex::MultiFab& a_vof,
+    const int nGhost);
+  void averageDownVOF(const PeleLM::TimeStamp a_time);
+  amrex::Vector<std::unique_ptr<amrex::MultiFab>>
+  getVOFVect(const PeleLM::TimeStamp a_time);
+
+  amrex::BCRec m_bcrec_vof;
+  // Below the 0.5 bound to leave room for face velocities exceeding the
+  // cell-centered ones used in the estimate
+  amrex::Real m_vof_cfl = 0.45;
+  // Interface cells are tagged up to (excluding) this level; -1: max_level
+  int m_vof_refine_maxlev = -1;
+  // Interface band half-width (in cells) tagged for refinement
+  int m_vof_refine_band = 2;
+  int m_vof_verbose = 0;
+  // Verification mode: advect the VOF with the prescribed velocity
+  // u = curl(A) from ProblemSpecificFunctions::vof_vector_potential and
+  // skip the momentum update
+  int m_vof_advect_only = 0;
   //-----------------------------------------------------------------------------
 #endif
 #ifdef PELE_USE_SOOT

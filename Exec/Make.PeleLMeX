@@ -45,6 +45,10 @@ endif
 # PeleLM sources
 #---------------
 LMdirs := Source Source/Mesh
+ifeq ($(USE_VOF),TRUE)
+   DEFINES += -DPELE_USE_VOF
+   LMdirs += Source/VOF
+endif
 ifeq ($(USE_PLASMA),TRUE)
    DEFINES += -DPELE_USE_PLASMA
    LMdirs += Source/Plasma Source/Plasma/GMRES Source/Plasma/LinOps
