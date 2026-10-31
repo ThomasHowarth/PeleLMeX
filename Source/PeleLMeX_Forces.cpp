@@ -62,23 +62,39 @@ PeleLM::getVelForces(
   auto const& ext_ma = m_extSource[lev]->const_arrays();
   auto const& force_ma = a_velForce->arrays();
 
+  // Density field: the state for low Mach, the VOF mixture density for
+  // incompressible two-phase flow
+  amrex::MultiFab rho_vof;
+#ifdef PELE_USE_VOF
+  if (is_incomp != 0) {
+    rho_vof.define(grids[lev], dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
+    fillVOFDensity(lev, time, rho_vof, 0);
+  }
+#endif
+  const bool use_rho_vof = rho_vof.ok();
+  const int rho_field = static_cast<int>(densityIsField());
+  auto const& rho_ma = use_rho_vof ? rho_vof.const_arrays() : state_ma;
+  const int rho_comp = use_rho_vof ? 0 : DENSITY;
+
   amrex::ParallelFor(
     *a_velForce,
-    [state_ma, ext_ma, force_ma, grav, gp0, ps_dir, is_incomp, rho_incomp,
-     pseudo_gravity,
+    [state_ma, ext_ma, force_ma, rho_ma, rho_comp, grav, gp0, ps_dir, is_incomp,
+     rho_field, rho_incomp, pseudo_gravity,
      dV_control] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) {
       amrex::Array4<amrex::Real const> vel(state_ma[box_no], VELX);
       amrex::Array4<amrex::Real const> extmom(ext_ma[box_no], VELX);
-      amrex::Array4<amrex::Real const> rho(state_ma[box_no], DENSITY);
+      amrex::Array4<amrex::Real const> rho(rho_ma[box_no], rho_comp);
       amrex::Array4<amrex::Real const> extrho(ext_ma[box_no], DENSITY);
       // overwrite if incompressible, just to point to something
       if (is_incomp != 0) {
-        rho = vel;
         extrho = extmom;
+        if (rho_field == 0) {
+          rho = vel;
+        }
       }
       // background gp, pseudo grav, ext sources
       makeVelForce(
-        i, j, k, is_incomp, rho_incomp, pseudo_gravity, ps_dir, grav, gp0,
+        i, j, k, 1 - rho_field, rho_incomp, pseudo_gravity, ps_dir, grav, gp0,
         dV_control, vel, rho, extmom, extrho, force_ma[box_no]);
     });
   amrex::Gpu::streamSynchronize();
@@ -149,14 +165,14 @@ PeleLM::getVelForces(
     }
   }
 
-  if (is_incomp != 0) {
+  if (rho_field == 0) {
     a_velForce->mult(1.0 / rho_incomp, 0, AMREX_SPACEDIM, 0);
   } else {
     amrex::ParallelFor(
       *a_velForce, amrex::IntVect(0), AMREX_SPACEDIM,
-      [force_ma, state_ma] AMREX_GPU_DEVICE(
+      [force_ma, rho_ma, rho_comp] AMREX_GPU_DEVICE(
         int box_no, int i, int j, int k, int n) noexcept {
-        amrex::Array4<amrex::Real const> rho(state_ma[box_no], DENSITY);
+        amrex::Array4<amrex::Real const> rho(rho_ma[box_no], rho_comp);
         force_ma[box_no](i, j, k, n) /= rho(i, j, k);
       });
     amrex::Gpu::streamSynchronize();

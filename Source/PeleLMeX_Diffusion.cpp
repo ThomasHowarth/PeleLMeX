@@ -2064,7 +2064,7 @@ PeleLM::diffuseVelocity()
 
   // CrankNicholson 0.5 coeff
   const amrex::Real dt_lcl = 0.5 * m_dt;
-  if (m_incompressible != 0) {
+  if (!densityIsField()) {
     getDiffusionTensorOp()->diffuse_velocity(
       GetVecOfPtrs(getVelocityVect(AmrNewTime)), {},
       GetVecOfConstPtrs(getViscosityVect(AmrNewTime)), bcRec[0], dt_lcl);

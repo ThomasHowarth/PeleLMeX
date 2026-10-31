@@ -579,6 +579,35 @@ interface_band(
   return (Fmax - Fmin) > 0.5_rt;
 }
 
+/**
+ * \brief Volume-weighted mixture density of a cell with liquid fraction F
+ */
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real
+mixture_density(
+  const amrex::Real F, const amrex::Real rho_l, const amrex::Real rho_g)
+{
+  const amrex::Real f = amrex::Clamp(F, 0.0_rt, 1.0_rt);
+  return f * rho_l + (1.0_rt - f) * rho_g;
+}
+
+/**
+ * \brief Mixture viscosity of a cell with liquid fraction F: arithmetic
+ *        or harmonic volume average of the phase viscosities
+ */
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real
+mixture_viscosity(
+  const amrex::Real F,
+  const amrex::Real mu_l,
+  const amrex::Real mu_g,
+  const int harmonic)
+{
+  const amrex::Real f = amrex::Clamp(F, 0.0_rt, 1.0_rt);
+  if (harmonic != 0) {
+    return mu_l * mu_g / (f * mu_g + (1.0_rt - f) * mu_l);
+  }
+  return f * mu_l + (1.0_rt - f) * mu_g;
+}
+
 } // namespace pelelmex::vof
 
 #endif

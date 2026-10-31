@@ -964,8 +964,30 @@ public:
   void averageDownVOF(const PeleLM::TimeStamp a_time);
   amrex::Vector<std::unique_ptr<amrex::MultiFab>>
   getVOFVect(const PeleLM::TimeStamp a_time);
+  // Mixture density / viscosity from the volume fraction at a_time, in
+  // nGhost ghost cells
+  void fillVOFDensity(
+    const int lev,
+    const amrex::Real a_time,
+    amrex::MultiFab& a_rho,
+    const int nGhost);
+  void fillVOFViscosity(
+    const int lev,
+    const amrex::Real a_time,
+    amrex::MultiFab& a_mu,
+    const int nGhost);
+  // Face-centered mixture density (arithmetic average of the cell values)
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
+  getVOFFaceDensity(const int lev, const amrex::Real a_time);
 
   amrex::BCRec m_bcrec_vof;
+  // Phase properties; default to peleLM.rho and peleLM.mu
+  amrex::Real m_vof_rho_liq = -1.0;
+  amrex::Real m_vof_rho_gas = -1.0;
+  amrex::Real m_vof_mu_liq = -1.0;
+  amrex::Real m_vof_mu_gas = -1.0;
+  // Cell viscosity: 0 arithmetic, 1 harmonic average of the phase values
+  int m_vof_mu_harmonic = 0;
   // Below the 0.5 bound to leave room for face velocities exceeding the
   // cell-centered ones used in the estimate
   amrex::Real m_vof_cfl = 0.45;
@@ -2624,6 +2646,17 @@ public:
     return m_mesh_map.get();
   }
   [[nodiscard]] bool hasMeshMapping() const noexcept { return m_mesh_mapping; }
+
+  //! True when the density varies in space: low Mach, or incompressible
+  //! two-phase flow with the density derived from the VOF field.
+  [[nodiscard]] bool densityIsField() const noexcept
+  {
+#ifdef PELE_USE_VOF
+    return true;
+#else
+    return m_incompressible == 0;
+#endif
+  }
 
   //! Cached device-callable physical-coordinate evaluator (Identity
   //! when no mesh mapping is active).

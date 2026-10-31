@@ -398,9 +398,20 @@ analytic plane/volume relations of Scardovelli & Zaleski (2000), ported from
 Kynema-SGF (formerly AMR-Wind). The liquid volume is conserved to round-off for
 a discretely divergence-free face velocity, including across coarse/fine
 boundaries. The current implementation requires ``peleLM.incompressible = 1``,
-uniform cubic cells (no ``geometry.mesh_mapping``) and no embedded boundaries;
-the volume fraction does not yet feed back on the density, viscosity or
-momentum.
+uniform cubic cells (no ``geometry.mesh_mapping``) and no embedded boundaries.
+
+The density and viscosity are fields derived from the volume fraction,
+:math:`\rho = F \rho_l + (1 - F) \rho_g` and either the arithmetic
+:math:`\mu = F \mu_l + (1 - F) \mu_g` or the harmonic average
+:math:`1/\mu = F/\mu_l + (1 - F)/\mu_g`. They replace the constant
+``peleLM.rho`` and ``peleLM.mu`` (which are the defaults for both phases) in the
+MAC and nodal projections, the gravity and pressure-gradient terms and the
+implicit viscous solve. The MAC projection uses the arithmetic face average of the
+cell densities at :math:`t^n`; the velocity update, viscous solve and nodal
+projection use the density at :math:`t^{n+1/2}`, interpolated in time between
+the volume fractions before and after the VOF advection. Momentum is still
+advected in convective (non-conservative) form, which limits robustness at large
+density ratios.
 
 ::
 
@@ -410,6 +421,11 @@ momentum.
     peleLM.vof.refine_band      = 2     # [OPT, DEF=2] Half-width (cells) of the tagged interface band
     peleLM.vof.advect_only      = 0     # [OPT, DEF=0] Advect with the prescribed velocity curl(A), skip the momentum update
     peleLM.vof.v                = 1     # [OPT, DEF=0] Verbose: 1 prints the liquid volume, 2 also clipped volume
+    peleLM.vof.rho_liquid       = 1000. # [OPT, DEF=peleLM.rho] Liquid (F = 1) density
+    peleLM.vof.rho_gas          = 1.2   # [OPT, DEF=peleLM.rho] Gas (F = 0) density
+    peleLM.vof.mu_liquid        = 1e-3  # [OPT, DEF=peleLM.mu] Liquid dynamic viscosity
+    peleLM.vof.mu_gas           = 1.8e-5 # [OPT, DEF=peleLM.mu] Gas dynamic viscosity
+    peleLM.vof.viscosity_average = arithmetic # [OPT, DEF=arithmetic] Cell viscosity: arithmetic or harmonic
 
 The problem's ``ProblemSpecificFunctions`` must provide ``initvof(i, j, k, vof,
 geomdata, prob_parm)`` to set the initial volume fraction;
@@ -420,7 +436,8 @@ time, geomdata, prob_parm)`` is optional and sets the volume fraction on
 fraction (90 degree contact angle). In ``advect_only`` mode the face velocities are
 the discrete curl of ``vof_vector_potential(x, time, A, prob_parm)`` (``A[2]`` is
 the stream function in 2D), used by the verification cases in
-``Exec/RegTests/VOFAdvection``.
+``Exec/RegTests/VOFAdvection``. Two-phase cases with gravity (resting pool,
+Rayleigh-Taylor instability, dam break) are in ``Exec/RegTests/VOFTwoPhase``.
 
 Turbulent Forcing and Velocity Plotfile
 ---------------------------------------
