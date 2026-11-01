@@ -262,8 +262,8 @@ PeleLMeX algorithm
     peleLM.chi_correction_type = DivuFirstIter  # [OPT, DEF=DivuEveryIter] When to compute divu for MAC proj divu constraint [DivuEveryIter, DivuFirstIter, NoDivu]
     peleLM.print_chi_convergence = 1            # [OPT, DEF=(peleLM.v > 1)] Boolean flag on whether to print size of chi correction on each SDC iter
     peleLM.incompressible = 0              # [OPT, DEF=0] Enable to run fully incompressible, scalar advance is bypassed
-    peleLM.rho = 1.17                      # [OPT, DEF=-1] If incompressible, density value [MKS]
-    peleLM.mu = 1.8e-5                     # [OPT, DEF=-1] If incompressible, dynamic visc. value [MKS]
+    peleLM.rho = 1.17                      # [OPT, DEF=-1] If incompressible, density value [MKS] (not with VOF)
+    peleLM.mu = 1.8e-5                     # [OPT, DEF=-1] If incompressible, dynamic visc. value [MKS] (not with VOF)
     peleLM.gravity = 0.0 0.0 -9.81         # [OPT, DEF=Vec{0.0}] Gravity vector [MKS]
     peleLM.gradP0 = 0.0 0.0 10.0           # [OPT, DEF=Vec{0.0}] Average background pressure gradient [Pa/m]
     peleLM.do_periodic_channel = 0         # [OPT, DEF= 0] Add an automatic pressure gradient to maintain initial condition mass flow rate in periodic channel
@@ -410,11 +410,15 @@ uniform cubic cells (no ``geometry.mesh_mapping``) and no embedded boundaries.
 The density and viscosity are fields derived from the volume fraction,
 :math:`\rho = F \rho_l + (1 - F) \rho_g` and either the arithmetic
 :math:`\mu = F \mu_l + (1 - F) \mu_g` or the harmonic average
-:math:`1/\mu = F/\mu_l + (1 - F)/\mu_g`. They replace the constant
-``peleLM.rho`` and ``peleLM.mu`` (which are the defaults for both phases) in the
-projections, the gravity and pressure-gradient terms and the implicit viscous
-solve; the viscous solve uses the density at :math:`t^{n+1/2}`, interpolated in
-time between the volume fractions before and after the VOF advection.
+:math:`1/\mu = F/\mu_l + (1 - F)/\mu_g`, from the required phase properties
+``peleLM.vof.rho_liquid``, ``rho_gas``, ``mu_liquid`` and ``mu_gas``; the
+single-phase ``peleLM.rho`` and ``peleLM.mu`` are rejected. The mixture
+properties are used in the projections, the gravity and pressure-gradient terms
+and the implicit viscous solve; the viscous solve uses the density at
+:math:`t^{n+1/2}`, interpolated in time between the volume fractions before and
+after the VOF advection. The plotfile holds ``vof`` and the mixture ``density``,
+and the derived ``kinetic_energy``, ``enstrophy`` and ``viscosity`` (and the
+corresponding temporals) use the mixture density and viscosity.
 
 Gravity and the pressure gradient are balanced on the faces (Francois et al.,
 2006), replacing the nodal projection: the MAC velocity of the provisional
@@ -453,10 +457,10 @@ Godunov face state elsewhere.
     peleLM.vof.refine_band      = 2     # [OPT, DEF=2] Half-width (cells) of the tagged interface band
     peleLM.vof.advect_only      = 0     # [OPT, DEF=0] Advect with the prescribed velocity curl(A), skip the momentum update
     peleLM.vof.v                = 1     # [OPT, DEF=0] Verbose: 1 prints the liquid volume
-    peleLM.vof.rho_liquid       = 1000. # [OPT, DEF=peleLM.rho] Liquid (F = 1) density
-    peleLM.vof.rho_gas          = 1.2   # [OPT, DEF=peleLM.rho] Gas (F = 0) density
-    peleLM.vof.mu_liquid        = 1e-3  # [OPT, DEF=peleLM.mu] Liquid dynamic viscosity
-    peleLM.vof.mu_gas           = 1.8e-5 # [OPT, DEF=peleLM.mu] Gas dynamic viscosity
+    peleLM.vof.rho_liquid       = 1000. # [REQ] Liquid (F = 1) density
+    peleLM.vof.rho_gas          = 1.2   # [REQ] Gas (F = 0) density
+    peleLM.vof.mu_liquid        = 1e-3  # [REQ] Liquid dynamic viscosity
+    peleLM.vof.mu_gas           = 1.8e-5 # [REQ] Gas dynamic viscosity
     peleLM.vof.viscosity_average = arithmetic # [OPT, DEF=arithmetic] Cell viscosity: arithmetic or harmonic
 
 The problem's ``ProblemSpecificFunctions`` must provide ``initvof(i, j, k, vof,

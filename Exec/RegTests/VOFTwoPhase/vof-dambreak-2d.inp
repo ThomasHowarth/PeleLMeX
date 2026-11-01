@@ -26,13 +26,11 @@ prob.height = 0.292
 #----------------------- PeleLMeX ------------------------------
 peleLM.v              = 1
 peleLM.incompressible = 1
-peleLM.rho            = 1.0
-peleLM.mu             = 1.0e-3
-peleLM.gravity        = 0.0 -9.81
 peleLM.vof.rho_liquid = 1000.0
 peleLM.vof.rho_gas    = 1.2
 peleLM.vof.mu_liquid  = 1.0e-3
 peleLM.vof.mu_gas     = 1.8e-5
+peleLM.gravity        = 0.0 -9.81
 peleLM.vof.v          = 1
 nodal_proj.rtol = 1.0e-10
 mac_proj.rtol   = 1.0e-10
