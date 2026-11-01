@@ -29,8 +29,10 @@ prob.period      = 1.0
 #----------------------- PeleLMeX ------------------------------
 peleLM.v              = 1
 peleLM.incompressible = 1
-peleLM.rho            = 1.0
-peleLM.mu             = 1.0e-3
+peleLM.vof.rho_liquid = 1.0
+peleLM.vof.rho_gas    = 1.0
+peleLM.vof.mu_liquid  = 1.0e-3
+peleLM.vof.mu_gas     = 1.0e-3
 peleLM.do_init_proj   = 0
 peleLM.num_init_iter  = 0
 peleLM.vof.advect_only = 1

@@ -998,6 +998,10 @@ public:
     const amrex::Real a_time,
     amrex::MultiFab& a_mu,
     const int nGhost);
+  // Velocity state plus the mixture density in the DENSITY component, for
+  // the derived quantities
+  std::unique_ptr<amrex::MultiFab> VOFDeriveState(
+    const int lev, const amrex::Real a_time, const amrex::MultiFab& a_state);
   // Face-centered mixture density (arithmetic average of the cell values)
   amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
   getVOFFaceDensity(const int lev, const amrex::Real a_time);
@@ -1015,7 +1019,7 @@ public:
     const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_beta);
 
   amrex::BCRec m_bcrec_vof;
-  // Phase properties; default to peleLM.rho and peleLM.mu
+  // Phase properties (required; peleLM.rho / peleLM.mu are rejected)
   amrex::Real m_vof_rho_liq = -1.0;
   amrex::Real m_vof_rho_gas = -1.0;
   amrex::Real m_vof_mu_liq = -1.0;

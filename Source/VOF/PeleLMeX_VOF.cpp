@@ -28,12 +28,11 @@ PeleLM::VOFReadParameters()
   pp.query("v", m_vof_verbose);
   pp.query("advect_only", m_vof_advect_only);
 
-  m_vof_rho_liq = m_vof_rho_gas = m_rho;
-  m_vof_mu_liq = m_vof_mu_gas = m_mu;
-  pp.query("rho_liquid", m_vof_rho_liq);
-  pp.query("rho_gas", m_vof_rho_gas);
-  pp.query("mu_liquid", m_vof_mu_liq);
-  pp.query("mu_gas", m_vof_mu_gas);
+  // Required: peleLM.rho / peleLM.mu are rejected with the VOF solver
+  pp.get("rho_liquid", m_vof_rho_liq);
+  pp.get("rho_gas", m_vof_rho_gas);
+  pp.get("mu_liquid", m_vof_mu_liq);
+  pp.get("mu_gas", m_vof_mu_gas);
   std::string mu_avg = "arithmetic";
   pp.query("viscosity_average", mu_avg);
   if (mu_avg == "arithmetic") {
@@ -179,6 +178,26 @@ PeleLM::fillVOFViscosity(
         mu_ma[box_no](i, j, k), mu_l, mu_g, harmonic);
     });
   amrex::Gpu::streamSynchronize();
+}
+
+// State for the derived quantities: the incompressible state holds only the
+// velocity, so the mixture density is appended in the DENSITY component, in
+// all the ghost cells of a_state
+std::unique_ptr<amrex::MultiFab>
+PeleLM::VOFDeriveState(
+  const int lev, const amrex::Real a_time, const amrex::MultiFab& a_state)
+{
+  static_assert(DENSITY == AMREX_SPACEDIM, "DENSITY follows the velocity");
+  const int nGhost = a_state.nGrow();
+  AMREX_ALWAYS_ASSERT(nGhost <= m_nGrowVOF);
+  auto mf = std::make_unique<amrex::MultiFab>(
+    grids[lev], dmap[lev], DENSITY + 1, nGhost, amrex::MFInfo(), Factory(lev));
+  amrex::MultiFab::Copy(*mf, a_state, VELX, VELX, AMREX_SPACEDIM, nGhost);
+  amrex::MultiFab rho(
+    grids[lev], dmap[lev], 1, nGhost, amrex::MFInfo(), Factory(lev));
+  fillVOFDensity(lev, a_time, rho, nGhost);
+  amrex::MultiFab::Copy(*mf, rho, 0, DENSITY, 1, nGhost);
+  return mf;
 }
 
 amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>

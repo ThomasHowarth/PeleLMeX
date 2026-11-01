@@ -32,12 +32,12 @@ prob.wavelength = 1.0
 #-------------------------PeleLM CONTROL-------------------------
 peleLM.v              = 1
 peleLM.incompressible = 1
-peleLM.rho            = 1.0
-peleLM.mu             = 3.3333333333e-4
-peleLM.gravity        = 0.0 -1.0
-
 peleLM.vof.rho_liquid = 3.0
 peleLM.vof.rho_gas    = 1.0
+peleLM.vof.mu_liquid  = 3.3333333333e-4
+peleLM.vof.mu_gas     = 3.3333333333e-4
+peleLM.gravity        = 0.0 -1.0
+
 peleLM.vof.v          = 1
 
 amr.cfl       = 0.45
