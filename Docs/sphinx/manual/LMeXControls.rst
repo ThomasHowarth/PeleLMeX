@@ -432,11 +432,17 @@ jump of a sharp, high density ratio interface.
 
 Momentum is advected in conservative form with the mass fluxes of the VOF sweeps,
 :math:`m_f = \rho_g u_f \Delta t + (\rho_l - \rho_g) \Phi_l`, with
-:math:`\Phi_l` the swept liquid volume, as in Kynema-SGF:
-:math:`\rho^{n+1} u^{**} = \rho^n u^n - \nabla \cdot (m_f u_f)`. Its density is
-exactly that of the advected volume fraction, so momentum is carried with the
-liquid and a uniform flow stays uniform across the interface. Within one cell of
-the interface the face velocity :math:`u_f` is the upwind cell velocity, the
+:math:`\Phi_l` the swept liquid volume (Rudman, 1998; Arrufat et al., 2021): the
+split sweeps are replayed on the density and momentum,
+:math:`\rho' = \rho - \delta_d m_f + \rho_c \delta_d a` and
+:math:`(\rho u)' = \rho u - \delta_d (m_f u_f) + \rho_c u_c \delta_d a`, with
+:math:`a = u_f \Delta t / \Delta x`, :math:`\rho_c` the phase density of
+:math:`c = H(F - 1/2)` and :math:`u_c` the velocity, frozen over each
+(sub-)step. After each sweep the density is exactly that of the swept volume
+fraction, so momentum is carried with the liquid and a uniform flow stays
+uniform across the interface. Within one cell of the interface the face velocity
+:math:`u_f` is the upwind intermediate cell velocity, so that liquid crossing a
+gas cell within a step leaves it with the velocity it entered with; it is the
 Godunov face state elsewhere.
 
 ::

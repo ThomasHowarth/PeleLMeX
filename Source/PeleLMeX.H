@@ -309,8 +309,14 @@ public:
       uDrift; // ions drift face velocity
 #endif
 #ifdef PELE_USE_VOF
-    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>
-      vof_mflux; // VOF face mass crossing over the step, per unit area
+    // VOF split sweeps, replayed by the momentum advection: face mass
+    // crossing in each sweep per unit area [sweep][lev] (on the faces normal
+    // to vof_sweep_dir[sweep]), and the frozen c = H(F - 1/2) of each
+    // sub-step [substep][lev]
+    amrex::Vector<amrex::Vector<amrex::MultiFab>> vof_mflux;
+    amrex::Vector<int> vof_sweep_dir;
+    amrex::Vector<amrex::Vector<amrex::MultiFab>> vof_cmask;
+    amrex::Real vof_dt_sub = 0.0;
 #endif
   };
   //-----------------------------------------------------------------------------
@@ -950,9 +956,9 @@ public:
     const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
       a_umac,
     const amrex::Vector<amrex::MultiFab>& a_cmask,
-    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_mflux);
-  // Conservative momentum advection term from the VOF face mass fluxes and
-  // the face velocity states
+    amrex::Vector<amrex::MultiFab>& a_mflux);
+  // Conservative momentum advection term: the VOF split sweeps replayed on
+  // the momentum with the sweep face mass fluxes and the face velocity states
   void VOFMomentumAdvTerm(
     const std::unique_ptr<AdvanceAdvData>& advData,
     const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>&
