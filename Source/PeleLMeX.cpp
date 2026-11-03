@@ -295,7 +295,7 @@ PeleLM::averageDownField(
   for (int lev = finest_level; lev > 0; --lev) {
     auto* ldataFine_p = getLevelDataPtr(lev, a_time);
     auto* ldataCrse_p = getLevelDataPtr(lev - 1, a_time);
-    pelelm_average_down(
+    average_down(
       ldataFine_p->*a_field, ldataCrse_p->*a_field, scomp, ncomp,
       refRatio(lev - 1));
   }
@@ -391,7 +391,7 @@ PeleLM::averageDownVelocity(const TimeStamp a_time)
         amrex::Gpu::streamSynchronize();
       }
 
-      pelelm_average_down(uxi_fine, uxi_crse, 0, nc, refRatio(lev - 1));
+      average_down(uxi_fine, uxi_crse, 0, nc, refRatio(lev - 1));
 
       // Convert coarse u_xi back to physical-space v.
       {
@@ -410,7 +410,7 @@ PeleLM::averageDownVelocity(const TimeStamp a_time)
         amrex::Gpu::streamSynchronize();
       }
     } else {
-      pelelm_average_down(
+      average_down(
         ldataFine_p->state, ldataCrse_p->state, VELX, AMREX_SPACEDIM,
         refRatio(lev - 1));
     }
@@ -466,7 +466,7 @@ PeleLM::averageDownConservedDensities(const TimeStamp a_time)
       amrex::Gpu::streamSynchronize();
     }
 
-    pelelm_average_down(dxi_fine, dxi_crse, 0, nc, refRatio(lev - 1));
+    average_down(dxi_fine, dxi_crse, 0, nc, refRatio(lev - 1));
 
     // Convert coarse d_xi back to physical-space density.
     {
@@ -490,7 +490,7 @@ PeleLM::averageDownReaction()
   for (int lev = finest_level; lev > 0; --lev) {
     auto* ldataRFine_p = getLevelDataReactPtr(lev);
     auto* ldataRCrse_p = getLevelDataReactPtr(lev - 1);
-    pelelm_average_down(
+    average_down(
       ldataRFine_p->I_R, ldataRCrse_p->I_R, 0, nCompIR(), refRatio(lev - 1));
   }
 }

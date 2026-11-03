@@ -139,10 +139,10 @@ PeleLM::computeVelocityAdvTerm(const std::unique_ptr<AdvanceAdvData>& advData)
   //----------------------------------------------------------------
   // Average down fluxes to ensure C/F consistency
   for (int lev = finest_level; lev > 0; --lev) {
-    pelelm_average_down_faces(
+    average_down_faces(
       GetArrOfConstPtrs(fluxes[lev]), GetArrOfPtrs(fluxes[lev - 1]),
       refRatio(lev - 1), geom[lev - 1]);
-    pelelm_average_down_faces(
+    average_down_faces(
       GetArrOfConstPtrs(faces[lev]), GetArrOfPtrs(faces[lev - 1]),
       refRatio(lev - 1), geom[lev - 1]);
   }
@@ -786,11 +786,11 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
   //----------------------------------------------------------------
   // Average down fluxes to ensure C/F consistency
   for (int lev = finest_level; lev > 0; --lev) {
-    pelelm_average_down_faces(
+    average_down_faces(
       GetArrOfConstPtrs(fluxes[lev]), GetArrOfPtrs(fluxes[lev - 1]),
       refRatio(lev - 1), geom[lev - 1]);
     if (m_nAux > 0) {
-      pelelm_average_down_faces(
+      average_down_faces(
         GetArrOfConstPtrs(fluxes_aux[lev]), GetArrOfPtrs(fluxes_aux[lev - 1]),
         refRatio(lev - 1), geom[lev - 1]);
     }
@@ -1096,10 +1096,10 @@ PeleLM::computePassiveAdvTerms(
   //----------------------------------------------------------------
   // Average down fluxes and edge state to ensure C/F consistency
   for (int lev = finest_level; lev > 0; --lev) {
-    pelelm_average_down_faces(
+    average_down_faces(
       GetArrOfConstPtrs(fluxes[lev]), GetArrOfPtrs(fluxes[lev - 1]),
       refRatio(lev - 1), geom[lev - 1]);
-    pelelm_average_down_faces(
+    average_down_faces(
       GetArrOfConstPtrs(edgeState[lev]), GetArrOfPtrs(edgeState[lev - 1]),
       refRatio(lev - 1), geom[lev - 1]);
   }

@@ -252,7 +252,7 @@ PeleLM::updateNLState(const amrex::Vector<amrex::MultiFab*>& a_update)
   // AverageDown the newton direction
   /*
   for (int lev = finest_level; lev > 0; --lev) {
-     pelelm_average_down(*a_update[lev],
+     average_down(*a_update[lev],
                      *a_update[lev-1],
                      0,2,refRatio(lev-1));
   }
@@ -266,7 +266,7 @@ PeleLM::updateNLState(const amrex::Vector<amrex::MultiFab*>& a_update)
   for (int lev = finest_level; lev > 0; --lev) {
     auto ldataNLsFine_p = getLevelDataNLSolvePtr(lev);     // NL data
     auto ldataNLsCrse_p = getLevelDataNLSolvePtr(lev - 1); // NL data
-    pelelm_average_down(
+    average_down(
       ldataNLsFine_p->nlState, ldataNLsCrse_p->nlState, 0, 2,
       refRatio(lev - 1));
   }
@@ -523,8 +523,7 @@ PeleLM::nonLinearResidual(
   //   /*
   // AverageDown the NLresiduals
   for (int lev = finest_level; lev > 0; --lev) {
-    pelelm_average_down(
-      *a_nlresid[lev], *a_nlresid[lev - 1], 0, 2, refRatio(lev - 1));
+    average_down(*a_nlresid[lev], *a_nlresid[lev - 1], 0, 2, refRatio(lev - 1));
   }
   //   */
 
@@ -611,7 +610,7 @@ PeleLM::getAdvectionTerm(
   for (int lev = finest_level; lev > 0; --lev) {
      auto ldataNLFine_p = getLevelDataNLSolvePtr(lev);
      auto ldataNLCrse_p = getLevelDataNLSolvePtr(lev-1);
-     pelelm_average_down_faces(GetArrOfConstPtrs(ldataNLFine_p->uEffnE),
+     average_down_faces(GetArrOfConstPtrs(ldataNLFine_p->uEffnE),
                            GetArrOfPtrs(ldataNLCrse_p->uEffnE),
                            refRatio(lev-1),nGrow);
   }
@@ -631,7 +630,7 @@ PeleLM::getAdvectionTerm(
 
   // Average down the fluxes
   for (int lev = finest_level; lev > 0; --lev) {
-    pelelm_average_down_faces(
+    average_down_faces(
       GetArrOfConstPtrs(fluxes[lev]), GetArrOfPtrs(fluxes[lev - 1]),
       refRatio(lev - 1), geom[lev - 1]);
   }

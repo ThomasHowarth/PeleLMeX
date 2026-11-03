@@ -1237,7 +1237,7 @@ DiffusionOp::avgDownFluxes(
       flux_crse[idim] = new amrex::MultiFab(
         *a_fluxes[lev - 1][idim], amrex::make_alias, flux_comp, ncomp);
     }
-    pelelm_average_down_faces(
+    PeleLM::average_down_faces(
       GetArrOfConstPtrs(flux_fine), flux_crse, m_pelelm->refRatio(lev - 1),
       flux_crse[0]->nGrow());
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
