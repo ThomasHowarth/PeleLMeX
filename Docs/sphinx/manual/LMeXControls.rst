@@ -429,10 +429,51 @@ PLIC plane. :math:`\rho_f g` is then an exact discrete gradient for a planar
 interface, so a fluid at rest stays at rest at any interface orientation. The
 cell-centered velocity is updated with the average of the face accelerations,
 and the stored pressure gradient (``gradpx``, ... in the plotfile) is the kinematic
-:math:`\nabla p / \rho`. The predictor MAC projection uses the same face
+:math:`(\nabla p - f_\sigma) / \rho`, with :math:`f_\sigma` the surface
+tension below. The predictor MAC projection uses the same face
 density. Both face projections are solved by GMRES preconditioned by MLMG
 (``mac_proj.rtol`` / ``atol``), since plain MLMG stalls on the face-coefficient
-jump of a sharp, high density ratio interface.
+jump of a sharp, high density ratio interface. The pressure of the final
+projection is written to the plotfile as ``vof_pressure`` (cell-centered,
+defined up to a constant in closed domains).
+
+Surface tension (``peleLM.vof.sigma`` > 0) is a continuum surface force in the
+balanced-force form of Francois et al. (2006), added to the faces with gravity:
+:math:`f_\sigma = \sigma \kappa_f (F_i - F_{i-1}) / \Delta x`, the same
+two-point gradient as the face pressure gradient, so that the Laplace pressure
+jump :math:`\sigma\kappa` balances it exactly for a uniform curvature. The
+curvature :math:`\kappa` (positive for a drop, ``vof_curvature`` in the
+plotfile) comes from height functions on the 7-cell columns (3 x 7 in 2D,
+3 x 3 x 7 in 3D) along the direction of the dominant normal component, then the
+other directions; where no column set is valid it is the average of the valid
+3^dim neighbors, then of the 5^dim neighbors (in 3D, the cells near the grid
+diagonals), failing that the curvature of a least-squares parabola (paraboloid
+in 3D) through the height and PLIC interface points of the neighboring cells,
+and last :math:`-\nabla \cdot (\nabla F / |\nabla F|)` (Popinet, 2009). :math:`\kappa_f` is that of the interface (mixed) cells on
+either side of the face. The time step obeys the capillary constraint
+:math:`\Delta t < \sqrt{(\rho_l + \rho_g) \Delta x^3 / (4 \pi \sigma)}`
+(Brackbill et al., 1992), and the initial pressure projection is done whenever
+surface tension or gravity is present. With surface tension the projections use
+the arithmetic face density :math:`(\rho_{i-1} + \rho_i)/2` by default
+(``peleLM.vof.face_density``): on the faces where :math:`f_\sigma` acts the
+sharp density can be close to :math:`\rho_g`, which amplifies the curvature
+errors by up to :math:`\rho_l / \rho_g` and makes a static drop at a density
+ratio of 1000 unstable. The arithmetic density keeps the hydrostatic balance of
+grid-aligned interfaces only; ``face_density = sharp`` restores the exact
+balance of tilted ones, for low density ratios or weak surface tension. Curved
+interfaces should be initialized with ``pelelmex::vof::smooth_cell_fraction``:
+the sampling noise of ``cell_fraction`` is amplified by :math:`1/\Delta x` in
+the curvature. With ``peleLM.vof.v = 1`` each step prints the liquid centroid,
+second moments, extent and interface area, and with surface tension the mean
+interface curvature and the mean pressure difference between the pure liquid
+and pure gas cells.
+
+A prescribed outflow pressure cannot carry an interface across the boundary:
+liquid reaching the ``peleLM.vof.outflow_band`` cells next to an ``Outflow``
+boundary is removed after each advection step (absorbing outflow; with
+``peleLM.vof.v = 1`` the removed volume is printed), and the surface tension is
+off in those cells.  Without it, a drop or fragment reaching the outflow drives
+an instability of the pressure in the liquid.
 
 Momentum is advected in conservative form with the mass fluxes of the VOF sweeps,
 :math:`m_f = \rho_g u_f \Delta t + (\rho_l - \rho_g) \Phi_l`, with
@@ -462,24 +503,31 @@ Godunov face state elsewhere.
     peleLM.vof.mu_liquid        = 1e-3  # [REQ] Liquid dynamic viscosity
     peleLM.vof.mu_gas           = 1.8e-5 # [REQ] Gas dynamic viscosity
     peleLM.vof.viscosity_average = arithmetic # [OPT, DEF=arithmetic] Cell viscosity: arithmetic or harmonic
+    peleLM.vof.sigma            = 0.072 # [OPT, DEF=0] Surface tension coefficient
+    peleLM.vof.face_density     = sharp # [OPT, DEF=sharp, arithmetic if sigma > 0] Face density of the projections: sharp or arithmetic
+    peleLM.vof.outflow_band     = 4     # [OPT, DEF=4] Width (cells, per level) of the absorbing band at Outflow boundaries
 
 The problem's ``ProblemSpecificFunctions`` must provide ``initvof(i, j, k, vof,
 geomdata, prob_parm)`` to set the initial volume fraction;
 ``pelelmex::vof::cell_fraction`` (``PeleLMeX_VOF_K.H``) computes it from an
 implicit function by sub-cell sampling, and ``pelelmex::vof::plane_fraction``
-exactly for a half space. ``bcnormal_vof(x, vof_ext, idir, sgn,
+exactly for a half space; ``pelelmex::vof::smooth_cell_fraction`` linearizes
+the function on each sub-cell for smooth curved interfaces. ``bcnormal_vof(x, vof_ext, idir, sgn,
 time, geomdata, prob_parm)`` is optional and sets the volume fraction on
 ``Inflow`` faces (pure gas by default). Outflows extrapolate the volume
 fraction. At walls the contact line is free: wall ghost cells take the PLIC plane
 of the nearest interface cell, extended through the wall, so the interface meets
-the wall at whatever angle it has, as appropriate without surface tension
-(extrapolation would impose 90 degrees and unbalance gravity at a tilted
-interface). Interfaces within about 20 degrees of the wall are extended from
+the wall at whatever angle it has (extrapolation would impose 90 degrees and
+unbalance gravity at a tilted interface); no contact angle is imposed with
+surface tension either. Interfaces within about 20 degrees of the wall are extended from
 ghost planes iteratively. In ``advect_only`` mode the face velocities are
 the discrete curl of ``vof_vector_potential(x, time, A, prob_parm)`` (``A[2]`` is
 the stream function in 2D), used by the verification cases in
 ``Exec/RegTests/VOFAdvection``. Two-phase cases with gravity (resting pool,
-Rayleigh-Taylor instability, dam break) are in ``Exec/RegTests/VOFTwoPhase``.
+Rayleigh-Taylor instability, dam break) are in ``Exec/RegTests/VOFTwoPhase``,
+the surface tension verification cases (static and oscillating drops) in
+``Exec/RegTests/VOFDroplet`` and the aerodynamic breakup of a drop at several
+Weber numbers in ``Exec/Production/DropletBreakup``.
 
 Turbulent Forcing and Velocity Plotfile
 ---------------------------------------

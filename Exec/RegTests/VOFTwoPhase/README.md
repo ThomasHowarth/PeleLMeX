@@ -55,4 +55,4 @@ clipping, liquid volume conserved to 1e-13 per step, and for the tilted
 pools, a velocity below 1e-8 m/s (without the free contact line it reaches
 6e-3 m/s within 20 steps).
 
-Surface tension is the next step.
+Surface tension (`peleLM.vof.sigma`) is verified in `Exec/RegTests/VOFDroplet`.

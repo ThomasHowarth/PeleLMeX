@@ -48,6 +48,34 @@ PeleLM::VOFReadParameters()
     m_vof_mu_gas <= 0.0) {
     amrex::Abort("peleLM.vof.{rho,mu}_{liquid,gas} must be positive");
   }
+  pp.query("sigma", m_vof_sigma);
+  if (m_vof_sigma < 0.0) {
+    amrex::Abort("peleLM.vof.sigma must be non-negative");
+  }
+  // Outflow band, see VOFOutflowInnerBox
+  pp.query("outflow_band", m_vof_outflow_band);
+  if (m_vof_outflow_band < 0) {
+    amrex::Abort("peleLM.vof.outflow_band must be non-negative");
+  }
+  // The sharp face density balances gravity exactly at any interface
+  // orientation, but on the faces where the surface tension acts it can be
+  // close to rho_g, which amplifies the curvature errors by up to
+  // rho_l / rho_g: the arithmetic average is the default with surface
+  // tension
+  std::string face_density = (m_vof_sigma > 0.0) ? "arithmetic" : "sharp";
+  pp.query("face_density", face_density);
+  if (face_density == "sharp") {
+    m_vof_sharp_face_density = 1;
+  } else if (face_density == "arithmetic") {
+    m_vof_sharp_face_density = 0;
+  } else {
+    amrex::Abort("peleLM.vof.face_density must be 'sharp' or 'arithmetic'");
+  }
+  if (m_vof_verbose > 0) {
+    amrex::Print() << " VOF: surface tension " << m_vof_sigma
+                   << ", projection face density " << face_density
+                   << ", outflow band " << m_vof_outflow_band << " cells\n";
+  }
 
   if (
     m_vof_advect_only != 0 &&
@@ -134,6 +162,153 @@ amrex::Real
 PeleLM::VOFLiquidVolume(const TimeStamp a_time)
 {
   return MFSum(GetVecOfConstPtrs(getVOFVect(a_time)), 0);
+}
+
+// Liquid volume V, centroid x_c = <F x> / V, second central moments
+// <F (x_d - x_c,d)^2> / V and the bounding box of the cells with F > 1/2,
+// over the uncovered cells of all levels, and the interface area
+// sum |grad F| dV (central differences).  With surface tension, also the
+// mean curvature of the interface cells and the difference between the mean
+// pressures of the pure liquid and pure gas cells.  Used by the droplet
+// verification cases (centroid trajectory -> drag, moments -> oscillation
+// frequency, extent and area -> deformation and breakup, pressure jump ->
+// Laplace).
+void
+PeleLM::VOFLiquidStats(const TimeStamp a_time)
+{
+  BL_PROFILE("PeleLMeX::VOFLiquidStats()");
+  // F, F x_d, F x_d^2, then interface cells and their curvature, pure
+  // liquid cells and their pressure, pure gas cells and their pressure, and
+  // |grad F|
+  constexpr int nmom = 1 + 2 * AMREX_SPACEDIM;
+  constexpr int ntot = nmom + 7;
+  const bool has_st = m_vof_sigma > 0.0;
+  amrex::Vector<std::unique_ptr<amrex::MultiFab>> mom(finest_level + 1);
+  amrex::Real lo[AMREX_SPACEDIM];
+  amrex::Real hi[AMREX_SPACEDIM];
+  for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+    lo[d] = std::numeric_limits<amrex::Real>::max();
+    hi[d] = std::numeric_limits<amrex::Real>::lowest();
+  }
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    const auto& vof = getLevelDataPtr(lev, a_time)->vof;
+    const auto geomdata = geom[lev].data();
+    mom[lev] = std::make_unique<amrex::MultiFab>(
+      grids[lev], dmap[lev], ntot, 0, amrex::MFInfo(), Factory(lev));
+    amrex::MultiFab kappa(
+      grids[lev], dmap[lev], 1, 1, amrex::MFInfo(), Factory(lev));
+    kappa.setVal(0.0);
+    amrex::MultiFab F(
+      grids[lev], dmap[lev], 1, m_nGrowVOF, amrex::MFInfo(), Factory(lev));
+    fillpatch_vof(lev, getTime(lev, a_time), F, m_nGrowVOF);
+    if (has_st) {
+      VOFCurvature(lev, F, kappa);
+    }
+    auto const& F_ma = F.const_arrays();
+    auto const& vof_ma = vof.const_arrays();
+    auto const& kappa_ma = kappa.const_arrays();
+    auto const& p_ma =
+      getLevelDataPtr(lev, AmrNewTime)->vof_press.const_arrays();
+    auto const& mom_ma = mom[lev]->arrays();
+    amrex::ParallelFor(
+      *mom[lev],
+      [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+        const amrex::Real x[AMREX_SPACEDIM] = {AMREX_D_DECL(
+          geomdata.ProbLo(0) + (i + 0.5) * geomdata.CellSize(0),
+          geomdata.ProbLo(1) + (j + 0.5) * geomdata.CellSize(1),
+          geomdata.ProbLo(2) + (k + 0.5) * geomdata.CellSize(2))};
+        const amrex::Real f = vof_ma[box_no](i, j, k);
+        mom_ma[box_no](i, j, k, 0) = f;
+        for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+          mom_ma[box_no](i, j, k, 1 + d) = f * x[d];
+          mom_ma[box_no](i, j, k, 1 + AMREX_SPACEDIM + d) = f * x[d] * x[d];
+        }
+        const amrex::Real mixed =
+          (f > pelelmex::vof::vof_tol && f < 1.0 - pelelmex::vof::vof_tol)
+            ? 1.0
+            : 0.0;
+        const amrex::Real liq = (f >= 1.0 - pelelmex::vof::vof_tol) ? 1.0 : 0.0;
+        const amrex::Real gas = (f <= pelelmex::vof::vof_tol) ? 1.0 : 0.0;
+        const amrex::Real p = p_ma[box_no](i, j, k);
+        mom_ma[box_no](i, j, k, nmom) = mixed;
+        mom_ma[box_no](i, j, k, nmom + 1) = mixed * kappa_ma[box_no](i, j, k);
+        mom_ma[box_no](i, j, k, nmom + 2) = liq;
+        mom_ma[box_no](i, j, k, nmom + 3) = liq * p;
+        mom_ma[box_no](i, j, k, nmom + 4) = gas;
+        mom_ma[box_no](i, j, k, nmom + 5) = gas * p;
+        const auto& Fa = F_ma[box_no];
+        amrex::Real g2 = 0.0;
+        for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+          const amrex::IntVect e = amrex::IntVect::TheDimensionVector(d);
+          const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
+          const amrex::Real g =
+            0.5 * (Fa(iv + e) - Fa(iv - e)) / geomdata.CellSize(d);
+          g2 += g * g;
+        }
+        mom_ma[box_no](i, j, k, nmom + 6) = std::sqrt(g2);
+      });
+    // Bounding box of the liquid cells not covered by a finer level
+    const int masked = (lev < finest_level) ? 1 : 0;
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+      const amrex::Real dx = geom[lev].CellSize(d);
+      const amrex::Real plo = geom[lev].ProbLo(d);
+      amrex::ReduceOps<amrex::ReduceOpMin, amrex::ReduceOpMax> reduce_op;
+      amrex::ReduceData<amrex::Real, amrex::Real> reduce_data(reduce_op);
+      using ReduceTuple = typename decltype(reduce_data)::Type;
+      for (amrex::MFIter mfi(vof); mfi.isValid(); ++mfi) {
+        const amrex::Box& bx = mfi.validbox();
+        auto const& F = vof.const_array(mfi);
+        auto const& mask = masked != 0 ? m_coveredMask[lev]->const_array(mfi)
+                                       : amrex::Array4<int const>{};
+        reduce_op.eval(
+          bx, reduce_data,
+          [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept -> ReduceTuple {
+            const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
+            const bool use =
+              F(i, j, k) > 0.5 && (masked == 0 || mask(i, j, k) != 0);
+            if (!use) {
+              return {
+                std::numeric_limits<amrex::Real>::max(),
+                std::numeric_limits<amrex::Real>::lowest()};
+            }
+            return {plo + iv[d] * dx, plo + (iv[d] + 1) * dx};
+          });
+      }
+      const auto r = reduce_data.value();
+      lo[d] = amrex::min(lo[d], amrex::get<0>(r));
+      hi[d] = amrex::max(hi[d], amrex::get<1>(r));
+    }
+  }
+  amrex::ParallelDescriptor::ReduceRealMin(lo, AMREX_SPACEDIM);
+  amrex::ParallelDescriptor::ReduceRealMax(hi, AMREX_SPACEDIM);
+
+  amrex::Real sums[ntot];
+  for (int n = 0; n < ntot; ++n) {
+    sums[n] = MFSum(GetVecOfConstPtrs(mom), n);
+  }
+  const amrex::Real vol = amrex::max(sums[0], 1.0e-300);
+  amrex::Print() << "   VOF: time " << getTime(0, a_time) << " centroid";
+  for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+    amrex::Print() << " " << sums[1 + d] / vol;
+  }
+  amrex::Print() << " moments";
+  for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+    const amrex::Real xc = sums[1 + d] / vol;
+    amrex::Print() << " " << sums[1 + AMREX_SPACEDIM + d] / vol - xc * xc;
+  }
+  amrex::Print() << " extent";
+  for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+    amrex::Print() << " " << lo[d] << " " << hi[d];
+  }
+  amrex::Print() << " area " << sums[nmom + 6];
+  if (has_st) {
+    const auto mean = [&](const int n) {
+      return sums[n + 1] / amrex::max(sums[n], 1.0e-300);
+    };
+    amrex::Print() << " curvature " << mean(nmom) << " pressure_jump "
+                   << mean(nmom + 2) - mean(nmom + 4);
+  }
+  amrex::Print() << "\n";
 }
 
 //-----------------------------------------------------------------------------
@@ -237,6 +412,78 @@ PeleLM::getVOFFaceDensity(const int lev, const amrex::Real a_time)
   }
   amrex::Gpu::streamSynchronize();
   return rho_fc;
+}
+
+//-----------------------------------------------------------------------------
+// The cells of the level outside the outflow band, the m_vof_outflow_band
+// cells next to each outflow boundary.  A prescribed outflow pressure cannot
+// carry an interface across the boundary: the liquid reaching the band is
+// removed (absorbing outflow, VOFOutflowSink) and the surface tension is
+// off there.
+//-----------------------------------------------------------------------------
+amrex::Box
+PeleLM::VOFOutflowInnerBox(const int lev) const
+{
+  amrex::Box inner = geom[lev].Domain();
+  for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+    if (geom[lev].isPeriodic(d)) {
+      continue;
+    }
+    if (m_phys_bc.lo(d) == amrex::PhysBCType::outflow) {
+      inner.growLo(d, -m_vof_outflow_band);
+    }
+    if (m_phys_bc.hi(d) == amrex::PhysBCType::outflow) {
+      inner.growHi(d, -m_vof_outflow_band);
+    }
+  }
+  return inner;
+}
+
+//-----------------------------------------------------------------------------
+// Absorbing outflow: remove the liquid in the outflow band of each level
+// (VOFOutflowInnerBox) and return the volume removed (peleLM.vof.v > 0,
+// zero otherwise).
+//-----------------------------------------------------------------------------
+amrex::Real
+PeleLM::VOFOutflowSink()
+{
+  const bool verbose = m_vof_verbose > 0;
+  const amrex::Real vol_before = verbose ? VOFLiquidVolume(AmrNewTime) : 0.0;
+  bool has_band = false;
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    const amrex::Box inner = VOFOutflowInnerBox(lev);
+    if (inner == geom[lev].Domain()) {
+      continue;
+    }
+    has_band = true;
+    auto const& vof_ma = m_leveldata_new[lev]->vof.arrays();
+    amrex::ParallelFor(
+      m_leveldata_new[lev]->vof,
+      [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+        if (!inner.contains(amrex::IntVect(AMREX_D_DECL(i, j, k)))) {
+          vof_ma[box_no](i, j, k) = 0.0;
+        }
+      });
+  }
+  amrex::Gpu::streamSynchronize();
+  if (!has_band) {
+    return 0.0;
+  }
+  averageDownVOF(AmrNewTime);
+  return verbose ? vol_before - VOFLiquidVolume(AmrNewTime) : 0.0;
+}
+
+amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
+PeleLM::getVOFProjFaceDensity(const int lev, const TimeStamp a_time)
+{
+  if (m_vof_sharp_face_density != 0) {
+    return getVOFSharpFaceDensity(lev, a_time);
+  }
+  // The volume fraction is linear in time between t^n and t^{n+1}
+  const amrex::Real time = (a_time == AmrHalfTime)
+                             ? 0.5 * (m_t_old[lev] + m_t_new[lev])
+                             : getTime(lev, a_time);
+  return getVOFFaceDensity(lev, time);
 }
 
 amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
@@ -481,7 +728,8 @@ PeleLM::VOFMomentumAdvTerm(
 void
 PeleLM::VOFFaceProjection(
   const amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>>& a_umac,
-  const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_beta)
+  const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_beta,
+  const amrex::Vector<amrex::MultiFab*>& a_phi)
 {
   BL_PROFILE("PeleLMeX::VOFFaceProjection()");
 
@@ -554,6 +802,11 @@ PeleLM::VOFFaceProjection(
         Factory(lev));
     }
   }
+  if (!a_phi.empty()) {
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      amrex::MultiFab::Copy(*a_phi[lev], phi[lev], 0, 0, 1, 0);
+    }
+  }
   mlmg.prepareForFluxes(GetVecOfConstPtrs(phi));
   mlmg.getFluxes(GetVecOfArrOfPtrs(flux), GetVecOfPtrs(phi));
   for (int lev = 0; lev <= finest_level; ++lev) {
@@ -570,16 +823,19 @@ PeleLM::VOFFaceProjection(
 
 //-----------------------------------------------------------------------------
 // Balanced-force velocity projection (Francois et al., JCP 213, 2006).
-// Gravity and the pressure gradient act on the faces:
-//   u_f = <u*>_f + dt g,   div(dt / rho_f grad p) = div(u_f),
-//   a_f = g - grad_f p / rho_f,
-// with the sharp face density rho_f of getVOFSharpFaceDensity, so that a
-// fluid at rest with a planar interface normal to g gives a_f = 0 to solver
-// tolerance.  The cell-centered velocity is updated with the average of
-// the face accelerations of each cell, and gp holds the kinematic
-// gradient g - <a_f>, i.e. grad p / rho, used as the lagged
+// Gravity, surface tension and the pressure gradient act on the faces:
+//   u_f = <u*>_f + dt g + dt f_f / rho_f,   div(dt / rho_f grad p) = div(u_f),
+//   a_f = g + (f_f - grad_f p) / rho_f,
+// with the face density rho_f of getVOFProjFaceDensity and the
+// surface tension f_f = sigma kappa_f grad_f F of getVOFSurfaceTension, so
+// that a fluid at rest with a planar interface normal to g (sharp face
+// density), or a drop of uniform curvature, gives a_f = 0 to solver
+// tolerance.  The cell-centered
+// velocity is updated with the average of the face accelerations of each
+// cell, and gp holds g - <a_f>, i.e. (grad p - f) / rho, used as the lagged
 // pressure-gradient forcing of the next step.  On entry the new velocity
 // contains the lagged forcing dt (g - gp^{n-1/2}), which is removed first.
+// The pressure is kept in vof_press for the plotfiles.
 //-----------------------------------------------------------------------------
 void
 PeleLM::VOFVelocityProjection(const int a_initPress, const amrex::Real a_dt)
@@ -665,9 +921,15 @@ PeleLM::VOFVelocityProjection(const int a_initPress, const amrex::Real a_dt)
   }
 
   const TimeStamp rhoTime = (a_initPress != 0) ? AmrNewTime : AmrHalfTime;
+  const bool has_st = m_vof_sigma > 0.0;
   for (int lev = 0; lev <= finest_level; ++lev) {
     const amrex::Box& domain = geom[lev].Domain();
-    beta[lev] = getVOFSharpFaceDensity(lev, rhoTime);
+    beta[lev] = getVOFProjFaceDensity(lev, rhoTime);
+    // Surface tension from the volume fraction after the advection
+    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> st;
+    if (has_st) {
+      st = getVOFSurfaceTension(lev, getTime(lev, AmrNewTime));
+    }
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
       beta[lev][idim].invert(a_dt, 0);
       // Gravity acts on all faces except those where the velocity is
@@ -682,18 +944,29 @@ PeleLM::VOFVelocityProjection(const int a_initPress, const amrex::Real a_dt)
       const amrex::Real dtg = a_dt * grav[idim];
       auto const& ub_ma = ub[lev][idim].const_arrays();
       auto const& um_ma = umac[lev][idim].arrays();
+      auto const& beta_ma = beta[lev][idim].const_arrays();
+      // beta = dt / rho_f: the surface tension increment is beta f_f
+      auto const& st_ma = has_st ? st[idim].const_arrays() : beta_ma;
       amrex::ParallelFor(
         umac[lev][idim], [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) {
           const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
           const bool fixed =
             (fixed_lo && iv[idim] == dlo) || (fixed_hi && iv[idim] == dhi);
-          um_ma[box_no](i, j, k) = ub_ma[box_no](i, j, k) + (fixed ? 0.0 : dtg);
+          amrex::Real du = dtg;
+          if (has_st) {
+            du += beta_ma[box_no](i, j, k) * st_ma[box_no](i, j, k);
+          }
+          um_ma[box_no](i, j, k) = ub_ma[box_no](i, j, k) + (fixed ? 0.0 : du);
         });
     }
   }
   amrex::Gpu::streamSynchronize();
 
-  VOFFaceProjection(GetVecOfArrOfPtrs(umac), beta);
+  amrex::Vector<amrex::MultiFab*> press(finest_level + 1);
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    press[lev] = &(getLevelDataPtr(lev, AmrNewTime)->vof_press);
+  }
+  VOFFaceProjection(GetVecOfArrOfPtrs(umac), beta, press);
 
   // Cell acceleration = average of the face accelerations
   for (int lev = 0; lev <= finest_level; ++lev) {
@@ -743,6 +1016,185 @@ PeleLM::VOFVelocityProjection(const int a_initPress, const amrex::Real a_dt)
   if (a_initPress == 0) {
     averageDownVelocity(AmrNewTime);
   }
+}
+
+//-----------------------------------------------------------------------------
+// Interface curvature in the cells within one cell of the interface
+// (interface_band), in the valid and first ghost cells of a_kappa.  a_vof
+// must hold m_nGrowVOF filled ghost cells.  In order of preference:
+//  1. the height-function curvature (cell_height_curvature), second-order
+//     and also defined in the pure cells next to the interface, where the
+//     columns hold the same heights up to a constant;
+//  2. the average of the height-function curvatures of the 3^dim neighbors
+//     that have one (Popinet, JCP 228, 2009), then of the 5^dim neighbors:
+//     in 3D the 3x3x7 columns of the cells near the grid diagonals often
+//     extend out of the 7-cell window, and a local fit there is accurate
+//     but follows small interface perturbations, which drives spurious
+//     currents unstable;
+//  3. a least-squares parabola / paraboloid through the height and PLIC
+//     interface points of the 3^dim stencil (parabolic_curvature), in the
+//     valid cells;
+//  4. -div(n) from the volume fraction gradient (thin, under-resolved
+//     structures, e.g. ligaments about to pinch off).
+// The ghost cells shared with other boxes of the level are then overwritten
+// by the valid values, so that every face sees the same curvature from
+// either side.  Zero away from the interface.
+//-----------------------------------------------------------------------------
+void
+PeleLM::VOFCurvature(
+  const int lev, const amrex::MultiFab& a_vof, amrex::MultiFab& a_kappa)
+{
+  BL_PROFILE("PeleLMeX::VOFCurvature()");
+  AMREX_ALWAYS_ASSERT(a_vof.nGrow() >= m_nGrowVOF && a_kappa.nGrow() >= 1);
+  const amrex::Real dxinv = geom[lev].InvCellSize(0);
+
+  // Height-function curvature (component 0) and whether it is defined (1),
+  // in the valid and first ghost cells, exchanged out to two ghost cells
+  // for the neighbor averages
+  amrex::MultiFab khf(a_kappa.boxArray(), a_kappa.DistributionMap(), 2, 2);
+  khf.setVal(0.0);
+  auto const& F_ma = a_vof.const_arrays();
+  auto const& khf_ma = khf.arrays();
+  amrex::ParallelFor(
+    khf, amrex::IntVect(1),
+    [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+      const auto& F = F_ma[box_no];
+      amrex::Real kap = 0.0;
+      amrex::Real valid = 0.0;
+      if (
+        pelelmex::vof::interface_band(i, j, k, F) &&
+        pelelmex::vof::cell_height_curvature(i, j, k, F, dxinv, kap)) {
+        valid = 1.0;
+      }
+      khf_ma[box_no](i, j, k, 0) = valid > 0.5 ? kap : 0.0;
+      khf_ma[box_no](i, j, k, 1) = valid;
+    });
+  amrex::Gpu::streamSynchronize();
+  khf.FillBoundary(geom[lev].periodicity());
+
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+  for (amrex::MFIter mfi(a_kappa, amrex::TilingIfNotGPU()); mfi.isValid();
+       ++mfi) {
+    const amrex::Box& gbx = mfi.growntilebox(1);
+    const amrex::Box& vbx = mfi.validbox();
+    auto const& F = a_vof.const_array(mfi);
+    auto const& K = khf.const_array(mfi);
+    auto const& kappa = a_kappa.array(mfi);
+    amrex::ParallelFor(gbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+      amrex::Real kap = 0.0;
+      if (!pelelmex::vof::interface_band(i, j, k, F)) {
+        kappa(i, j, k) = kap;
+        return;
+      }
+      if (K(i, j, k, 1) > 0.5) {
+        kappa(i, j, k) = K(i, j, k, 0);
+        return;
+      }
+      // Average of the height-function curvatures within r cells
+      const auto neighbor_average = [&](const int r, amrex::Real& avg) {
+        amrex::Real sum = 0.0;
+        int n = 0;
+#if AMREX_SPACEDIM == 3
+        for (int kk = -r; kk <= r; ++kk) {
+#else
+          {
+            constexpr int kk = 0;
+#endif
+          for (int jj = -r; jj <= r; ++jj) {
+            for (int ii = -r; ii <= r; ++ii) {
+              if (
+                K.contains(i + ii, j + jj, k + kk) &&
+                K(i + ii, j + jj, k + kk, 1) > 0.5) {
+                sum += K(i + ii, j + jj, k + kk, 0);
+                ++n;
+              }
+            }
+          }
+        }
+        if (n == 0) {
+          return false;
+        }
+        avg = sum / static_cast<amrex::Real>(n);
+        return true;
+      };
+      if (
+        !neighbor_average(1, kap) && !neighbor_average(2, kap) &&
+        (!vbx.contains(i, j, k) ||
+         !pelelmex::vof::parabolic_curvature(i, j, k, F, dxinv, kap))) {
+        // The fit reads planes in the 3^dim stencil: valid cells only
+        kap = pelelmex::vof::normal_divergence_curvature(i, j, k, F, dxinv);
+      }
+      kappa(i, j, k) = kap;
+    });
+  }
+  amrex::Gpu::streamSynchronize();
+  a_kappa.FillBoundary(0, 1, amrex::IntVect(1), geom[lev].periodicity());
+}
+
+//-----------------------------------------------------------------------------
+// Continuum surface force (Brackbill et al., JCP 100, 1992) in the
+// balanced-force form of Francois et al. (JCP 213, 2006): on each face,
+//   f_f = sigma kappa_f (F_i - F_{i-1}) / dx,
+// the same two-point gradient as the face pressure gradient of the
+// projection, so that the pressure jump sigma kappa balances it exactly
+// for a uniform curvature.  kappa_f is taken from the interface (mixed)
+// cells on either side: their average when both are mixed, the mixed one's
+// otherwise (Popinet, JCP 228, 2009).  The pure cells next to an oblique
+// interface often have no height function (in 3D, most of them) and only a
+// fallback curvature, used when neither cell is mixed (interface on the
+// face).  Zero on the faces of the cells within m_vof_outflow_band cells of
+// an outflow boundary.
+//-----------------------------------------------------------------------------
+amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
+PeleLM::getVOFSurfaceTension(const int lev, const amrex::Real a_time)
+{
+  BL_PROFILE("PeleLMeX::getVOFSurfaceTension()");
+  amrex::MultiFab F(
+    grids[lev], dmap[lev], 1, m_nGrowVOF, amrex::MFInfo(), Factory(lev));
+  fillpatch_vof(lev, a_time, F, m_nGrowVOF);
+  amrex::MultiFab kappa(
+    grids[lev], dmap[lev], 1, 1, amrex::MFInfo(), Factory(lev));
+  VOFCurvature(lev, F, kappa);
+
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> st;
+  auto const& F_ma = F.const_arrays();
+  auto const& kappa_ma = kappa.const_arrays();
+  for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+    st[idim].define(
+      amrex::convert(grids[lev], amrex::IntVect::TheDimensionVector(idim)),
+      dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
+    const amrex::Real sdxinv = m_vof_sigma * geom[lev].InvCellSize(idim);
+    auto const& st_ma = st[idim].arrays();
+    // Cells with surface tension
+    const amrex::Box inner = VOFOutflowInnerBox(lev);
+    amrex::ParallelFor(
+      st[idim], [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+        const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
+        const amrex::IntVect ivm =
+          iv - amrex::IntVect::TheDimensionVector(idim);
+        // The two cells of the face
+        const amrex::Box fcells(ivm, iv);
+        if (!inner.contains(fcells)) {
+          st_ma[box_no](i, j, k) = 0.0;
+          return;
+        }
+        const auto& Fa = F_ma[box_no];
+        const auto& K = kappa_ma[box_no];
+        const auto mixed = [](const amrex::Real f) {
+          return f > pelelmex::vof::vof_tol && f < 1.0 - pelelmex::vof::vof_tol;
+        };
+        const bool mm = mixed(Fa(ivm));
+        const bool mp = mixed(Fa(iv));
+        const amrex::Real kf = (mm == mp) ? 0.5 * (K(ivm) + K(iv))
+                               : mm       ? K(ivm)
+                                          : K(iv);
+        st_ma[box_no](i, j, k) = sdxinv * kf * (Fa(iv) - Fa(ivm));
+      });
+  }
+  amrex::Gpu::streamSynchronize();
+  return st;
 }
 
 //-----------------------------------------------------------------------------
@@ -836,12 +1288,18 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
     }
   }
 
+  const amrex::Real vol_sink = VOFOutflowSink();
+
   if (m_vof_verbose > 0) {
     const amrex::Real vol_new = VOFLiquidVolume(AmrNewTime);
     amrex::Print() << "   VOF: liquid volume " << vol_new
                    << ", relative change "
-                   << (vol_new - vol_old) / amrex::max(vol_old, 1.0e-300)
-                   << "\n";
+                   << (vol_new - vol_old) / amrex::max(vol_old, 1.0e-300);
+    if (vol_sink != 0.0) {
+      amrex::Print() << ", removed at the outflow " << vol_sink;
+    }
+    amrex::Print() << "\n";
+    VOFLiquidStats(AmrNewTime);
   }
 }
 
@@ -1086,6 +1544,15 @@ PeleLM::estVOFDt(const TimeStamp a_time)
       if (u_max[idim] > 0.0) {
         estdt = amrex::min(estdt, m_vof_cfl * dx[idim] / u_max[idim]);
       }
+    }
+    // Capillary waves (Brackbill et al., JCP 100, 1992): explicit surface
+    // tension is stable for dt < sqrt(rho_avg dx^3 / (2 pi sigma))
+    if (m_vof_sigma > 0.0) {
+      const amrex::Real rho_avg = 0.5 * (m_vof_rho_liq + m_vof_rho_gas);
+      estdt = amrex::min(
+        estdt, std::sqrt(
+                 rho_avg * dx[0] * dx[0] * dx[0] /
+                 (2.0 * amrex::Math::pi<amrex::Real>() * m_vof_sigma)));
     }
   }
   amrex::ParallelDescriptor::ReduceRealMin(estdt);

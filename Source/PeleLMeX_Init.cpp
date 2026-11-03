@@ -499,8 +499,12 @@ PeleLM::projectInitSolution()
     initialProjection();
 
     // If gravity is used, do initial pressure projection to get the hydrostatic
-    // pressure
-    if (std::abs(m_gravity.sum()) > 0.0) {
+    // pressure (and, with VOF surface tension, the capillary pressure jump)
+    bool init_press = std::abs(m_gravity.sum()) > 0.0;
+#ifdef PELE_USE_VOF
+    init_press = init_press || (m_vof_sigma > 0.0);
+#endif
+    if (init_press) {
       initialPressProjection();
     }
 

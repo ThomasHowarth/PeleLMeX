@@ -292,7 +292,7 @@ PeleLM::macProject(
   for (int lev = 0; lev <= finest_level; ++lev) {
 #ifdef PELE_USE_VOF
     if (m_incompressible != 0) {
-      rho_inv[lev] = getVOFSharpFaceDensity(lev, a_time);
+      rho_inv[lev] = getVOFProjFaceDensity(lev, a_time);
       for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
         rho_inv[lev][idim].invert(m_dt / 2.0, 0);
       }
@@ -321,7 +321,7 @@ PeleLM::macProject(
 
 #ifdef PELE_USE_VOF
   if (m_incompressible != 0) {
-    // Sharp face density: GMRES-MLMG solve (see VOFFaceProjection)
+    // VOF face density: GMRES-MLMG solve (see VOFFaceProjection)
     VOFFaceProjection(GetVecOfArrOfPtrs(advData->umac), rho_inv);
     fillUMacGhosts(advData);
     return;

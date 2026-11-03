@@ -1,0 +1,56 @@
+# Static drop (Francois et al., JCP 213, 2006; Popinet, JCP 228, 2009):
+# R = 0.25 at the center of the unit box, density ratio 1000, sigma = 1,
+# no gravity.  The exact solution is u = 0 with the Laplace pressure jump
+# sigma / R = 4.  Measures the spurious currents (capillary number
+# Ca = max|u| mu_l / sigma) and the pressure jump error.
+
+#----------------------DOMAIN DEFINITION------------------------
+geometry.is_periodic = 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0 0.0
+geometry.prob_hi     = 1.0 1.0
+
+peleLM.lo_bc = SlipWallAdiab SlipWallAdiab
+peleLM.hi_bc = SlipWallAdiab SlipWallAdiab
+
+#-------------------------AMR CONTROL----------------------------
+amr.n_cell          = 64 64
+amr.v               = 1
+amr.max_level       = 0
+amr.ref_ratio       = 2 2
+amr.regrid_int      = 4
+amr.n_error_buf     = 2 2
+amr.grid_eff        = 0.7
+amr.blocking_factor = 8
+amr.max_grid_size   = 32
+
+#--------------------------- Problem ----------------------------
+prob.type   = static
+prob.center = 0.5 0.5
+prob.radius = 0.25
+
+#-------------------------PeleLM CONTROL-------------------------
+peleLM.v              = 1
+peleLM.incompressible = 1
+peleLM.vof.rho_liquid = 1.0
+peleLM.vof.rho_gas    = 1.0e-3
+peleLM.vof.mu_liquid  = 1.0e-2
+peleLM.vof.mu_gas     = 1.0e-4
+peleLM.vof.sigma      = 1.0
+peleLM.vof.v          = 1
+
+nodal_proj.rtol = 1.0e-11
+mac_proj.rtol   = 1.0e-11
+
+amr.cfl       = 0.45
+amr.dt_shrink = 1.0
+amr.init_dt   = 1.0e-4
+amr.stop_time = 1.0
+amr.max_step  = 100000
+amr.plot_per  = 0.25
+amr.plot_file = plt_static_
+amr.check_int = -1
+
+peleLM.do_temporals = 1
+peleLM.temporal_int = 1
+peleLM.do_extremas  = 1
