@@ -54,15 +54,58 @@ pelelm_bc_face_x(
   }
 }
 
+// Members and helpers shared by the ext_dir fill functors that call the
+// problem's bcnormal (T is the problem's ProblemSpecificFunctions).
 template <typename T>
-struct PeleLMCCFillExtDirState
+struct PeleLMCCFillExtDirBase
 {
-
   ProbParm const* lprobparm;
   pele::physics::PMF::PmfData::DataContainer const* lpmfdata;
   const int m_nAux;
-  int m_do_turbInflow = 0;
   MeshMapEvaluator m_map_eval{}; // defaults to Identity (no mesh mapping)
+
+  AMREX_GPU_HOST
+  constexpr PeleLMCCFillExtDirBase(
+    ProbParm const* a_prob_parm,
+    pele::physics::PMF::PmfData::DataContainer const* a_pmf_data,
+    int a_nAux,
+    MeshMapEvaluator a_map_eval = MeshMapEvaluator{})
+    : lprobparm(a_prob_parm),
+      lpmfdata(a_pmf_data),
+      m_nAux(a_nAux),
+      m_map_eval(a_map_eval)
+  {
+  }
+
+  // Call bcnormal for ghost cell iv beyond the (idir, sgn) face (sgn = +1
+  // low side, -1 high side), passing it the state in the first cell inside
+  // the domain. bcnormal() is defined in pelelmex_prob.H in the problem
+  // directory in /Exec.
+  AMREX_GPU_DEVICE AMREX_FORCE_INLINE void bcnormal_face(
+    const amrex::IntVect& iv,
+    amrex::Array4<amrex::Real> const& state,
+    const int idir,
+    const int sgn,
+    amrex::GeometryData const& geom,
+    const amrex::Real time,
+    amrex::Real s_ext[NVAR]) const
+  {
+    amrex::Real x[AMREX_SPACEDIM];
+    pelelm_bc_face_x(iv, idir, sgn, geom, m_map_eval, x);
+
+    auto iv_in = amrex::IntVectND<3>(0);
+    AMREX_D_TERM(iv_in[0] = iv[0];, iv_in[1] = iv[1];, iv_in[2] = iv[2];);
+    iv_in[idir] += sgn;
+    const auto s_in = state.cellData(iv_in[0], iv_in[1], iv_in[2]);
+
+    T::bcnormal(x, s_in, s_ext, idir, sgn, time, geom, *lprobparm, lpmfdata);
+  }
+};
+
+template <typename T>
+struct PeleLMCCFillExtDirState : PeleLMCCFillExtDirBase<T>
+{
+  int m_do_turbInflow = 0;
   int m_do_inlet_from_plane = 0;
   int m_inlet_from_plane_dir = -1;
   // When != 0 (peleLM.recycling_mode = full), the pre-loaded ghost value on
@@ -80,11 +123,8 @@ struct PeleLMCCFillExtDirState
     int inlet_plane_dir,
     int recycling_full,
     MeshMapEvaluator a_map_eval = MeshMapEvaluator{})
-    : lprobparm(a_prob_parm),
-      lpmfdata(a_pmf_data),
-      m_nAux(a_nAux),
+    : PeleLMCCFillExtDirBase<T>(a_prob_parm, a_pmf_data, a_nAux, a_map_eval),
       m_do_turbInflow(do_turbInflow),
-      m_map_eval(a_map_eval),
       m_do_inlet_from_plane(do_inletFromPlane),
       m_inlet_from_plane_dir(inlet_plane_dir),
       m_recycling_full(recycling_full)
@@ -103,24 +143,16 @@ struct PeleLMCCFillExtDirState
     const int /*bcomp*/,
     const int /*orig_comp*/) const
   {
-
-    // Get geometry data
     const int* domlo = geom.Domain().loVect();
     const int* domhi = geom.Domain().hiVect();
 
-    // Get a 3D version of iv to access first cell in domain
-    auto iv_3d = amrex::IntVectND<3>(0);
-    AMREX_D_TERM(iv_3d[0] = iv[0];, iv_3d[1] = iv[1];, iv_3d[2] = iv[2];);
-
     const int ncomp = amrex::min<int>(numcomp, NVAR);
     for (int idir = 0; idir < AMREX_SPACEDIM; ++idir) {
-      // Low
       if (iv[idir] < domlo[idir]) {
-        fillFace(iv, iv_3d, state, ncomp, geom, time, bcr, idir, 1);
+        fillFace(iv, state, ncomp, geom, time, bcr, idir, 1);
       }
-      // High
       if (iv[idir] > domhi[idir]) {
-        fillFace(iv, iv_3d, state, ncomp, geom, time, bcr, idir, -1);
+        fillFace(iv, state, ncomp, geom, time, bcr, idir, -1);
       }
     }
   }
@@ -131,7 +163,6 @@ struct PeleLMCCFillExtDirState
   // result is copied into each component that has an ext_dir BC there.
   AMREX_GPU_DEVICE AMREX_FORCE_INLINE void fillFace(
     const amrex::IntVect& iv,
-    const amrex::IntVectND<3>& iv_3d,
     amrex::Array4<amrex::Real> const& state,
     const int ncomp,
     amrex::GeometryData const& geom,
@@ -177,16 +208,7 @@ struct PeleLMCCFillExtDirState
       }
     }
 
-    amrex::Real x[AMREX_SPACEDIM];
-    pelelm_bc_face_x(iv, idir, sgn, geom, m_map_eval, x);
-
-    // Get the state in the first cell in the domain
-    auto iv_in = iv_3d;
-    iv_in[idir] = iv_in[idir] + sgn;
-    const auto s_in = state.cellData(iv_in[0], iv_in[1], iv_in[2]);
-
-    // bcnormal() is defined in pelelmex_prob.H in problem directory in /Exec
-    T::bcnormal(x, s_in, s_ext, idir, sgn, time, geom, *lprobparm, lpmfdata);
+    this->bcnormal_face(iv, state, idir, sgn, geom, time, s_ext);
 
     for (int n = 0; n < ncomp; ++n) {
       if (
@@ -198,26 +220,9 @@ struct PeleLMCCFillExtDirState
 };
 
 template <typename T>
-struct PeleLMCCFillExtDirAux
+struct PeleLMCCFillExtDirAux : PeleLMCCFillExtDirBase<T>
 {
-
-  ProbParm const* lprobparm;
-  pele::physics::PMF::PmfData::DataContainer const* lpmfdata;
-  const int m_nAux;
-  MeshMapEvaluator m_map_eval{};
-
-  AMREX_GPU_HOST
-  constexpr PeleLMCCFillExtDirAux(
-    ProbParm const* a_prob_parm,
-    pele::physics::PMF::PmfData::DataContainer const* a_pmf_data,
-    int a_nAux,
-    MeshMapEvaluator a_map_eval = MeshMapEvaluator{})
-    : lprobparm(a_prob_parm),
-      lpmfdata(a_pmf_data),
-      m_nAux(a_nAux),
-      m_map_eval(a_map_eval)
-  {
-  }
+  using PeleLMCCFillExtDirBase<T>::PeleLMCCFillExtDirBase;
 
   AMREX_GPU_DEVICE
   void operator()(
@@ -231,7 +236,6 @@ struct PeleLMCCFillExtDirAux
     const int /*bcomp*/,
     const int /*orig_comp*/) const
   {
-    // Get geometry data
     const int* domlo = geom.Domain().loVect();
     const int* domhi = geom.Domain().hiVect();
 
@@ -242,35 +246,26 @@ struct PeleLMCCFillExtDirAux
 #endif
 
     for (int idir = 0; idir < AMREX_SPACEDIM; ++idir) {
-
-      // Low
-      for (int n = 0; n < m_nAux; ++n) {
-
-        // Get current state component BC
-        const int* bc = bcr[n].data();
-
-        if ((bc[idir] == amrex::BCType::ext_dir) and (iv[idir] < domlo[idir])) {
-          amrex::Real x[AMREX_SPACEDIM];
-          pelelm_bc_face_x(iv, idir, 1, geom, m_map_eval, x);
-          // bcnormal_aux() is defined in pelelmex_prob.H in problem directory
-          // in /Exec
-          T::bcnormal_aux(
-            x, aux_ext, idir, 1, time, geom, *lprobparm, lpmfdata);
+      // side 0: low (sgn = +1), side 1: high (sgn = -1)
+      for (int side = 0; side < 2; ++side) {
+        const int sgn = 1 - 2 * side;
+        const bool outside =
+          (side == 0) ? (iv[idir] < domlo[idir]) : (iv[idir] > domhi[idir]);
+        if (!outside) {
+          continue;
         }
-      }
-      // High
-      for (int n = 0; n < m_nAux; ++n) {
-
-        // Get current state component BC
-        const int* bc = bcr[n].data();
-
-        if (
-          (bc[idir + AMREX_SPACEDIM] == amrex::BCType::ext_dir) and
-          (iv[idir] > domhi[idir])) {
-          amrex::Real x[AMREX_SPACEDIM];
-          pelelm_bc_face_x(iv, idir, -1, geom, m_map_eval, x);
-          T::bcnormal_aux(
-            x, aux_ext, idir, -1, time, geom, *lprobparm, lpmfdata);
+        for (int n = 0; n < this->m_nAux; ++n) {
+          if (
+            bcr[n].data()[idir + side * AMREX_SPACEDIM] ==
+            amrex::BCType::ext_dir) {
+            amrex::Real x[AMREX_SPACEDIM];
+            pelelm_bc_face_x(iv, idir, sgn, geom, this->m_map_eval, x);
+            // bcnormal_aux() is defined in pelelmex_prob.H in problem
+            // directory in /Exec
+            T::bcnormal_aux(
+              x, aux_ext, idir, sgn, time, geom, *this->lprobparm,
+              this->lpmfdata);
+          }
         }
       }
     }
@@ -278,26 +273,9 @@ struct PeleLMCCFillExtDirAux
 };
 
 template <typename T>
-struct PeleLMCCFillExtDirSpec
+struct PeleLMCCFillExtDirSpec : PeleLMCCFillExtDirBase<T>
 {
-
-  ProbParm const* lprobparm;
-  pele::physics::PMF::PmfData::DataContainer const* lpmfdata;
-  const int m_nAux;
-  MeshMapEvaluator m_map_eval{};
-
-  AMREX_GPU_HOST
-  constexpr PeleLMCCFillExtDirSpec(
-    ProbParm const* a_prob_parm,
-    pele::physics::PMF::PmfData::DataContainer const* a_pmf_data,
-    int a_nAux,
-    MeshMapEvaluator a_map_eval = MeshMapEvaluator{})
-    : lprobparm(a_prob_parm),
-      lpmfdata(a_pmf_data),
-      m_nAux(a_nAux),
-      m_map_eval(a_map_eval)
-  {
-  }
+  using PeleLMCCFillExtDirBase<T>::PeleLMCCFillExtDirBase;
 
   AMREX_GPU_DEVICE
   void operator()(
@@ -311,14 +289,8 @@ struct PeleLMCCFillExtDirSpec
     const int /*bcomp*/,
     const int /*orig_comp*/) const
   {
-
-    // Get geometry data
     const int* domlo = geom.Domain().loVect();
     const int* domhi = geom.Domain().hiVect();
-
-    // Get a 3D version of iv to access first cell in domain
-    auto iv_3d = amrex::IntVectND<3>(0);
-    AMREX_D_TERM(iv_3d[0] = iv[0];, iv_3d[1] = iv[1];, iv_3d[2] = iv[2];);
 
     // Faces this ghost cell lies beyond on which each species has an ext_dir
     // BC, as a bit mask (bit 2*idir for the low side, 2*idir+1 for the high
@@ -367,18 +339,7 @@ struct PeleLMCCFillExtDirSpec
           continue;
         }
 
-        amrex::Real x[AMREX_SPACEDIM];
-        pelelm_bc_face_x(iv, idir, sgn, geom, m_map_eval, x);
-
-        // Get the state on the first cell in the domain
-        auto iv_in = iv_3d;
-        iv_in[idir] = iv_in[idir] + sgn;
-        const auto s_in = rhoY.cellData(iv_in[0], iv_in[1], iv_in[2]);
-
-        // bcnormal() is defined in pelelmex_prob.H in problem directory in
-        // /Exec
-        T::bcnormal(
-          x, s_in, s_ext, idir, sgn, time, geom, *lprobparm, lpmfdata);
+        this->bcnormal_face(iv, rhoY, idir, sgn, geom, time, s_ext);
 
         for (int k = n; k < NUM_SPECIES; ++k) {
           if (mask[k] == mask[n]) {
@@ -390,27 +351,12 @@ struct PeleLMCCFillExtDirSpec
   }
 };
 
-template <typename T>
-struct PeleLMCCFillExtDirDens
+// ext_dir fill of a single state component, Comp (an index into the full
+// state, e.g. DENSITY or TEMP), stored at dcomp of the destination.
+template <typename T, int Comp>
+struct PeleLMCCFillExtDirScalar : PeleLMCCFillExtDirBase<T>
 {
-
-  ProbParm const* lprobparm;
-  pele::physics::PMF::PmfData::DataContainer const* lpmfdata;
-  const int m_nAux;
-  MeshMapEvaluator m_map_eval{};
-
-  AMREX_GPU_HOST
-  constexpr PeleLMCCFillExtDirDens(
-    ProbParm const* a_prob_parm,
-    pele::physics::PMF::PmfData::DataContainer const* a_pmf_data,
-    int a_nAux,
-    MeshMapEvaluator a_map_eval = MeshMapEvaluator{})
-    : lprobparm(a_prob_parm),
-      lpmfdata(a_pmf_data),
-      m_nAux(a_nAux),
-      m_map_eval(a_map_eval)
-  {
-  }
+  using PeleLMCCFillExtDirBase<T>::PeleLMCCFillExtDirBase;
 
   AMREX_GPU_DEVICE
   void operator()(
@@ -424,423 +370,41 @@ struct PeleLMCCFillExtDirDens
     const int /*bcomp*/,
     const int /*orig_comp*/) const
   {
-
-    // Get geometry data
     const int* domlo = geom.Domain().loVect();
     const int* domhi = geom.Domain().hiVect();
-
-    // Get a 3D version of iv to access first cell in domain
-    auto iv_3d = amrex::IntVectND<3>(0);
-    AMREX_D_TERM(iv_3d[0] = iv[0];, iv_3d[1] = iv[1];, iv_3d[2] = iv[2];);
-
-    // Get the first species component BC
     const int* bc = bcr->data();
 
     // bcnormal handles all the state components at once
     amrex::Real s_ext[NVAR] = {0.0};
 
     for (int idir = 0; idir < AMREX_SPACEDIM; ++idir) {
-      // Low
-      if ((bc[idir] == amrex::BCType::ext_dir) and (iv[idir] < domlo[idir])) {
-
-        amrex::Real x[AMREX_SPACEDIM];
-        pelelm_bc_face_x(iv, idir, 1, geom, m_map_eval, x);
-
-        // Get the state on the first cell in the domain
-        auto iv_in = iv_3d;
-        iv_in[idir] = iv_in[idir] + 1;
-        const auto s_in = state.cellData(iv_in[0], iv_in[1], iv_in[2]);
-
-        // bcnormal() is defined in pelelmex_prob.H in problem directory in
-        // /Exec
-        T::bcnormal(x, s_in, s_ext, idir, 1, time, geom, *lprobparm, lpmfdata);
-
-        state(iv, dcomp) = s_ext[DENSITY];
-
-        // High
+      int sgn = 0;
+      if ((bc[idir] == amrex::BCType::ext_dir) && (iv[idir] < domlo[idir])) {
+        sgn = 1;
       } else if (
-        (bc[idir + AMREX_SPACEDIM] == amrex::BCType::ext_dir) and
+        (bc[idir + AMREX_SPACEDIM] == amrex::BCType::ext_dir) &&
         (iv[idir] > domhi[idir])) {
-
-        amrex::Real x[AMREX_SPACEDIM];
-        pelelm_bc_face_x(iv, idir, -1, geom, m_map_eval, x);
-
-        // Get the state on the first cell in the domain
-        auto iv_in = iv_3d;
-        iv_in[idir] = iv_in[idir] - 1;
-        const auto s_in = state.cellData(iv_in[0], iv_in[1], iv_in[2]);
-
-        // bcnormal() is defined in pelelmex_prob.H in problem directory in
-        // /Exec
-        T::bcnormal(x, s_in, s_ext, idir, -1, time, geom, *lprobparm, lpmfdata);
-
-        state(iv, dcomp) = s_ext[DENSITY];
+        sgn = -1;
+      }
+      if (sgn != 0) {
+        this->bcnormal_face(iv, state, idir, sgn, geom, time, s_ext);
+        state(iv, dcomp) = s_ext[Comp];
       }
     }
   }
 };
 
 template <typename T>
-struct PeleLMCCFillExtDirRhoH
-{
-
-  ProbParm const* lprobparm;
-  pele::physics::PMF::PmfData::DataContainer const* lpmfdata;
-  const int m_nAux;
-  MeshMapEvaluator m_map_eval{};
-
-  AMREX_GPU_HOST
-  constexpr PeleLMCCFillExtDirRhoH(
-    ProbParm const* a_prob_parm,
-    pele::physics::PMF::PmfData::DataContainer const* a_pmf_data,
-    int a_nAux,
-    MeshMapEvaluator a_map_eval = MeshMapEvaluator{})
-    : lprobparm(a_prob_parm),
-      lpmfdata(a_pmf_data),
-      m_nAux(a_nAux),
-      m_map_eval(a_map_eval)
-  {
-  }
-
-  AMREX_GPU_DEVICE
-  void operator()(
-    const amrex::IntVect& iv,
-    amrex::Array4<amrex::Real> const& rhoH,
-    const int /*dcomp*/,
-    const int /*numcomp*/,
-    amrex::GeometryData const& geom,
-    const amrex::Real time,
-    const amrex::BCRec* bcr,
-    const int /*bcomp*/,
-    const int /*orig_comp*/) const
-  {
-
-    // Get geometry data
-    const int* domlo = geom.Domain().loVect();
-    const int* domhi = geom.Domain().hiVect();
-
-    // Get a 3D version of iv to access first cell in domain
-    auto iv_3d = amrex::IntVectND<3>(0);
-    AMREX_D_TERM(iv_3d[0] = iv[0];, iv_3d[1] = iv[1];, iv_3d[2] = iv[2];);
-
-    // Get the first species component BC
-    const int* bc = bcr->data();
-
-    // bcnormal handles all the state components at once
-    amrex::Real s_ext[NVAR] = {0.0};
-
-    for (int idir = 0; idir < AMREX_SPACEDIM; ++idir) {
-      // Low
-      if ((bc[idir] == amrex::BCType::ext_dir) and (iv[idir] < domlo[idir])) {
-
-        amrex::Real x[AMREX_SPACEDIM];
-        pelelm_bc_face_x(iv, idir, 1, geom, m_map_eval, x);
-
-        // Get the state on the first cell in the domain
-        auto iv_in = iv_3d;
-        iv_in[idir] = iv_in[idir] + 1;
-        const auto s_in = rhoH.cellData(iv_in[0], iv_in[1], iv_in[2]);
-
-        // bcnormal() is defined in pelelmex_prob.H in problem directory in
-        // /Exec
-        T::bcnormal(x, s_in, s_ext, idir, 1, time, geom, *lprobparm, lpmfdata);
-
-        rhoH(iv) = s_ext[RHOH];
-
-        // High
-      } else if (
-        (bc[idir + AMREX_SPACEDIM] == amrex::BCType::ext_dir) and
-        (iv[idir] > domhi[idir])) {
-
-        amrex::Real x[AMREX_SPACEDIM];
-        pelelm_bc_face_x(iv, idir, -1, geom, m_map_eval, x);
-
-        // Get the state on the first cell in the domain
-        auto iv_in = iv_3d;
-        iv_in[idir] = iv_in[idir] - 1;
-        const auto s_in = rhoH.cellData(iv_in[0], iv_in[1], iv_in[2]);
-
-        // bcnormal() is defined in pelelmex_prob.H in problem directory in
-        // /Exec
-        T::bcnormal(x, s_in, s_ext, idir, -1, time, geom, *lprobparm, lpmfdata);
-
-        rhoH(iv) = s_ext[RHOH];
-      }
-    }
-  }
-};
-
+using PeleLMCCFillExtDirDens = PeleLMCCFillExtDirScalar<T, DENSITY>;
 template <typename T>
-struct PeleLMCCFillExtDirTemp
-{
-
-  ProbParm const* lprobparm;
-  pele::physics::PMF::PmfData::DataContainer const* lpmfdata;
-  const int m_nAux;
-  MeshMapEvaluator m_map_eval{};
-
-  AMREX_GPU_HOST
-  constexpr PeleLMCCFillExtDirTemp(
-    ProbParm const* a_prob_parm,
-    pele::physics::PMF::PmfData::DataContainer const* a_pmf_data,
-    int a_nAux,
-    MeshMapEvaluator a_map_eval = MeshMapEvaluator{})
-    : lprobparm(a_prob_parm),
-      lpmfdata(a_pmf_data),
-      m_nAux(a_nAux),
-      m_map_eval(a_map_eval)
-  {
-  }
-
-  AMREX_GPU_DEVICE
-  void operator()(
-    const amrex::IntVect& iv,
-    amrex::Array4<amrex::Real> const& state,
-    const int dcomp,
-    const int /*numcomp*/,
-    amrex::GeometryData const& geom,
-    const amrex::Real time,
-    const amrex::BCRec* bcr,
-    const int /*bcomp*/,
-    const int /*orig_comp*/) const
-  {
-
-    // Get geometry data
-    const int* domlo = geom.Domain().loVect();
-    const int* domhi = geom.Domain().hiVect();
-
-    // Get a 3D version of iv to access first cell in domain
-    auto iv_3d = amrex::IntVectND<3>(0);
-    AMREX_D_TERM(iv_3d[0] = iv[0];, iv_3d[1] = iv[1];, iv_3d[2] = iv[2];);
-
-    // Get the first species component BC
-    const int* bc = bcr->data();
-
-    // bcnormal handles all the state components at once
-    amrex::Real s_ext[NVAR] = {0.0};
-    for (int idir = 0; idir < AMREX_SPACEDIM; ++idir) {
-      // Low
-      if ((bc[idir] == amrex::BCType::ext_dir) and (iv[idir] < domlo[idir])) {
-
-        amrex::Real x[AMREX_SPACEDIM];
-        pelelm_bc_face_x(iv, idir, 1, geom, m_map_eval, x);
-
-        // Get the state on the first cell in the domain
-        auto iv_in = iv_3d;
-        iv_in[idir] = iv_in[idir] + 1;
-        const auto s_in = state.cellData(iv_in[0], iv_in[1], iv_in[2]);
-
-        // bcnormal() is defined in pelelmex_prob.H in problem directory in
-        // /Exec
-        T::bcnormal(x, s_in, s_ext, idir, 1, time, geom, *lprobparm, lpmfdata);
-
-        state(iv, dcomp) = s_ext[TEMP];
-
-        // High
-      } else if (
-        (bc[idir + AMREX_SPACEDIM] == amrex::BCType::ext_dir) and
-        (iv[idir] > domhi[idir])) {
-
-        amrex::Real x[AMREX_SPACEDIM];
-        pelelm_bc_face_x(iv, idir, -1, geom, m_map_eval, x);
-
-        // Get the state on the first cell in the domain
-        auto iv_in = iv_3d;
-        iv_in[idir] = iv_in[idir] - 1;
-        const auto s_in = state.cellData(iv_in[0], iv_in[1], iv_in[2]);
-
-        // bcnormal() is defined in pelelmex_prob.H in problem directory in
-        // /Exec
-        T::bcnormal(x, s_in, s_ext, idir, -1, time, geom, *lprobparm, lpmfdata);
-
-        state(iv, dcomp) = s_ext[TEMP];
-      }
-    }
-  }
-};
-
+using PeleLMCCFillExtDirRhoH = PeleLMCCFillExtDirScalar<T, RHOH>;
+template <typename T>
+using PeleLMCCFillExtDirTemp = PeleLMCCFillExtDirScalar<T, TEMP>;
 #ifdef PELE_USE_PLASMA
 template <typename T>
-struct PeleLMCCFillExtDirnE
-{
-
-  ProbParm const* lprobparm;
-  pele::physics::PMF::PmfData::DataContainer const* lpmfdata;
-  const int m_nAux;
-  MeshMapEvaluator m_map_eval{};
-
-  AMREX_GPU_HOST
-  constexpr PeleLMCCFillExtDirnE(
-    ProbParm const* a_prob_parm,
-    pele::physics::PMF::PmfData::DataContainer const* a_pmf_data,
-    int a_nAux,
-    MeshMapEvaluator a_map_eval = MeshMapEvaluator{})
-    : lprobparm(a_prob_parm),
-      lpmfdata(a_pmf_data),
-      m_nAux(a_nAux),
-      m_map_eval(a_map_eval)
-  {
-  }
-
-  AMREX_GPU_DEVICE
-  void operator()(
-    const amrex::IntVect& iv,
-    amrex::Array4<amrex::Real> const& nE,
-    const int /*dcomp*/,
-    const int /*numcomp*/,
-    amrex::GeometryData const& geom,
-    const amrex::Real time,
-    const amrex::BCRec* bcr,
-    const int /*bcomp*/,
-    const int /*orig_comp*/) const
-  {
-
-    // Get geometry data
-    const int* domlo = geom.Domain().loVect();
-    const int* domhi = geom.Domain().hiVect();
-
-    // Get a 3D version of iv to access first cell in domain
-    auto iv_3d = amrex::IntVectND<3>(0);
-    AMREX_D_TERM(iv_3d[0] = iv[0];, iv_3d[1] = iv[1];, iv_3d[2] = iv[2];);
-
-    // Get the first species component BC
-    const int* bc = bcr->data();
-
-    // bcnormal handles all the state components at once
-    amrex::Real s_ext[NVAR] = {0.0};
-
-    for (int idir = 0; idir < AMREX_SPACEDIM; ++idir) {
-      // Low
-      if ((bc[idir] == amrex::BCType::ext_dir) and (iv[idir] < domlo[idir])) {
-
-        amrex::Real x[AMREX_SPACEDIM];
-        pelelm_bc_face_x(iv, idir, 1, geom, m_map_eval, x);
-
-        // Get the state on the first cell in the domain
-        auto iv_in = iv_3d;
-        iv_in[idir] = iv_in[idir] + 1;
-        const auto s_in = nE.cellData(iv_in[0], iv_in[1], iv_in[2]);
-
-        // bcnormal() is defined in pelelmex_prob.H in problem directory in
-        // /Exec
-        T::bcnormal(x, s_in, s_ext, idir, 1, time, geom, *lprobparm, lpmfdata);
-
-        nE(iv) = s_ext[NE];
-
-        // High
-      } else if (
-        (bc[idir + AMREX_SPACEDIM] == amrex::BCType::ext_dir) and
-        (iv[idir] > domhi[idir])) {
-
-        amrex::Real x[AMREX_SPACEDIM];
-        pelelm_bc_face_x(iv, idir, -1, geom, m_map_eval, x);
-
-        // Get the state on the first cell in the domain
-        auto iv_in = iv_3d;
-        iv_in[idir] = iv_in[idir] - 1;
-        const auto s_in = nE.cellData(iv_in[0], iv_in[1], iv_in[2]);
-
-        // bcnormal() is defined in pelelmex_prob.H in problem directory in
-        // /Exec
-        T::bcnormal(x, s_in, s_ext, idir, -1, time, geom, *lprobparm, lpmfdata);
-
-        nE(iv) = s_ext[NE];
-      }
-    }
-  }
-};
-#endif
-
-#ifdef PELE_USE_PLASMA
+using PeleLMCCFillExtDirnE = PeleLMCCFillExtDirScalar<T, NE>;
 template <typename T>
-struct PeleLMCCFillExtDirPhiV
-{
-
-  ProbParm const* lprobparm;
-  pele::physics::PMF::PmfData::DataContainer const* lpmfdata;
-  const int m_nAux;
-  MeshMapEvaluator m_map_eval{};
-
-  AMREX_GPU_HOST
-  constexpr PeleLMCCFillExtDirPhiV(
-    ProbParm const* a_prob_parm,
-    pele::physics::PMF::PmfData::DataContainer const* a_pmf_data,
-    int a_nAux,
-    MeshMapEvaluator a_map_eval = MeshMapEvaluator{})
-    : lprobparm(a_prob_parm),
-      lpmfdata(a_pmf_data),
-      m_nAux(a_nAux),
-      m_map_eval(a_map_eval)
-  {
-  }
-
-  AMREX_GPU_DEVICE
-  void operator()(
-    const amrex::IntVect& iv,
-    amrex::Array4<amrex::Real> const& phiV,
-    const int dcomp,
-    const int /*numcomp*/,
-    amrex::GeometryData const& geom,
-    const amrex::Real time,
-    const amrex::BCRec* bcr,
-    const int /*bcomp*/,
-    const int /*orig_comp*/) const
-  {
-
-    // Get geometry data
-    const int* domlo = geom.Domain().loVect();
-    const int* domhi = geom.Domain().hiVect();
-
-    // Get a 3D version of iv to access first cell in domain
-    auto iv_3d = amrex::IntVectND<3>(0);
-    AMREX_D_TERM(iv_3d[0] = iv[0];, iv_3d[1] = iv[1];, iv_3d[2] = iv[2];);
-
-    // Get the first species component BC
-    const int* bc = bcr->data();
-
-    // bcnormal handles all the state components at once
-    amrex::Real s_ext[NVAR] = {0.0};
-
-    for (int idir = 0; idir < AMREX_SPACEDIM; ++idir) {
-      // Low
-      if ((bc[idir] == amrex::BCType::ext_dir) and (iv[idir] < domlo[idir])) {
-
-        amrex::Real x[AMREX_SPACEDIM];
-        pelelm_bc_face_x(iv, idir, 1, geom, m_map_eval, x);
-
-        // Get the state on the first cell in the domain
-        auto iv_in = iv_3d;
-        iv_in[idir] = iv_in[idir] + 1;
-        const auto s_in = phiV.cellData(iv_in[0], iv_in[1], iv_in[2]);
-
-        // bcnormal() is defined in pelelmex_prob.H in problem directory in
-        // /Exec
-        T::bcnormal(x, s_in, s_ext, idir, 1, time, geom, *lprobparm, lpmfdata);
-
-        phiV(iv, dcomp) = s_ext[PHIV];
-
-        // High
-      } else if (
-        (bc[idir + AMREX_SPACEDIM] == amrex::BCType::ext_dir) and
-        (iv[idir] > domhi[idir])) {
-
-        amrex::Real x[AMREX_SPACEDIM];
-        pelelm_bc_face_x(iv, idir, -1, geom, m_map_eval, x);
-
-        // Get the state on the first cell in the domain
-        auto iv_in = iv_3d;
-        iv_in[idir] = iv_in[idir] - 1;
-        const auto s_in = phiV.cellData(iv_in[0], iv_in[1], iv_in[2]);
-
-        // bcnormal() is defined in pelelmex_prob.H in problem directory in
-        // /Exec
-        T::bcnormal(x, s_in, s_ext, idir, -1, time, geom, *lprobparm, lpmfdata);
-
-        phiV(iv, dcomp) = s_ext[PHIV];
-      }
-    }
-  }
-};
+using PeleLMCCFillExtDirPhiV = PeleLMCCFillExtDirScalar<T, PHIV>;
 #endif
 
 struct PeleLMCCFillExtDirDummy

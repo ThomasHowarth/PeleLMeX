@@ -1148,6 +1148,71 @@ public:
   void fillPatchPhiV(const PeleLM::TimeStamp a_time);
 #endif
 
+  // Source data for a fillpatch on one level: MultiFabs and their times
+  struct FillPatchSource
+  {
+    amrex::Vector<amrex::MultiFab*> mf;
+    amrex::Vector<amrex::Real> time;
+  };
+
+  // Old and new data of a LevelData field on level lev
+  FillPatchSource
+  levelDataSource(const int lev, amrex::MultiFab LevelData::* a_field)
+  {
+    return {
+      {&((*m_leveldata_old[lev]).*a_field),
+       &((*m_leveldata_new[lev]).*a_field)},
+      {m_t_old[lev], m_t_new[lev]}};
+  }
+
+  // ext_dir BC functor of the given kind, wired to the problem's bcnormal.
+  // Defined in PeleLMeX_FillPatch.H, as are the helpers below.
+  template <template <typename> class BCFill>
+  auto makeBCFill();
+  // ext_dir BC functor for the whole state (handles turbulent/recycled inflow)
+  auto makeStateBCFill();
+
+  // Fill a_dst on level lev from a_src(lev) (and a_src(lev-1), interpolated
+  // with a_mapper, when lev > 0), applying a_bcfill on domain boundaries.
+  // a_src(l) returns the FillPatchSource on level l.
+  template <typename BCFill, typename SrcFn>
+  void fillpatchLevel(
+    const int lev,
+    const amrex::Real a_time,
+    amrex::MultiFab& a_dst,
+    const int nGhost,
+    SrcFn&& a_src,
+    const int scomp,
+    const int dcomp,
+    const int ncomp,
+    amrex::Vector<amrex::BCRec> const& a_bcrec,
+    BCFill const& a_bcfill,
+    amrex::InterpBase* a_mapper);
+
+  // Fill every level of a_mf, all held at a_time
+  template <typename BCFill>
+  void fillpatchAllLevels(
+    const amrex::Real a_time,
+    amrex::Vector<amrex::MultiFab*> const& a_mf,
+    const int nGhost,
+    const int ncomp,
+    amrex::Vector<amrex::BCRec> const& a_bcrec,
+    BCFill const& a_bcfill,
+    amrex::InterpBase* a_mapper);
+
+  // Fill a_dst on level lev > 0 entirely by interpolation from a_crse
+  template <typename BCFill>
+  void fillcoarsepatchLevel(
+    const int lev,
+    const amrex::Real a_time,
+    amrex::MultiFab& a_dst,
+    const int nGhost,
+    amrex::MultiFab& a_crse,
+    const int ncomp,
+    amrex::Vector<amrex::BCRec> const& a_bcrec,
+    BCFill const& a_bcfill,
+    amrex::InterpBase* a_mapper);
+
   // FillPatch and return a MF
   std::unique_ptr<amrex::MultiFab>
   fillPatchState(const int lev, const amrex::Real a_time, const int nGrow);
@@ -1938,6 +2003,17 @@ public:
   }
 
   int getVerbose() const { return m_verbose; }
+
+  // Per-level alias of components [a_scomp, a_scomp + a_ncomp) of a
+  // LevelData field (old data at AmrOldTime, new data otherwise)
+  amrex::Vector<std::unique_ptr<amrex::MultiFab>> getAliasVect(
+    const PeleLM::TimeStamp a_time,
+    amrex::MultiFab LevelData::* a_field,
+    const int a_scomp,
+    const int a_ncomp);
+  // Per-level pointer to a LevelData field (old at AmrOldTime, else new)
+  amrex::Vector<amrex::MultiFab*> getFieldVect(
+    const PeleLM::TimeStamp a_time, amrex::MultiFab LevelData::* a_field);
 
   amrex::Vector<std::unique_ptr<amrex::MultiFab>>
   getStateVect(const PeleLM::TimeStamp a_time);

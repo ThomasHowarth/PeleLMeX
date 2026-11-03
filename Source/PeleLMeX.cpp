@@ -75,115 +75,72 @@ PeleLM::getLevelDataReactPtr(const int lev)
 }
 
 amrex::Vector<std::unique_ptr<amrex::MultiFab>>
-PeleLM::getStateVect(const TimeStamp a_time)
+PeleLM::getAliasVect(
+  const TimeStamp a_time,
+  amrex::MultiFab LevelData::* a_field,
+  const int a_scomp,
+  const int a_ncomp)
 {
+  auto& ldata = (a_time == AmrOldTime) ? m_leveldata_old : m_leveldata_new;
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> r;
   r.reserve(finest_level + 1);
-  if (a_time == AmrOldTime) {
-    if (m_incompressible != 0) {
-      for (int lev = 0; lev <= finest_level; ++lev) {
-        r.push_back(
-          std::make_unique<amrex::MultiFab>(
-            m_leveldata_old[lev]->state, amrex::make_alias, 0, AMREX_SPACEDIM));
-      }
-    } else {
-      for (int lev = 0; lev <= finest_level; ++lev) {
-        r.push_back(
-          std::make_unique<amrex::MultiFab>(
-            m_leveldata_old[lev]->state, amrex::make_alias, 0, NVAR));
-      }
-    }
-  } else {
-    if (m_incompressible != 0) {
-      for (int lev = 0; lev <= finest_level; ++lev) {
-        r.push_back(
-          std::make_unique<amrex::MultiFab>(
-            m_leveldata_new[lev]->state, amrex::make_alias, 0, AMREX_SPACEDIM));
-      }
-    } else {
-      for (int lev = 0; lev <= finest_level; ++lev) {
-        r.push_back(
-          std::make_unique<amrex::MultiFab>(
-            m_leveldata_new[lev]->state, amrex::make_alias, 0, NVAR));
-      }
-    }
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    r.push_back(
+      std::make_unique<amrex::MultiFab>(
+        (*ldata[lev]).*a_field, amrex::make_alias, a_scomp, a_ncomp));
+  }
+  return r;
+}
+
+amrex::Vector<amrex::MultiFab*>
+PeleLM::getFieldVect(
+  const TimeStamp a_time, amrex::MultiFab LevelData::* a_field)
+{
+  auto& ldata = (a_time == AmrOldTime) ? m_leveldata_old : m_leveldata_new;
+  amrex::Vector<amrex::MultiFab*> r;
+  r.reserve(finest_level + 1);
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    r.push_back(&((*ldata[lev]).*a_field));
   }
   return r;
 }
 
 amrex::Vector<std::unique_ptr<amrex::MultiFab>>
+PeleLM::getStateVect(const TimeStamp a_time)
+{
+  const int ncomp = (m_incompressible != 0) ? AMREX_SPACEDIM : NVAR;
+  return getAliasVect(a_time, &LevelData::state, 0, ncomp);
+}
+
+amrex::Vector<std::unique_ptr<amrex::MultiFab>>
 PeleLM::getVelocityVect(const TimeStamp a_time)
 {
-  amrex::Vector<std::unique_ptr<amrex::MultiFab>> r;
-  r.reserve(finest_level + 1);
-  if (a_time == AmrOldTime) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          m_leveldata_old[lev]->state, amrex::make_alias, VELX,
-          AMREX_SPACEDIM));
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          m_leveldata_new[lev]->state, amrex::make_alias, VELX,
-          AMREX_SPACEDIM));
-    }
-  }
-  return r;
+  return getAliasVect(a_time, &LevelData::state, VELX, AMREX_SPACEDIM);
 }
 
 amrex::Vector<std::unique_ptr<amrex::MultiFab>>
 PeleLM::getSpeciesVect(const TimeStamp a_time)
 {
   AMREX_ASSERT(m_incompressible == 0);
-  amrex::Vector<std::unique_ptr<amrex::MultiFab>> r;
-  r.reserve(finest_level + 1);
-  if (a_time == AmrOldTime) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          m_leveldata_old[lev]->state, amrex::make_alias, FIRSTSPEC,
-          NUM_SPECIES));
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          m_leveldata_new[lev]->state, amrex::make_alias, FIRSTSPEC,
-          NUM_SPECIES));
-    }
-  }
-  return r;
+  return getAliasVect(a_time, &LevelData::state, FIRSTSPEC, NUM_SPECIES);
 }
 
 amrex::Vector<std::unique_ptr<amrex::MultiFab>>
 PeleLM::getDensityVect(const TimeStamp a_time)
 {
   AMREX_ASSERT(m_incompressible == 0);
+  if (a_time == AmrOldTime || a_time == AmrNewTime) {
+    return getAliasVect(a_time, &LevelData::state, DENSITY, 1);
+  }
+  // Intermediate time: fillpatch a temporary
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> r;
   r.reserve(finest_level + 1);
-  if (a_time == AmrOldTime) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          m_leveldata_old[lev]->state, amrex::make_alias, DENSITY, 1));
-    }
-  } else if (a_time == AmrNewTime) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          m_leveldata_new[lev]->state, amrex::make_alias, DENSITY, 1));
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      const amrex::Real time = getTime(lev, a_time);
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          grids[lev], dmap[lev], 1, m_nGrowState));
-      fillpatch_density(lev, time, *(r[lev]), 0, m_nGrowState);
-    }
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    const amrex::Real time = getTime(lev, a_time);
+    r.push_back(
+      std::make_unique<amrex::MultiFab>(
+        grids[lev], dmap[lev], 1, m_nGrowState));
+    fillpatch_density(lev, time, *(r[lev]), 0, m_nGrowState);
   }
   return r;
 }
@@ -192,97 +149,34 @@ amrex::Vector<std::unique_ptr<amrex::MultiFab>>
 PeleLM::getTempVect(const TimeStamp a_time)
 {
   AMREX_ASSERT(m_incompressible == 0);
-  amrex::Vector<std::unique_ptr<amrex::MultiFab>> r;
-  r.reserve(finest_level + 1);
-  if (a_time == AmrOldTime) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          m_leveldata_old[lev]->state, amrex::make_alias, TEMP, 1));
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          m_leveldata_new[lev]->state, amrex::make_alias, TEMP, 1));
-    }
-  }
-  return r;
+  return getAliasVect(a_time, &LevelData::state, TEMP, 1);
 }
 
 amrex::Vector<std::unique_ptr<amrex::MultiFab>>
 PeleLM::getRhoHVect(const TimeStamp a_time)
 {
   AMREX_ASSERT(m_incompressible == 0);
-  amrex::Vector<std::unique_ptr<amrex::MultiFab>> r;
-  r.reserve(finest_level + 1);
-  if (a_time == AmrOldTime) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          m_leveldata_old[lev]->state, amrex::make_alias, RHOH, 1));
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          m_leveldata_new[lev]->state, amrex::make_alias, RHOH, 1));
-    }
-  }
-  return r;
+  return getAliasVect(a_time, &LevelData::state, RHOH, 1);
 }
 
 amrex::Vector<amrex::MultiFab*>
 PeleLM::getDivUVect(const TimeStamp a_time)
 {
   AMREX_ASSERT(m_incompressible == 0);
-  amrex::Vector<amrex::MultiFab*> r;
-  r.reserve(finest_level + 1);
-  if (a_time == AmrOldTime) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(&(m_leveldata_old[lev]->divu));
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(&(m_leveldata_new[lev]->divu));
-    }
-  }
-  return r;
+  return getFieldVect(a_time, &LevelData::divu);
 }
 
 amrex::Vector<amrex::MultiFab*>
 PeleLM::getDiffusivityVect(const TimeStamp a_time)
 {
   AMREX_ASSERT(m_incompressible == 0);
-  amrex::Vector<amrex::MultiFab*> r;
-  r.reserve(finest_level + 1);
-  if (a_time == AmrOldTime) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(&(m_leveldata_old[lev]->diff_cc));
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(&(m_leveldata_new[lev]->diff_cc));
-    }
-  }
-  return r;
+  return getFieldVect(a_time, &LevelData::diff_cc);
 }
 
 amrex::Vector<amrex::MultiFab*>
 PeleLM::getViscosityVect(const TimeStamp a_time)
 {
-  amrex::Vector<amrex::MultiFab*> r;
-  r.reserve(finest_level + 1);
-  if (a_time == AmrOldTime) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(&(m_leveldata_old[lev]->visc_cc));
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(&(m_leveldata_new[lev]->visc_cc));
-    }
-  }
-  return r;
+  return getFieldVect(a_time, &LevelData::visc_cc);
 }
 
 amrex::Vector<amrex::MultiFab*>
@@ -300,40 +194,14 @@ amrex::Vector<std::unique_ptr<amrex::MultiFab>>
 PeleLM::getAuxVect(const TimeStamp a_time)
 {
   AMREX_ASSERT(m_nAux > 0);
-  amrex::Vector<std::unique_ptr<amrex::MultiFab>> r;
-  r.reserve(finest_level + 1);
-  if (a_time == AmrOldTime) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          m_leveldata_old[lev]->auxiliaries, amrex::make_alias, 0, m_nAux));
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          m_leveldata_new[lev]->auxiliaries, amrex::make_alias, 0, m_nAux));
-    }
-  }
-  return r;
+  return getAliasVect(a_time, &LevelData::auxiliaries, 0, m_nAux);
 }
 
 amrex::Vector<amrex::MultiFab*>
 PeleLM::getAuxDiffusivityVect(const TimeStamp a_time)
 {
   AMREX_ASSERT(m_nAux > 0);
-  amrex::Vector<amrex::MultiFab*> r;
-  r.reserve(finest_level + 1);
-  if (a_time == AmrOldTime) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(&(m_leveldata_old[lev]->diff_aux_cc));
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(&(m_leveldata_new[lev]->diff_aux_cc));
-    }
-  }
-  return r;
+  return getFieldVect(a_time, &LevelData::diff_aux_cc);
 }
 
 void
@@ -707,60 +575,19 @@ amrex::Vector<std::unique_ptr<amrex::MultiFab>>
 PeleLM::getPhiVVect(const TimeStamp a_time)
 {
   AMREX_ASSERT(m_incompressible == 0);
-  amrex::Vector<std::unique_ptr<amrex::MultiFab>> r;
-  r.reserve(finest_level + 1);
-  if (a_time == AmrOldTime) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          m_leveldata_old[lev]->state, amrex::make_alias, PHIV, 1));
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          m_leveldata_new[lev]->state, amrex::make_alias, PHIV, 1));
-    }
-  }
-  return r;
+  return getAliasVect(a_time, &LevelData::state, PHIV, 1);
 }
 
 amrex::Vector<std::unique_ptr<amrex::MultiFab>>
 PeleLM::getnEVect(const TimeStamp a_time)
 {
   AMREX_ASSERT(m_incompressible == 0);
-  amrex::Vector<std::unique_ptr<amrex::MultiFab>> r;
-  r.reserve(finest_level + 1);
-  if (a_time == AmrOldTime) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          m_leveldata_old[lev]->state, amrex::make_alias, NE, 1));
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(
-        std::make_unique<amrex::MultiFab>(
-          m_leveldata_new[lev]->state, amrex::make_alias, NE, 1));
-    }
-  }
-  return r;
+  return getAliasVect(a_time, &LevelData::state, NE, 1);
 }
 
 amrex::Vector<amrex::MultiFab*>
 PeleLM::getnEDiffusivityVect(const TimeStamp a_time)
 {
-  amrex::Vector<amrex::MultiFab*> r;
-  r.reserve(finest_level + 1);
-  if (a_time == AmrOldTime) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(&(m_leveldata_old[lev]->diffE_cc));
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(&(m_leveldata_new[lev]->diffE_cc));
-    }
-  }
-  return r;
+  return getFieldVect(a_time, &LevelData::diffE_cc);
 }
 #endif
