@@ -161,7 +161,7 @@ PeleLM::calcDivU(
 
   // Average down divU
   if (do_avgDown != 0) {
-    averageDownField(a_time, &LevelData::divu, 0, 1);
+    averageDown(a_time, 0, 1, &LevelData::divu);
   }
 
   // fillPatch a_time divu to get properly filled ghost cells

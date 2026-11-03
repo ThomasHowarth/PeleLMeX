@@ -31,14 +31,14 @@ PeleLM::makeStateBCFill()
     m_map_eval};
 }
 
-template <typename BCFill, typename SrcFn>
+template <typename BCFill, typename Src>
 void
 PeleLM::fillpatchLevel(
   const int lev,
   const amrex::Real a_time,
   amrex::MultiFab& a_dst,
   const int nGhost,
-  SrcFn&& a_src,
+  Src const& a_src,
   const int scomp,
   const int dcomp,
   const int ncomp,
@@ -49,15 +49,15 @@ PeleLM::fillpatchLevel(
   using PhysBC = amrex::PhysBCFunct<amrex::GpuBndryFuncFab<BCFill>>;
   if (lev == 0) {
     PhysBC bndry_func(geom[lev], a_bcrec, a_bcfill);
-    const FillPatchSource fine = a_src(lev);
+    const FillPatchSource fine = fillSource(lev, a_src, a_time);
     amrex::FillPatchSingleLevel(
       a_dst, amrex::IntVect(nGhost), a_time, fine.mf, fine.time, scomp, dcomp,
       ncomp, geom[lev], bndry_func, 0);
   } else {
     PhysBC crse_bndry_func(geom[lev - 1], a_bcrec, a_bcfill);
     PhysBC fine_bndry_func(geom[lev], a_bcrec, a_bcfill);
-    const FillPatchSource crse = a_src(lev - 1);
-    const FillPatchSource fine = a_src(lev);
+    const FillPatchSource crse = fillSource(lev - 1, a_src, a_time);
+    const FillPatchSource fine = fillSource(lev, a_src, a_time);
     amrex::FillPatchTwoLevels(
       a_dst, amrex::IntVect(nGhost), a_time, crse.mf, crse.time, fine.mf,
       fine.time, scomp, dcomp, ncomp, geom[lev - 1], geom[lev], crse_bndry_func,
@@ -78,9 +78,8 @@ PeleLM::fillpatchAllLevels(
 {
   for (int lev = 0; lev <= finest_level; ++lev) {
     fillpatchLevel(
-      lev, a_time, *a_mf[lev], nGhost,
-      [&](int l) { return FillPatchSource{{a_mf[l]}, {a_time}}; }, 0, 0, ncomp,
-      a_bcrec, a_bcfill, a_mapper);
+      lev, a_time, *a_mf[lev], nGhost, a_mf, 0, 0, ncomp, a_bcrec, a_bcfill,
+      a_mapper);
   }
 }
 
@@ -91,7 +90,7 @@ PeleLM::fillcoarsepatchLevel(
   const amrex::Real a_time,
   amrex::MultiFab& a_dst,
   const int nGhost,
-  amrex::MultiFab& a_crse,
+  amrex::MultiFab const& a_crse,
   const int ncomp,
   amrex::Vector<amrex::BCRec> const& a_bcrec,
   BCFill const& a_bcfill,

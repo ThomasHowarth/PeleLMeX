@@ -1159,14 +1159,29 @@ public:
     amrex::Vector<amrex::Real> time;
   };
 
-  // Old and new data of a LevelData field on level lev
-  FillPatchSource
-  levelDataSource(const int lev, amrex::MultiFab LevelData::* a_field)
+  // Fillpatch source on level lev: old and new data of a LevelData field,
+  // a LevelDataReact field at a_time, or a per-level vector at a_time
+  FillPatchSource fillSource(
+    const int lev, amrex::MultiFab LevelData::* a_field, const amrex::Real)
   {
     return {
       {&((*m_leveldata_old[lev]).*a_field),
        &((*m_leveldata_new[lev]).*a_field)},
       {m_t_old[lev], m_t_new[lev]}};
+  }
+  FillPatchSource fillSource(
+    const int lev,
+    amrex::MultiFab LevelDataReact::* a_field,
+    const amrex::Real a_time)
+  {
+    return {{&((*m_leveldatareact[lev]).*a_field)}, {a_time}};
+  }
+  static FillPatchSource fillSource(
+    const int lev,
+    amrex::Vector<amrex::MultiFab*> const& a_mf,
+    const amrex::Real a_time)
+  {
+    return {{a_mf[lev]}, {a_time}};
   }
 
   // ext_dir BC functor of the given kind, wired to the problem's bcnormal.
@@ -1176,16 +1191,16 @@ public:
   // ext_dir BC functor for the whole state (handles turbulent/recycled inflow)
   auto makeStateBCFill();
 
-  // Fill a_dst on level lev from a_src(lev) (and a_src(lev-1), interpolated
-  // with a_mapper, when lev > 0), applying a_bcfill on domain boundaries.
-  // a_src(l) returns the FillPatchSource on level l.
-  template <typename BCFill, typename SrcFn>
+  // Fill a_dst on level lev from fillSource(lev, a_src) (and level lev-1,
+  // interpolated with a_mapper, when lev > 0), applying a_bcfill on domain
+  // boundaries.
+  template <typename BCFill, typename Src>
   void fillpatchLevel(
     const int lev,
     const amrex::Real a_time,
     amrex::MultiFab& a_dst,
     const int nGhost,
-    SrcFn&& a_src,
+    Src const& a_src,
     const int scomp,
     const int dcomp,
     const int ncomp,
@@ -1211,7 +1226,7 @@ public:
     const amrex::Real a_time,
     amrex::MultiFab& a_dst,
     const int nGhost,
-    amrex::MultiFab& a_crse,
+    amrex::MultiFab const& a_crse,
     const int ncomp,
     amrex::Vector<amrex::BCRec> const& a_bcrec,
     BCFill const& a_bcfill,
@@ -1406,8 +1421,13 @@ public:
   //! setThermoPress afterward.
   void averageDownConservedDensities(const PeleLM::TimeStamp a_time);
   void averageDownAux(const PeleLM::TimeStamp a_time);
+  // Average down components [scomp, scomp + ncomp) of a LevelData field
+  // (the state by default) from the finest level to level 0
   void averageDown(
-    const PeleLM::TimeStamp a_time, const int state_comp, const int ncomp);
+    const PeleLM::TimeStamp a_time,
+    const int scomp,
+    const int ncomp,
+    amrex::MultiFab LevelData::* a_field = &LevelData::state);
   // average_down / average_down_faces, using the EB-aware versions in EB
   // builds. As class members, unqualified calls inside PeleLM resolve here
   // rather than to amrex::average_down via argument-dependent lookup.
@@ -1429,13 +1449,6 @@ public:
     amrex::average_down_faces(std::forward<Args>(args)...);
 #endif
   }
-  // Average down components [scomp, scomp + ncomp) of a LevelData field
-  // from the finest level to level 0
-  void averageDownField(
-    const PeleLM::TimeStamp a_time,
-    amrex::MultiFab LevelData::* a_field,
-    const int scomp,
-    const int ncomp);
   void averageDownReaction();
 #ifdef PELE_USE_PLASMA
   void averageDownnE(const PeleLM::TimeStamp a_time);

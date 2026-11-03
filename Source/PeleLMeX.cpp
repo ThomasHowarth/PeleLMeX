@@ -275,22 +275,15 @@ PeleLM::averageDownScalars(const TimeStamp a_time)
 void
 PeleLM::averageDownAux(const TimeStamp a_time)
 {
-  averageDownField(a_time, &LevelData::auxiliaries, 0, m_nAux);
+  averageDown(a_time, 0, m_nAux, &LevelData::auxiliaries);
 }
 
 void
 PeleLM::averageDown(
-  const TimeStamp a_time, const int state_comp, const int ncomp)
-{
-  averageDownField(a_time, &LevelData::state, state_comp, ncomp);
-}
-
-void
-PeleLM::averageDownField(
   const TimeStamp a_time,
-  amrex::MultiFab LevelData::* a_field,
   const int scomp,
-  const int ncomp)
+  const int ncomp,
+  amrex::MultiFab LevelData::* a_field)
 {
   for (int lev = finest_level; lev > 0; --lev) {
     auto* ldataFine_p = getLevelDataPtr(lev, a_time);
