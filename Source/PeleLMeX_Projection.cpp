@@ -902,17 +902,7 @@ PeleLM::doNodalProject(
   // the Xi-space gradient (dphi/dxi), so plain average_down on the uniform
   // Xi mesh is already mass-conservative; an extra Xi-space transform here
   // would double-weight gp and worsen the drift.
-  for (int lev = finest_level - 1; lev >= 0; --lev) {
-    auto* ldataFine_p = getLevelDataPtr(lev + 1, AmrNewTime);
-    auto* ldataCrse_p = getLevelDataPtr(lev, AmrNewTime);
-#ifdef AMREX_USE_EB
-    amrex::EB_average_down(
-      ldataFine_p->gp, ldataCrse_p->gp, 0, AMREX_SPACEDIM, refRatio(lev));
-#else
-    amrex::average_down(
-      ldataFine_p->gp, ldataCrse_p->gp, 0, AMREX_SPACEDIM, refRatio(lev));
-#endif
-  }
+  averageDownField(AmrNewTime, &LevelData::gp, 0, AMREX_SPACEDIM);
 }
 
 #if AMREX_SPACEDIM == 2

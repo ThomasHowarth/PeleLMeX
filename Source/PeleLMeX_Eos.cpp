@@ -161,17 +161,7 @@ PeleLM::calcDivU(
 
   // Average down divU
   if (do_avgDown != 0) {
-    for (int lev = finest_level; lev > 0; --lev) {
-      auto* ldataFine_p = getLevelDataPtr(lev, a_time);
-      auto* ldataCrse_p = getLevelDataPtr(lev - 1, a_time);
-#ifdef AMREX_USE_EB
-      EB_average_down(
-        ldataFine_p->divu, ldataCrse_p->divu, 0, 1, refRatio(lev - 1));
-#else
-      average_down(
-        ldataFine_p->divu, ldataCrse_p->divu, 0, 1, refRatio(lev - 1));
-#endif
-    }
+    averageDownField(a_time, &LevelData::divu, 0, 1);
   }
 
   // fillPatch a_time divu to get properly filled ghost cells

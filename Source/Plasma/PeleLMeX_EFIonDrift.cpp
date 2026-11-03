@@ -98,15 +98,9 @@ PeleLM::ionDriftVelocity(const std::unique_ptr<AdvanceAdvData>& advData)
   //----------------------------------------------------------------
   // Average down faces
   for (int lev = finest_level; lev > 0; --lev) {
-#ifdef AMREX_USE_EB
-    EB_average_down_faces(
+    pelelm_average_down_faces(
       GetArrOfConstPtrs(advData->uDrift[lev]),
       GetArrOfPtrs(advData->uDrift[lev - 1]), refRatio(lev - 1), geom[lev - 1]);
-#else
-    average_down_faces(
-      GetArrOfConstPtrs(advData->uDrift[lev]),
-      GetArrOfPtrs(advData->uDrift[lev - 1]), refRatio(lev - 1), geom[lev - 1]);
-#endif
   }
 
   // FillPatch Udrift on levels > 0

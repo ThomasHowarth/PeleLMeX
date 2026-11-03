@@ -51,6 +51,33 @@
 #include <PeleLMRad.H>
 #endif
 
+#ifdef AMREX_USE_EB
+#include <AMReX_EBMultiFabUtil.H>
+#endif
+
+// average_down / average_down_faces, using the EB-aware versions in EB builds
+template <typename... Args>
+void
+pelelm_average_down(Args&&... args)
+{
+#ifdef AMREX_USE_EB
+  amrex::EB_average_down(std::forward<Args>(args)...);
+#else
+  amrex::average_down(std::forward<Args>(args)...);
+#endif
+}
+
+template <typename... Args>
+void
+pelelm_average_down_faces(Args&&... args)
+{
+#ifdef AMREX_USE_EB
+  amrex::EB_average_down_faces(std::forward<Args>(args)...);
+#else
+  amrex::average_down_faces(std::forward<Args>(args)...);
+#endif
+}
+
 // Forward declarations
 #ifdef PELE_USE_SPRAY
 class SprayParticleContainer;
@@ -1404,6 +1431,13 @@ public:
   void averageDownAux(const PeleLM::TimeStamp a_time);
   void averageDown(
     const PeleLM::TimeStamp a_time, const int state_comp, const int ncomp);
+  // Average down components [scomp, scomp + ncomp) of a LevelData field
+  // from the finest level to level 0
+  void averageDownField(
+    const PeleLM::TimeStamp a_time,
+    amrex::MultiFab LevelData::* a_field,
+    const int scomp,
+    const int ncomp);
   void averageDownReaction();
 #ifdef PELE_USE_PLASMA
   void averageDownnE(const PeleLM::TimeStamp a_time);

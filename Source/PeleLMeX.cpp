@@ -224,19 +224,7 @@ PeleLM::averageDownState(const TimeStamp a_time)
 
       const int nc_after = NVAR - (RHOH + 1);
       if (nc_after > 0) {
-        for (int lev = finest_level; lev > 0; --lev) {
-          auto* ldataFine_p = getLevelDataPtr(lev, a_time);
-          auto* ldataCrse_p = getLevelDataPtr(lev - 1, a_time);
-#ifdef AMREX_USE_EB
-          EB_average_down(
-            ldataFine_p->state, ldataCrse_p->state, RHOH + 1, nc_after,
-            refRatio(lev - 1));
-#else
-          average_down(
-            ldataFine_p->state, ldataCrse_p->state, RHOH + 1, nc_after,
-            refRatio(lev - 1));
-#endif
-        }
+        averageDown(a_time, RHOH + 1, nc_after);
       }
 
       // Recompute TEMP/RHORT from the restricted densities via the EOS.
@@ -247,19 +235,7 @@ PeleLM::averageDownState(const TimeStamp a_time)
       setTemperature(a_time);
       setThermoPress(a_time);
     } else {
-      for (int lev = finest_level; lev > 0; --lev) {
-        auto* ldataFine_p = getLevelDataPtr(lev, a_time);
-        auto* ldataCrse_p = getLevelDataPtr(lev - 1, a_time);
-#ifdef AMREX_USE_EB
-        EB_average_down(
-          ldataFine_p->state, ldataCrse_p->state, AMREX_SPACEDIM, nc_rest,
-          refRatio(lev - 1));
-#else
-        average_down(
-          ldataFine_p->state, ldataCrse_p->state, AMREX_SPACEDIM, nc_rest,
-          refRatio(lev - 1));
-#endif
-      }
+      averageDown(a_time, AMREX_SPACEDIM, nc_rest);
     }
   }
 }
@@ -282,19 +258,7 @@ PeleLM::averageDownScalars(const TimeStamp a_time)
     const int nc_dens = RHOH - DENSITY + 1; // rho + NUM_SPECIES rhoY + rhoH
     const int nc_after = nScal - nc_dens;
     if (nc_after > 0) {
-      for (int lev = finest_level; lev > 0; --lev) {
-        auto* ldataFine_p = getLevelDataPtr(lev, a_time);
-        auto* ldataCrse_p = getLevelDataPtr(lev - 1, a_time);
-#ifdef AMREX_USE_EB
-        EB_average_down(
-          ldataFine_p->state, ldataCrse_p->state, DENSITY + nc_dens, nc_after,
-          refRatio(lev - 1));
-#else
-        average_down(
-          ldataFine_p->state, ldataCrse_p->state, DENSITY + nc_dens, nc_after,
-          refRatio(lev - 1));
-#endif
-      }
+      averageDown(a_time, DENSITY + nc_dens, nc_after);
     }
 
     // Recompute TEMP/RHORT from the restricted densities via the EOS
@@ -305,55 +269,35 @@ PeleLM::averageDownScalars(const TimeStamp a_time)
     return;
   }
 
-  for (int lev = finest_level; lev > 0; --lev) {
-    auto* ldataFine_p = getLevelDataPtr(lev, a_time);
-    auto* ldataCrse_p = getLevelDataPtr(lev - 1, a_time);
-#ifdef AMREX_USE_EB
-    EB_average_down(
-      ldataFine_p->state, ldataCrse_p->state, DENSITY, nScal,
-      refRatio(lev - 1));
-#else
-    average_down(
-      ldataFine_p->state, ldataCrse_p->state, DENSITY, nScal,
-      refRatio(lev - 1));
-#endif
-  }
+  averageDown(a_time, DENSITY, nScal);
 }
 
 void
 PeleLM::averageDownAux(const TimeStamp a_time)
 {
-  for (int lev = finest_level; lev > 0; --lev) {
-    auto* ldataFine_p = getLevelDataPtr(lev, a_time);
-    auto* ldataCrse_p = getLevelDataPtr(lev - 1, a_time);
-#ifdef AMREX_USE_EB
-    EB_average_down(
-      ldataFine_p->auxiliaries, ldataCrse_p->auxiliaries, 0, m_nAux,
-      refRatio(lev - 1));
-#else
-    average_down(
-      ldataFine_p->auxiliaries, ldataCrse_p->auxiliaries, 0, m_nAux,
-      refRatio(lev - 1));
-#endif
-  }
+  averageDownField(a_time, &LevelData::auxiliaries, 0, m_nAux);
 }
 
 void
 PeleLM::averageDown(
   const TimeStamp a_time, const int state_comp, const int ncomp)
 {
+  averageDownField(a_time, &LevelData::state, state_comp, ncomp);
+}
+
+void
+PeleLM::averageDownField(
+  const TimeStamp a_time,
+  amrex::MultiFab LevelData::* a_field,
+  const int scomp,
+  const int ncomp)
+{
   for (int lev = finest_level; lev > 0; --lev) {
     auto* ldataFine_p = getLevelDataPtr(lev, a_time);
     auto* ldataCrse_p = getLevelDataPtr(lev - 1, a_time);
-#ifdef AMREX_USE_EB
-    EB_average_down(
-      ldataFine_p->state, ldataCrse_p->state, state_comp, ncomp,
+    pelelm_average_down(
+      ldataFine_p->*a_field, ldataCrse_p->*a_field, scomp, ncomp,
       refRatio(lev - 1));
-#else
-    average_down(
-      ldataFine_p->state, ldataCrse_p->state, state_comp, ncomp,
-      refRatio(lev - 1));
-#endif
   }
 }
 
@@ -447,11 +391,7 @@ PeleLM::averageDownVelocity(const TimeStamp a_time)
         amrex::Gpu::streamSynchronize();
       }
 
-#ifdef AMREX_USE_EB
-      amrex::EB_average_down(uxi_fine, uxi_crse, 0, nc, refRatio(lev - 1));
-#else
-      amrex::average_down(uxi_fine, uxi_crse, 0, nc, refRatio(lev - 1));
-#endif
+      pelelm_average_down(uxi_fine, uxi_crse, 0, nc, refRatio(lev - 1));
 
       // Convert coarse u_xi back to physical-space v.
       {
@@ -470,15 +410,9 @@ PeleLM::averageDownVelocity(const TimeStamp a_time)
         amrex::Gpu::streamSynchronize();
       }
     } else {
-#ifdef AMREX_USE_EB
-      EB_average_down(
+      pelelm_average_down(
         ldataFine_p->state, ldataCrse_p->state, VELX, AMREX_SPACEDIM,
         refRatio(lev - 1));
-#else
-      average_down(
-        ldataFine_p->state, ldataCrse_p->state, VELX, AMREX_SPACEDIM,
-        refRatio(lev - 1));
-#endif
     }
   }
 }
@@ -532,11 +466,7 @@ PeleLM::averageDownConservedDensities(const TimeStamp a_time)
       amrex::Gpu::streamSynchronize();
     }
 
-#ifdef AMREX_USE_EB
-    amrex::EB_average_down(dxi_fine, dxi_crse, 0, nc, refRatio(lev - 1));
-#else
-    amrex::average_down(dxi_fine, dxi_crse, 0, nc, refRatio(lev - 1));
-#endif
+    pelelm_average_down(dxi_fine, dxi_crse, 0, nc, refRatio(lev - 1));
 
     // Convert coarse d_xi back to physical-space density.
     {
@@ -560,13 +490,8 @@ PeleLM::averageDownReaction()
   for (int lev = finest_level; lev > 0; --lev) {
     auto* ldataRFine_p = getLevelDataReactPtr(lev);
     auto* ldataRCrse_p = getLevelDataReactPtr(lev - 1);
-#ifdef AMREX_USE_EB
-    EB_average_down(
+    pelelm_average_down(
       ldataRFine_p->I_R, ldataRCrse_p->I_R, 0, nCompIR(), refRatio(lev - 1));
-#else
-    average_down(
-      ldataRFine_p->I_R, ldataRCrse_p->I_R, 0, nCompIR(), refRatio(lev - 1));
-#endif
   }
 }
 
