@@ -1277,6 +1277,12 @@ public:
     const int lev,
     const amrex::Real a_time);
 
+  // Zero the velocity in the ghost cells beyond a recycling inflow face,
+  // transverse corners included, so that everything PeleLMCCFillExtDirState
+  // reads there as preloaded data is defined.  No-op without recycling.
+  void zeroRecyclingInflowGhostVel(
+    amrex::MultiFab& a_vel, const int vel_comp, const int lev);
+
   // Inject synthetic turbulence into one inflow-adjacent ghost box. Wraps
   // the PelePhysics call so that the mesh-mapping case, which must supply
   // the injection face's physical cell-centre coordinates rather than let

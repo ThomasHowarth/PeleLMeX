@@ -450,49 +450,7 @@ PeleLM::fillpatch_state(
 
   const int nCompState = (m_incompressible) != 0 ? AMREX_SPACEDIM : NVAR;
 
-  if (m_use_inlet_from_plane != 0) {
-    const auto bcrec = fetchBCRecArray(XVEL, XVEL + AMREX_SPACEDIM);
-    const auto domain = geom[lev].Domain();
-    const int idir = m_inlet_plane_dir;
-    auto face_is_recycling_inflow = [=](int is_hi) -> bool {
-      for (int n = 0; n < AMREX_SPACEDIM; ++n) {
-        const auto& vbc = bcrec[n];
-        const int bctype = (is_hi != 0) ? vbc.hi(idir) : vbc.lo(idir);
-        if (bctype != amrex::BCType::ext_dir) {
-          return false;
-        }
-      }
-      return true;
-    };
-    const bool zero_lo = face_is_recycling_inflow(0);
-    const bool zero_hi = face_is_recycling_inflow(1);
-    if (zero_lo || zero_hi) {
-
-#ifdef AMREX_USE_OMP
-#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
-#endif
-      for (amrex::MFIter mfi(a_state); mfi.isValid(); ++mfi) {
-        const amrex::Box& vbx = mfi.validbox();
-        const amrex::Box& gbx = mfi.fabbox();
-        if (zero_lo && vbx.smallEnd(idir) == domain.smallEnd(idir)) {
-          amrex::Box lobx = gbx;
-          lobx.setBig(idir, vbx.smallEnd(idir) - 1);
-          if (lobx.ok()) {
-            a_state[mfi].setVal<amrex::RunOn::Device>(
-              0.0, lobx, VELX, AMREX_SPACEDIM);
-          }
-        }
-        if (zero_hi && vbx.bigEnd(idir) == domain.bigEnd(idir)) {
-          amrex::Box hibx = gbx;
-          hibx.setSmall(idir, vbx.bigEnd(idir) + 1);
-          if (hibx.ok()) {
-            a_state[mfi].setVal<amrex::RunOn::Device>(
-              0.0, hibx, VELX, AMREX_SPACEDIM);
-          }
-        }
-      }
-    }
-  }
+  zeroRecyclingInflowGhostVel(a_state, VELX, lev);
 
   fillTurbInflow(a_state, VELX, lev, a_time);
 
@@ -521,14 +479,16 @@ PeleLM::fillpatch_state(
     // to the legacy interpolator when mesh mapping is off or unavailable.
     auto* mapper = getInterpolator(1, lev - 1);
 
+    // The coarse functor fills AMReX's temporary coarse patch, on which no
+    // inflow velocity is preloaded: only the mean from bcnormal applies there.
     amrex::PhysBCFunct<
       amrex::GpuBndryFuncFab<PeleLMCCFillExtDirState<ProblemSpecificFunctions>>>
       crse_bndry_func(
         geom[lev - 1], fetchBCRecArray(0, nCompState),
         PeleLMCCFillExtDirState<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux,
-          static_cast<int>(turb_inflow.is_initialized()),
-          m_use_inlet_from_plane, m_inlet_plane_dir, recycFull, m_map_eval});
+          lprobparm, lpmfdata, m_nAux, /*do_turbInflow=*/0,
+          /*do_inletFromPlane=*/0, m_inlet_plane_dir, /*recycling_full=*/0,
+          m_map_eval});
     amrex::PhysBCFunct<
       amrex::GpuBndryFuncFab<PeleLMCCFillExtDirState<ProblemSpecificFunctions>>>
       fine_bndry_func(
@@ -1047,6 +1007,8 @@ PeleLM::fillcoarsepatch_state(
 
   const int nCompState = (m_incompressible) != 0 ? AMREX_SPACEDIM : NVAR;
 
+  zeroRecyclingInflowGhostVel(a_state, VELX, lev);
+
   fillTurbInflow(a_state, VELX, lev, a_time);
 
   if (m_use_inlet_from_plane != 0) {
@@ -1060,14 +1022,16 @@ PeleLM::fillcoarsepatch_state(
   // MakeNewLevelFromCoarse / RemakeLevel.
   auto* mapper = getInterpolator(m_regrid_interp_method, lev - 1);
 
+  // No inflow velocity is preloaded on the temporary coarse patch (see
+  // fillpatch_state)
   amrex::PhysBCFunct<
     amrex::GpuBndryFuncFab<PeleLMCCFillExtDirState<ProblemSpecificFunctions>>>
     crse_bndry_func(
       geom[lev - 1], fetchBCRecArray(0, nCompState),
       PeleLMCCFillExtDirState<ProblemSpecificFunctions>{
-        lprobparm, lpmfdata, m_nAux,
-        static_cast<int>(turb_inflow.is_initialized()), m_use_inlet_from_plane,
-        m_inlet_plane_dir, recycFull, m_map_eval});
+        lprobparm, lpmfdata, m_nAux, /*do_turbInflow=*/0,
+        /*do_inletFromPlane=*/0, m_inlet_plane_dir, /*recycling_full=*/0,
+        m_map_eval});
   amrex::PhysBCFunct<
     amrex::GpuBndryFuncFab<PeleLMCCFillExtDirState<ProblemSpecificFunctions>>>
     fine_bndry_func(
@@ -1218,6 +1182,8 @@ PeleLM::setInflowBoundaryVel(
 
   const amrex::Real time = getTime(lev, a_time);
 
+  zeroRecyclingInflowGhostVel(a_vel, 0, lev);
+
   fillTurbInflow(a_vel, 0, lev, time);
 
   if (m_use_inlet_from_plane != 0) {
@@ -1301,6 +1267,57 @@ PeleLM::addTurbInflowToBox(
   }
 #endif
   turb_inflow.add_turb(a_bx, a_data, 0, geom[lev], a_time, dir, a_side);
+}
+
+void
+PeleLM::zeroRecyclingInflowGhostVel(
+  amrex::MultiFab& a_vel, const int vel_comp, const int lev)
+{
+  if (m_use_inlet_from_plane == 0) {
+    return;
+  }
+  const auto bcrec = fetchBCRecArray(XVEL, XVEL + AMREX_SPACEDIM);
+  const auto domain = geom[lev].Domain();
+  const int idir = m_inlet_plane_dir;
+  auto face_is_recycling_inflow = [=](int is_hi) -> bool {
+    for (int n = 0; n < AMREX_SPACEDIM; ++n) {
+      const auto& vbc = bcrec[n];
+      const int bctype = (is_hi != 0) ? vbc.hi(idir) : vbc.lo(idir);
+      if (bctype != amrex::BCType::ext_dir) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const bool zero_lo = face_is_recycling_inflow(0);
+  const bool zero_hi = face_is_recycling_inflow(1);
+  if (!zero_lo && !zero_hi) {
+    return;
+  }
+
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+  for (amrex::MFIter mfi(a_vel); mfi.isValid(); ++mfi) {
+    const amrex::Box& vbx = mfi.validbox();
+    const amrex::Box& gbx = mfi.fabbox();
+    if (zero_lo && vbx.smallEnd(idir) == domain.smallEnd(idir)) {
+      amrex::Box lobx = gbx;
+      lobx.setBig(idir, vbx.smallEnd(idir) - 1);
+      if (lobx.ok()) {
+        a_vel[mfi].setVal<amrex::RunOn::Device>(
+          0.0, lobx, vel_comp, AMREX_SPACEDIM);
+      }
+    }
+    if (zero_hi && vbx.bigEnd(idir) == domain.bigEnd(idir)) {
+      amrex::Box hibx = gbx;
+      hibx.setSmall(idir, vbx.bigEnd(idir) + 1);
+      if (hibx.ok()) {
+        a_vel[mfi].setVal<amrex::RunOn::Device>(
+          0.0, hibx, vel_comp, AMREX_SPACEDIM);
+      }
+    }
+  }
 }
 
 void

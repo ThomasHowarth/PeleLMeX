@@ -156,7 +156,9 @@ struct PeleLMCCFillExtDirState
     // If using TurbInflow or inlet_from_plane, pass in the sampled data.
     // User can overwrite or increment, as needed. In full recycling
     // mode the pre-loaded value is the complete inflow velocity and is
-    // kept regardless of what bcnormal does to it.
+    // kept regardless of what bcnormal does to it.  Functors filling a patch
+    // with nothing preloaded (AMReX's temporary coarse patch, whose domain
+    // boundary it sets to NaN) are built with these flags off.
     bool keep_recycled[NVAR] = {false};
     if (
       m_do_turbInflow != 0 ||
@@ -165,15 +167,10 @@ struct PeleLMCCFillExtDirState
         if (bcr[n].data()[bcidx] != amrex::BCType::ext_dir) {
           continue;
         }
-        if (!isnan(state(iv, VELX + n))) { // During fillcoarsepatch, get here
-                                           // with nan. TODO: find a better fix
-          s_ext[VELX + n] = state(iv, VELX + n);
-          keep_recycled[n] = (m_recycling_full != 0) &&
-                             (m_do_inlet_from_plane != 0) &&
-                             (idir == m_inlet_from_plane_dir);
-        } else {
-          s_ext[VELX + n] = 0;
-        }
+        s_ext[VELX + n] = state(iv, VELX + n);
+        keep_recycled[n] = (m_recycling_full != 0) &&
+                           (m_do_inlet_from_plane != 0) &&
+                           (idir == m_inlet_from_plane_dir);
       }
     }
 
