@@ -957,6 +957,11 @@ public:
       a_umac,
     const amrex::Vector<amrex::MultiFab>& a_cmask,
     amrex::Vector<amrex::MultiFab>& a_mflux);
+  // One unsplit geometric advection step (Owkes & Desjardins, JCP 270, 2014)
+  void VOFUnsplitStep(
+    const amrex::Real a_dt,
+    const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
+      a_umac);
   // Conservative momentum advection term: the VOF split sweeps replayed on
   // the momentum with the sweep face mass fluxes and the face velocity states
   void VOFMomentumAdvTerm(
@@ -1038,6 +1043,8 @@ public:
   // u = curl(A) from ProblemSpecificFunctions::vof_vector_potential and
   // skip the momentum update
   int m_vof_advect_only = 0;
+  // Advection scheme: unsplit geometric fluxes (1) or split sweeps (0)
+  int m_vof_unsplit = 0;
   //-----------------------------------------------------------------------------
 #endif
 #ifdef PELE_USE_SOOT
