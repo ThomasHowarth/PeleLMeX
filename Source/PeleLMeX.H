@@ -317,6 +317,15 @@ public:
     amrex::Vector<int> vof_sweep_dir;
     amrex::Vector<amrex::Vector<amrex::MultiFab>> vof_cmask;
     amrex::Real vof_dt_sub = 0.0;
+    // VOF unsplit steps, for the momentum advection: liquid crossing each face
+    // in cell volumes [substep][lev][dir], and at the start of each sub-step
+    // [substep][lev] F, the PLIC planes and the traced mesh nodes
+    amrex::Vector<
+      amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>>
+      vof_lflux;
+    amrex::Vector<amrex::Vector<amrex::MultiFab>> vof_fstart;
+    amrex::Vector<amrex::Vector<amrex::MultiFab>> vof_plane;
+    amrex::Vector<amrex::Vector<amrex::MultiFab>> vof_back;
 #endif
   };
   //-----------------------------------------------------------------------------
@@ -961,10 +970,18 @@ public:
   void VOFUnsplitStep(
     const amrex::Real a_dt,
     const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
-      a_umac);
+      a_umac,
+    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& flux,
+    amrex::MultiFab& plane,
+    amrex::MultiFab& back);
   // Conservative momentum advection term: the VOF split sweeps replayed on
   // the momentum with the sweep face mass fluxes and the face velocity states
   void VOFMomentumAdvTerm(
+    const std::unique_ptr<AdvanceAdvData>& advData,
+    const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>&
+      a_faces);
+  // The same with the fluxes of the unsplit steps
+  void VOFMomentumAdvTermUnsplit(
     const std::unique_ptr<AdvanceAdvData>& advData,
     const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>&
       a_faces);
