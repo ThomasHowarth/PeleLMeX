@@ -719,7 +719,8 @@ plane_fraction(
 /**
  * \brief Volume fraction of the ghost cell g beyond a wall normal to dir, by
  *        extending the PLIC plane of the interior interface: a free contact
- *        line, exact for a planar interface.  Used when the interface meets
+ *        line, exact for a planar interface and for one uniform normal to the
+ *        wall.  Used when the interface meets
  *        the wall within nsearch cells (tangentially) of g.  The plane is
  *        that of the nearest interface cell, 1 to hf_half layers inside the
  *        wall, whose reconstruction does not read ghost cells: height
@@ -833,12 +834,20 @@ wall_ghost_fraction(
 #else
   fit_plane(ref[0], ref[1], ref[2], F, m[0], m[1], m[2], alpha);
 #endif
-  // Plane constant in the unit-cube coordinates of g
+  // Plane constant in the unit-cube coordinates of g and of the wall cell.  The
+  // ghost takes the change of the plane's volume from the wall cell: the same
+  // as the plane's volume at g for a planar interface, and the value of the
+  // wall cell where the plane does not vary across the wall, whichever cell the
+  // plane comes from, so that a flow uniform normal to the wall stays uniform.
+  amrex::Real alpha_g = alpha;
+  amrex::Real alpha_w = alpha;
   for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-    alpha -= m[d] * static_cast<amrex::Real>(g[d] - ref[d]);
+    alpha_g -= m[d] * static_cast<amrex::Real>(g[d] - ref[d]);
+    alpha_w -= m[d] * static_cast<amrex::Real>(iv_w[d] - ref[d]);
   }
-  return amrex::Clamp(
-    cut_volume(m[0], m[1], m[2], alpha, 0.0_rt, 1.0_rt), 0.0_rt, 1.0_rt);
+  const amrex::Real V_g = cut_volume(m[0], m[1], m[2], alpha_g, 0.0_rt, 1.0_rt);
+  const amrex::Real V_w = cut_volume(m[0], m[1], m[2], alpha_w, 0.0_rt, 1.0_rt);
+  return amrex::Clamp(F(iv_w) + V_g - V_w, 0.0_rt, 1.0_rt);
 }
 
 /**
