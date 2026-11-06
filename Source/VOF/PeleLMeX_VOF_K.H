@@ -68,8 +68,9 @@ volume_intercept(
 
   // Volume at the breakpoints V1 < V2 < V3
   const amrex::Real m12 = m1 + m2;
-  const amrex::Real pr = amrex::max(6.0_rt * m1 * m2 * m3, tiny);
-  const amrex::Real V1 = m1 * m1 * m1 / pr;
+  const amrex::Real pr = 6.0_rt * m1 * m2 * m3;
+  // Without a corner region (m1 = 0, a 2D or grid-aligned plane), V1 = 0
+  const amrex::Real V1 = (pr > 0.0_rt) ? m1 * m1 * m1 / pr : 0.0_rt;
   const amrex::Real V2 = V1 + 0.5_rt * (m2 - m1) / (m3 + tiny);
   amrex::Real mm = 0.0_rt;
   amrex::Real V3 = 0.0_rt;
@@ -95,8 +96,9 @@ volume_intercept(
     const amrex::Real p = 2.0_rt * m1 * m2;
     const amrex::Real q = 1.5_rt * m1 * m2 * (m12 - 2.0_rt * m3 * ch);
     const amrex::Real p12 = std::sqrt(amrex::max(0.0_rt, p));
+    const amrex::Real pp = p * p12;
     const amrex::Real teta =
-      std::acos(amrex::max(-1.0_rt, amrex::min(1.0_rt, q / (p * p12 + tiny)))) /
+      std::acos((pp > 0.0_rt) ? amrex::Clamp(q / pp, -1.0_rt, 1.0_rt) : 1.0_rt) /
       3.0_rt;
     const amrex::Real cs = std::cos(teta);
     alpha = p12 * (std::sqrt(3.0_rt * (1.0_rt - cs * cs)) - cs) + m12;
@@ -106,8 +108,9 @@ volume_intercept(
     const amrex::Real p = m1 * (m2 + m3) + m2 * m3 - 0.25_rt;
     const amrex::Real q = 1.5_rt * m1 * m2 * m3 * (0.5_rt - ch);
     const amrex::Real p12 = std::sqrt(amrex::max(0.0_rt, p));
+    const amrex::Real pp = p * p12;
     const amrex::Real teta =
-      std::acos(amrex::max(-1.0_rt, amrex::min(1.0_rt, q / (p * p12 + tiny)))) /
+      std::acos((pp > 0.0_rt) ? amrex::Clamp(q / pp, -1.0_rt, 1.0_rt) : 1.0_rt) /
       3.0_rt;
     const amrex::Real cs = std::cos(teta);
     alpha = p12 * (std::sqrt(3.0_rt * (1.0_rt - cs * cs)) - cs) + 0.5_rt;
