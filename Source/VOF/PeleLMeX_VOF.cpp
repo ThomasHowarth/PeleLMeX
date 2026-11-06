@@ -313,6 +313,12 @@ PeleLM::getVOFSharpFaceDensity(const int lev, const TimeStamp a_time)
       });
   }
   amrex::Gpu::streamSynchronize();
+  // Boxes can see different wall ghost cells (VOFWallGhosts searches along the
+  // wall within each box's ghost cells).  A face must have one coefficient, or
+  // the projection operator is neither conservative nor symmetric.
+  for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+    rho_fc[idim].OverrideSync(geom[lev].periodicity());
+  }
   return rho_fc;
 }
 
@@ -529,66 +535,99 @@ PeleLM::VOFFaceProjection(
       GetArrOfConstPtrs(a_umac[lev]), a_umac[lev - 1], refRatio(lev - 1),
       geom[lev - 1]);
   }
-  amrex::Vector<amrex::MultiFab> phi(finest_level + 1);
-  amrex::Vector<amrex::MultiFab> rhs(finest_level + 1);
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    rhs[lev].define(grids[lev], dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
-    phi[lev].define(grids[lev], dmap[lev], 1, 1, amrex::MFInfo(), Factory(lev));
-    phi[lev].setVal(0.0);
-    amrex::computeDivergence(
-      rhs[lev], GetArrOfConstPtrs(a_umac[lev]), geom[lev]);
-    rhs[lev].mult(-1.0);
-    linop.setLevelBC(lev, nullptr);
-  }
-  // GMRESMLMG does not make a singular system solvable: remove the mean
-  // (round-off for a closed domain) as MLMG would
-  bool singular = true;
-  for (const auto& bcs :
-       {getMACProjectionBC(amrex::Orientation::low),
-        getMACProjectionBC(amrex::Orientation::high)}) {
-    for (const auto bc : bcs) {
-      if (bc == amrex::LinOpBCType::Dirichlet) {
-        singular = false;
+  // GMRES stops on its own estimate of the residual in the 2-norm.  Convergence
+  // is judged here on the divergence actually left in umac, solving again for
+  // what remains, with a warning if the target is not reached: a wrong operator
+  // (a face with two coefficients) gives a converged solve and a divergent umac.
+  constexpr int max_solves = 10;
+  amrex::Real div_target = 0.0;
+  amrex::Real div_left = 0.0;
+  int nsolve = 0;
+  for (nsolve = 0; nsolve <= max_solves; ++nsolve) {
+    amrex::Vector<amrex::MultiFab> phi(finest_level + 1);
+    amrex::Vector<amrex::MultiFab> rhs(finest_level + 1);
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      rhs[lev].define(
+        grids[lev], dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
+      phi[lev].define(
+        grids[lev], dmap[lev], 1, 1, amrex::MFInfo(), Factory(lev));
+      phi[lev].setVal(0.0);
+      amrex::computeDivergence(
+        rhs[lev], GetArrOfConstPtrs(a_umac[lev]), geom[lev]);
+      rhs[lev].mult(-1.0);
+      linop.setLevelBC(lev, nullptr);
+    }
+    // GMRESMLMG does not make a singular system solvable: remove the mean
+    // (round-off for a closed domain) as MLMG would
+    bool singular = true;
+    for (const auto& bcs :
+         {getMACProjectionBC(amrex::Orientation::low),
+          getMACProjectionBC(amrex::Orientation::high)}) {
+      for (const auto bc : bcs) {
+        if (bc == amrex::LinOpBCType::Dirichlet) {
+          singular = false;
+        }
       }
     }
-  }
-  if (singular) {
-    const amrex::Real mean =
-      rhs[0].sum() / static_cast<amrex::Real>(geom[0].Domain().numPts());
+    // Measured before the mean is removed: a mean left in umac is divergence
+    // too, and later solves cannot remove it
+    div_left = 0.0;
     for (int lev = 0; lev <= finest_level; ++lev) {
-      rhs[lev].plus(-mean, 0, 1);
+      div_left = amrex::max(div_left, rhs[lev].norm0());
+    }
+    if (singular) {
+      const amrex::Real mean =
+        rhs[0].sum() / static_cast<amrex::Real>(geom[0].Domain().numPts());
+      for (int lev = 0; lev <= finest_level; ++lev) {
+        rhs[lev].plus(-mean, 0, 1);
+      }
+    }
+    if (nsolve == 0) {
+      div_target = amrex::max(m_mac_mg_rtol * div_left, m_mac_mg_atol);
+    }
+    if (div_left <= div_target || nsolve == max_solves) {
+      break;
+    }
+    {
+      amrex::GMRESMLMG gmres(mlmg);
+      gmres.setVerbose(m_macproj_verbose);
+      gmres.solve(
+        GetVecOfPtrs(phi), GetVecOfConstPtrs(rhs), m_mac_mg_rtol,
+        m_mac_mg_atol);
+      if (m_macproj_verbose > 0) {
+        amrex::Print() << "   VOF face projection: " << gmres.getNumIters()
+                       << " GMRES iterations\n";
+      }
+    }
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> flux(
+      finest_level + 1);
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+        flux[lev][idim].define(
+          a_umac[lev][idim]->boxArray(), dmap[lev], 1, 0, amrex::MFInfo(),
+          Factory(lev));
+      }
+    }
+    mlmg.prepareForFluxes(GetVecOfConstPtrs(phi));
+    mlmg.getFluxes(GetVecOfArrOfPtrs(flux), GetVecOfPtrs(phi));
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+        amrex::MultiFab::Add(*a_umac[lev][idim], flux[lev][idim], 0, 0, 1, 0);
+      }
+    }
+    for (int lev = finest_level; lev > 0; --lev) {
+      amrex::average_down_faces(
+        GetArrOfConstPtrs(a_umac[lev]), a_umac[lev - 1], refRatio(lev - 1),
+        geom[lev - 1]);
     }
   }
-  {
-    amrex::GMRESMLMG gmres(mlmg);
-    gmres.setVerbose(m_macproj_verbose);
-    gmres.solve(
-      GetVecOfPtrs(phi), GetVecOfConstPtrs(rhs), m_mac_mg_rtol, m_mac_mg_atol);
-    if (m_macproj_verbose > 0) {
-      amrex::Print() << "   VOF face projection: " << gmres.getNumIters()
-                     << " GMRES iterations\n";
-    }
-  }
-  amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> flux(
-    finest_level + 1);
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      flux[lev][idim].define(
-        a_umac[lev][idim]->boxArray(), dmap[lev], 1, 0, amrex::MFInfo(),
-        Factory(lev));
-    }
-  }
-  mlmg.prepareForFluxes(GetVecOfConstPtrs(phi));
-  mlmg.getFluxes(GetVecOfArrOfPtrs(flux), GetVecOfPtrs(phi));
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      amrex::MultiFab::Add(*a_umac[lev][idim], flux[lev][idim], 0, 0, 1, 0);
-    }
-  }
-  for (int lev = finest_level; lev > 0; --lev) {
-    amrex::average_down_faces(
-      GetArrOfConstPtrs(a_umac[lev]), a_umac[lev - 1], refRatio(lev - 1),
-      geom[lev - 1]);
+  if (div_left > div_target) {
+    amrex::Print() << "   VOF: WARNING face projection left a divergence of "
+                   << div_left << " after " << nsolve << " solves, target "
+                   << div_target << "\n";
+  } else if (m_macproj_verbose > 0 && nsolve > 1) {
+    amrex::Print() << "   VOF face projection: " << nsolve
+                   << " solves, divergence left " << div_left << "\n";
   }
 }
 
