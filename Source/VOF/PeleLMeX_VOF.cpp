@@ -306,9 +306,8 @@ PeleLM::getVOFSharpFaceDensity(const int lev, const TimeStamp a_time)
       });
   }
   amrex::Gpu::streamSynchronize();
-  // Boxes can see different wall ghost cells (VOFWallGhosts searches along the
-  // wall within each box's ghost cells).  A face must have one coefficient, or
-  // the projection operator is neither conservative nor symmetric.
+  // A face must have one coefficient, or the projection operator is neither
+  // conservative nor symmetric.  Keep one copy against round-off.
   for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
     rho_fc[idim].OverrideSync(geom[lev].periodicity());
   }
@@ -684,7 +683,8 @@ PeleLM::VOFFaceProjection(
   // GMRES stops on its own estimate of the residual in the 2-norm.  Convergence
   // is judged here on the divergence actually left in umac, solving again for
   // what remains, with a warning if the target is not reached: a wrong operator
-  // (a face with two coefficients) gives a converged solve and a divergent umac.
+  // (a face with two coefficients) gives a converged solve and a divergent
+  // umac.
   constexpr int max_solves = 10;
   amrex::Real div_target = 0.0;
   amrex::Real div_left = 0.0;
@@ -1645,6 +1645,13 @@ PeleLM::fillcoarsepatch_vof(
 // ghost values impose 90 degrees instead, and the inconsistent near-wall
 // normals unbalance gravity at a tilted interface.  Directions are processed
 // in turn, so edge and corner ghosts see the ghosts of earlier directions.
+//
+// A ghost value depends on cells further along the wall than a_vof has ghost
+// cells, so that a_vof alone would give different values in neighbouring boxes.
+// The fill therefore works on a copy where the boxes extend through the walls:
+// each wall ghost cell belongs to one box, its ghost layers cover the whole
+// search, and they are exchanged between passes.  The result does not depend on
+// the box layout.
 //-----------------------------------------------------------------------------
 void
 PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
@@ -1652,52 +1659,125 @@ PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
   if (nGhost == 0) {
     return;
   }
+  const auto is_wall = [&](const int dir, const int sgn) {
+    const int bc = (sgn < 0) ? m_phys_bc.lo(dir) : m_phys_bc.hi(dir);
+    return !geom[lev].isPeriodic(dir) &&
+           (bc == BoundaryCondition::BCSlipWallAdiab ||
+            bc == BoundaryCondition::BCNoSlipWallAdiab ||
+            bc == BoundaryCondition::BCSlipWallIsotherm ||
+            bc == BoundaryCondition::BCNoSlipWallIsotherm);
+  };
+  bool has_wall = false;
+  for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
+    has_wall = has_wall || is_wall(dir, -1) || is_wall(dir, 1);
+  }
+  if (!has_wall) {
+    return;
+  }
+
   // Passes beyond the first refine the ghost values at shallow contact
   // angles, where the only available planes read ghost cells
   constexpr int npass = 4;
+  // The ghost layers read: the search along the wall, the reconstruction
+  // stencil of the plane it finds, and the ghost layers of a_vof themselves
+  constexpr int nwall = m_nGrowVOF;
+  constexpr int nread =
+    pelelmex::vof::wall_nsearch + pelelmex::vof::hf_half + 1;
   const amrex::Box& domain = geom[lev].Domain();
-  for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
-    if (geom[lev].isPeriodic(dir)) {
-      continue;
+  const auto periodicity = geom[lev].periodicity();
+
+  // Boxes extended through the walls they touch.  They stay disjoint.
+  amrex::BoxList boxes;
+  for (int ib = 0; ib < a_vof.boxArray().size(); ++ib) {
+    const amrex::Box b = a_vof.boxArray()[ib];
+    amrex::Box ext = b;
+    for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
+      if (is_wall(dir, -1) && b.smallEnd(dir) == domain.smallEnd(dir)) {
+        ext.growLo(dir, nwall);
+      }
+      if (is_wall(dir, 1) && b.bigEnd(dir) == domain.bigEnd(dir)) {
+        ext.growHi(dir, nwall);
+      }
     }
+    boxes.push_back(ext);
+  }
+  amrex::BoxArray ext_ba(std::move(boxes));
+  amrex::MultiFab work(ext_ba, a_vof.DistributionMap(), 1, nread);
+  amrex::MultiFab snap(ext_ba, a_vof.DistributionMap(), 1, nread);
+  work.setVal(0.0);
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+  for (amrex::MFIter mfi(a_vof); mfi.isValid(); ++mfi) {
+    const amrex::Box bx = amrex::grow(mfi.validbox(), nGhost);
+    work[mfi].copy<amrex::RunOn::Device>(a_vof[mfi], bx, 0, bx, 0, 1);
+  }
+  work.FillBoundary(periodicity);
+
+  // The domain and its ghost layers, without bounds in periodic directions
+  amrex::Box extent = domain;
+  for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
+    extent.grow(dir, geom[lev].isPeriodic(dir) ? 1000000 : nwall);
+  }
+
+  for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
     for (int sgn = -1; sgn <= 1; sgn += 2) {
-      const int bc = (sgn < 0) ? m_phys_bc.lo(dir) : m_phys_bc.hi(dir);
-      if (
-        bc != BoundaryCondition::BCSlipWallAdiab &&
-        bc != BoundaryCondition::BCNoSlipWallAdiab &&
-        bc != BoundaryCondition::BCSlipWallIsotherm &&
-        bc != BoundaryCondition::BCNoSlipWallIsotherm) {
+      if (!is_wall(dir, sgn)) {
         continue;
       }
       const int iwall = (sgn < 0) ? domain.smallEnd(dir) : domain.bigEnd(dir);
-      for (amrex::MFIter mfi(a_vof); mfi.isValid(); ++mfi) {
-        const amrex::Box& vbx = mfi.validbox();
-        if (
-          (sgn < 0 && vbx.smallEnd(dir) != iwall) ||
-          (sgn > 0 && vbx.bigEnd(dir) != iwall)) {
-          continue;
-        }
-        const amrex::Box& fbx = a_vof[mfi].box();
-        amrex::Box gbx = amrex::grow(vbx, nGhost) & fbx;
-        if (sgn < 0) {
-          gbx.setBig(dir, iwall - 1);
-        } else {
-          gbx.setSmall(dir, iwall + 1);
-        }
-        // Read from a snapshot: later passes reconstruct from ghost cells
-        amrex::FArrayBox snap(fbx, 1, amrex::The_Async_Arena());
-        auto const& F = a_vof.array(mfi);
-        auto const& S = snap.array();
-        for (int pass = 0; pass < npass; ++pass) {
-          snap.copy<amrex::RunOn::Device>(a_vof[mfi]);
-          const bool allow_ghost = (pass > 0);
+      for (int pass = 0; pass < npass; ++pass) {
+        amrex::MultiFab::Copy(snap, work, 0, 0, 1, nread);
+        const bool allow_ghost = (pass > 0);
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+        for (amrex::MFIter mfi(work); mfi.isValid(); ++mfi) {
+          amrex::Box gbx = mfi.validbox();
+          if (sgn < 0) {
+            gbx.setBig(dir, iwall - 1);
+          } else {
+            gbx.setSmall(dir, iwall + 1);
+          }
+          if (!gbx.ok()) {
+            continue;
+          }
+          const amrex::Box limit = work[mfi].box() & extent;
+          auto const& F = work.array(mfi);
+          auto const& S = snap.const_array(mfi);
           amrex::ParallelFor(
             gbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
               amrex::ignore_unused(k);
               const amrex::IntVect g(AMREX_D_DECL(i, j, k));
               F(g) = pelelmex::vof::wall_ghost_fraction(
-                g, dir, iwall, sgn, fbx, S, allow_ghost);
+                g, dir, iwall, sgn, limit, S, allow_ghost);
             });
+        }
+        amrex::Gpu::streamSynchronize();
+        work.FillBoundary(periodicity);
+      }
+    }
+  }
+
+  // Back to the ghost cells of a_vof beyond the walls
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+  for (amrex::MFIter mfi(a_vof); mfi.isValid(); ++mfi) {
+    const amrex::Box bx = amrex::grow(mfi.validbox(), nGhost);
+    for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
+      for (int sgn = -1; sgn <= 1; sgn += 2) {
+        if (!is_wall(dir, sgn)) {
+          continue;
+        }
+        amrex::Box gbx = bx;
+        if (sgn < 0) {
+          gbx.setBig(dir, domain.smallEnd(dir) - 1);
+        } else {
+          gbx.setSmall(dir, domain.bigEnd(dir) + 1);
+        }
+        if (gbx.ok()) {
+          a_vof[mfi].copy<amrex::RunOn::Device>(work[mfi], gbx, 0, gbx, 0, 1);
         }
       }
     }

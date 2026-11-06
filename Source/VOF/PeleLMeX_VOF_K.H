@@ -36,6 +36,9 @@ static constexpr amrex::Real vof_tol = 1.0e-12_rt;
 // ghost layer
 static constexpr int hf_half = 3;
 static constexpr int nghost = hf_half + 1;
+// Cells searched along a wall for the interface meeting it, on either side of
+// a wall ghost cell (see wall_ghost_fraction)
+static constexpr int wall_nsearch = 8;
 
 /**
  * \brief Analytic plane constant alpha such that the region
@@ -98,7 +101,8 @@ volume_intercept(
     const amrex::Real p12 = std::sqrt(amrex::max(0.0_rt, p));
     const amrex::Real pp = p * p12;
     const amrex::Real teta =
-      std::acos((pp > 0.0_rt) ? amrex::Clamp(q / pp, -1.0_rt, 1.0_rt) : 1.0_rt) /
+      std::acos(
+        (pp > 0.0_rt) ? amrex::Clamp(q / pp, -1.0_rt, 1.0_rt) : 1.0_rt) /
       3.0_rt;
     const amrex::Real cs = std::cos(teta);
     alpha = p12 * (std::sqrt(3.0_rt * (1.0_rt - cs * cs)) - cs) + m12;
@@ -110,7 +114,8 @@ volume_intercept(
     const amrex::Real p12 = std::sqrt(amrex::max(0.0_rt, p));
     const amrex::Real pp = p * p12;
     const amrex::Real teta =
-      std::acos((pp > 0.0_rt) ? amrex::Clamp(q / pp, -1.0_rt, 1.0_rt) : 1.0_rt) /
+      std::acos(
+        (pp > 0.0_rt) ? amrex::Clamp(q / pp, -1.0_rt, 1.0_rt) : 1.0_rt) /
       3.0_rt;
     const amrex::Real cs = std::cos(teta);
     alpha = p12 * (std::sqrt(3.0_rt * (1.0_rt - cs * cs)) - cs) + 0.5_rt;
@@ -723,7 +728,7 @@ plane_fraction(
  *        Otherwise the wall-adjacent value is copied (90 degrees).
  * \param iwall index along dir of the wall-adjacent interior cell
  * \param sgn   -1 for a low wall, +1 for a high wall
- * \param fbox  box of the array F
+ * \param limit cells of F that hold data and may be searched
  */
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real
 wall_ghost_fraction(
@@ -731,13 +736,13 @@ wall_ghost_fraction(
   const int dir,
   const int iwall,
   const int sgn,
-  const amrex::Box& fbox,
+  const amrex::Box& limit,
   amrex::Array4<amrex::Real const> const& F,
   const bool allow_ghost)
 {
-  constexpr int nsearch = 8;
+  constexpr int nsearch = wall_nsearch;
   constexpr int nfar = 1000;
-  const amrex::Box rbox = amrex::grow(fbox, -hf_half);
+  const amrex::Box rbox = amrex::grow(limit, -hf_half);
   amrex::IntVect iv_w = g;
   iv_w[dir] = iwall;
 
@@ -767,7 +772,7 @@ wall_ghost_fraction(
         const int tdist =
           AMREX_D_TERM(std::abs(a0), +std::abs(a1), +std::abs(b));
         const amrex::IntVect cw = iv_w + off;
-        if (fbox.contains(cw) && is_mixed(cw)) {
+        if (limit.contains(cw) && is_mixed(cw)) {
           contact = true;
         }
         for (int layer = 0; layer <= hf_half; ++layer) {
