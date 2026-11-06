@@ -1,6 +1,7 @@
 #include <PeleLMeX.H>
 #include <PeleLMeX_BCfill.H>
 #include <PeleLMeX_VOF_K.H>
+#include <PeleLMeX_VOF_Unsplit_K.H>
 #include <AMReX_FillPatchUtil.H>
 #include <AMReX_MultiFabUtil.H>
 #include <AMReX_GMRES_MLMG.H>
@@ -27,6 +28,15 @@ PeleLM::VOFReadParameters()
   pp.query("refine_band", m_vof_refine_band);
   pp.query("v", m_vof_verbose);
   pp.query("advect_only", m_vof_advect_only);
+  std::string advection = "split";
+  pp.query("advection", advection);
+  if (advection == "unsplit") {
+    m_vof_unsplit = 1;
+  } else if (advection == "split") {
+    m_vof_unsplit = 0;
+  } else {
+    amrex::Abort("peleLM.vof.advection must be 'split' or 'unsplit'");
+  }
 
   // Required: peleLM.rho / peleLM.mu are rejected with the VOF solver
   pp.get("rho_liquid", m_vof_rho_liq);
@@ -80,6 +90,20 @@ PeleLM::VOFCheckSetup()
     amrex::Abort(
       "The VOF solver does not support geometry.mesh_mapping: the PLIC "
       "reconstruction assumes uniform cubic cells.");
+  }
+  if (m_vof_unsplit != 0) {
+    // Temporary, while the unsplit scheme is brought up
+    if (m_vof_advect_only == 0) {
+      amrex::Abort(
+        "peleLM.vof.advection = unsplit currently requires "
+        "peleLM.vof.advect_only = 1: the momentum advection replays the split "
+        "sweeps.");
+    }
+    if (max_level > 0) {
+      amrex::Abort(
+        "peleLM.vof.advection = unsplit does not support AMR yet "
+        "(amr.max_level = 0).");
+    }
   }
 #ifdef AMREX_USE_EB
   amrex::Abort("The VOF solver does not support embedded boundaries yet.");
@@ -804,8 +828,15 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
   advData->vof_mflux.clear();
   advData->vof_sweep_dir.clear();
   advData->vof_cmask.clear();
-  advData->vof_cmask.resize(nsub);
+  if (m_vof_unsplit == 0) {
+    advData->vof_cmask.resize(nsub);
+  }
   for (int isub = 0; isub < nsub; ++isub) {
+    if (m_vof_unsplit != 0) {
+      VOFUnsplitStep(dt_sub, umac);
+      continue;
+    }
+
     // c = H(F - 1/2) frozen over the (sub-)step
     auto& cmask = advData->vof_cmask[isub];
     cmask.resize(finest_level + 1);
@@ -842,7 +873,207 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
                    << ", relative change "
                    << (vol_new - vol_old) / amrex::max(vol_old, 1.0e-300)
                    << "\n";
+    // The discrete divergence of the face velocities, as a change of F in a
+    // pure liquid cell over this step, and the departure of F from [0,1]
+    amrex::Real div_max = 0.0;
+    amrex::Real f_min = 1.0e200;
+    amrex::Real f_max = -1.0e200;
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      amrex::MultiFab divu(grids[lev], dmap[lev], 1, 0);
+      amrex::computeDivergence(divu, umac[lev], geom[lev]);
+      div_max = amrex::max(div_max, divu.norm0());
+      f_min = amrex::min(f_min, m_leveldata_new[lev]->vof.min(0));
+      f_max = amrex::max(f_max, m_leveldata_new[lev]->vof.max(0));
+    }
+    amrex::Print() << "   VOF: dt*max|div umac| " << div_max * m_dt
+                   << ", F below 0 by " << amrex::max(0.0, -f_min)
+                   << ", above 1 by " << amrex::max(0.0, f_max - 1.0) << "\n";
   }
+}
+
+//-----------------------------------------------------------------------------
+// One unsplit geometric step of the volume fraction in the new state: each face
+// carries the liquid inside its flux volume, built from the mesh nodes traced
+// back along the flow (see PeleLMeX_VOF_Unsplit_K.H).  Single level for now.
+//-----------------------------------------------------------------------------
+void
+PeleLM::VOFUnsplitStep(
+  const amrex::Real a_dt,
+  const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
+    a_umac)
+{
+  BL_PROFILE("PeleLMeX::VOFUnsplitStep()");
+  AMREX_ALWAYS_ASSERT(finest_level == 0);
+  const int lev = 0;
+
+  const amrex::Box& domain = geom[lev].Domain();
+  const auto periodicity = geom[lev].periodicity();
+  const amrex::IntVect is_periodic(
+    AMREX_D_DECL(geom[lev].isPeriodic(0), geom[lev].isPeriodic(1), geom[lev].isPeriodic(2)));
+  const amrex::BoxArray nodal_ba =
+    amrex::convert(grids[lev], amrex::IntVect::TheNodeVector());
+
+  // Node velocities in Courant numbers: each component is the average of the
+  // faces normal to it that touch the node, one-sided at domain boundaries.
+  // A node shared by several boxes gets one value, so that it is traced to one
+  // position and the flux volumes tile across boxes.
+  amrex::MultiFab nvel(nodal_ba, dmap[lev], AMREX_SPACEDIM, 1);
+  nvel.setVal(0.0);
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+  for (amrex::MFIter mfi(nvel); mfi.isValid(); ++mfi) {
+    const amrex::Box& nbx = mfi.validbox();
+    auto const& vel = nvel.array(mfi);
+    for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
+      auto const& um = a_umac[lev][dir]->const_array(mfi);
+      const amrex::Real dtdx = a_dt * geom[lev].InvCellSize(dir);
+      amrex::ParallelFor(
+        nbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+          const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
+          amrex::Real sum = 0.0;
+          int count = 0;
+          const int t1 = (dir + 1) % AMREX_SPACEDIM;
+          const int n1 = (AMREX_SPACEDIM > 1) ? 2 : 1;
+          const int t2 = (AMREX_SPACEDIM == 3) ? (dir + 2) % 3 : t1;
+          const int n2 = (AMREX_SPACEDIM == 3) ? 2 : 1;
+          for (int s2 = 0; s2 < n2; ++s2) {
+            for (int s1 = 0; s1 < n1; ++s1) {
+              amrex::IntVect f = iv;
+              f[t1] -= s1;
+              if (AMREX_SPACEDIM == 3) {
+                f[t2] -= s2;
+              }
+              bool inside = (is_periodic[t1] != 0) ||
+                            (f[t1] >= domain.smallEnd(t1) &&
+                             f[t1] <= domain.bigEnd(t1));
+              inside = inside &&
+                       ((AMREX_SPACEDIM != 3) || (is_periodic[t2] != 0) ||
+                        (f[t2] >= domain.smallEnd(t2) &&
+                         f[t2] <= domain.bigEnd(t2)));
+              if (inside) {
+                sum += um(f);
+                ++count;
+              }
+            }
+          }
+          vel(i, j, k, dir) = sum * dtdx / amrex::max(count, 1);
+        });
+    }
+  }
+  nvel.FillBoundary(periodicity);
+
+  // Traced position of each node at the start of the step (midpoint rule),
+  // in cell units.  Positions beyond the domain use its nearest nodes,
+  // except across periodic boundaries.
+  amrex::Box node_limit = amrex::surroundingNodes(domain);
+  for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+    if (is_periodic[d] != 0) {
+      node_limit.grow(d, 1000000);
+    }
+  }
+  amrex::MultiFab back(nodal_ba, dmap[lev], 3, 0);
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+  for (amrex::MFIter mfi(back); mfi.isValid(); ++mfi) {
+    const amrex::Box& nbx = mfi.validbox();
+    const amrex::Box lim = amrex::grow(nbx, 1) & node_limit;
+    auto const& vel = nvel.const_array(mfi);
+    auto const& bk = back.array(mfi);
+    amrex::ParallelFor(
+      nbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+        const amrex::Real x[3] = {
+          static_cast<amrex::Real>(i), static_cast<amrex::Real>(j),
+          static_cast<amrex::Real>(k)};
+        amrex::Real xm[3] = {x[0], x[1], x[2]};
+        for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+          xm[d] -= 0.5 * vel(i, j, k, d);
+        }
+        amrex::Real um[3] = {0.0, 0.0, 0.0};
+        pelelmex::vof::unsplit::interp_node_velocity(xm, vel, lim, um);
+        for (int d = 0; d < 3; ++d) {
+          bk(i, j, k, d) = x[d] - um[d];
+        }
+      });
+  }
+
+  // PLIC plane of the mixed cells, valid up to the first ghost layer
+  auto& vof = m_leveldata_new[lev]->vof;
+  amrex::MultiFab plane(grids[lev], dmap[lev], 4, 1);
+  plane.setVal(0.0);
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+  for (amrex::MFIter mfi(plane); mfi.isValid(); ++mfi) {
+    const amrex::Box gbx = amrex::grow(mfi.validbox(), 1);
+    auto const& F = vof.const_array(mfi);
+    auto const& pl = plane.array(mfi);
+    amrex::ParallelFor(
+      gbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+        const amrex::Real f = F(i, j, k);
+        if (f > pelelmex::vof::vof_tol && f < 1.0 - pelelmex::vof::vof_tol) {
+          amrex::Real mx, my, mz, alpha;
+          pelelmex::vof::fit_plane(i, j, k, F, mx, my, mz, alpha);
+          pl(i, j, k, 0) = mx;
+          pl(i, j, k, 1) = my;
+          pl(i, j, k, 2) = mz;
+          pl(i, j, k, 3) = alpha;
+        }
+      });
+  }
+
+  // Liquid crossing each face, in cell volumes
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> flux;
+  for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
+    flux[dir].define(
+      amrex::convert(grids[lev], amrex::IntVect::TheDimensionVector(dir)),
+      dmap[lev], 1, 0);
+    const amrex::Real dtdx = a_dt * geom[lev].InvCellSize(dir);
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+    for (amrex::MFIter mfi(flux[dir]); mfi.isValid(); ++mfi) {
+      const amrex::Box& fbx = mfi.validbox();
+      const amrex::Box cells = amrex::grow(amrex::enclosedCells(fbx), 1);
+      auto const& fl = flux[dir].array(mfi);
+      auto const& um = a_umac[lev][dir]->const_array(mfi);
+      auto const& F = vof.const_array(mfi);
+      auto const& pl = plane.const_array(mfi);
+      auto const& bk = back.const_array(mfi);
+      amrex::ParallelFor(
+        fbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+          fl(i, j, k) = pelelmex::vof::unsplit::face_liquid_flux(
+            i, j, k, dir, um(i, j, k) * dtdx, F, pl, bk, cells);
+        });
+    }
+    // Faces between boxes compute the same value, up to round-off across a
+    // periodic boundary: keep one, so that the volume is conserved exactly
+    flux[dir].OverrideSync(periodicity);
+  }
+  amrex::Gpu::streamSynchronize();
+
+  // Update, Eq. (18) of the paper.  F is not clipped or limited: it conserves
+  // the liquid volume, and departs from [0,1] by the errors of the fluxes
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+  for (amrex::MFIter mfi(vof); mfi.isValid(); ++mfi) {
+    const amrex::Box& bx = mfi.validbox();
+    auto const& F = vof.array(mfi);
+    AMREX_D_TERM(auto const& fx = flux[0].const_array(mfi);
+                 , auto const& fy = flux[1].const_array(mfi);
+                 , auto const& fz = flux[2].const_array(mfi););
+    amrex::ParallelFor(
+      bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+        F(i, j, k) += AMREX_D_TERM(
+          fx(i, j, k) - fx(i + 1, j, k), +fy(i, j, k) - fy(i, j + 1, k),
+          +fz(i, j, k) - fz(i, j, k + 1));
+      });
+  }
+  amrex::Gpu::streamSynchronize();
+
+  fillPatchVOF(AmrNewTime);
 }
 
 void
