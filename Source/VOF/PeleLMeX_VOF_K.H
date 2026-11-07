@@ -1175,29 +1175,6 @@ piece_liquid(
 }
 
 /**
- * \brief Unsigned liquid volume of a tetrahedron over the mesh.
- *
- * \param F     volume fraction
- * \param plane (mx, my, mz, alpha) of each cell, in cell coordinates
- * \param bx    cells where F and plane are valid
- */
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real
-tet_liquid_in_mesh(
-  const Tet& tet,
-  amrex::Array4<amrex::Real const> const& F,
-  amrex::Array4<amrex::Real const> const& plane,
-  const amrex::Box& bx) noexcept
-{
-  amrex::Real liquid = 0.0_rt;
-  for_each_cell_piece(
-    tet, bx,
-    [&](const Tet& t, const amrex::Real vol, int i, int j, int k) noexcept {
-      liquid += piece_liquid(t, vol, i, j, k, F, plane);
-    });
-  return liquid;
-}
-
-/**
  * \brief Apex o of the two tetrahedra (o,a,c,e) and (o,a,b,c) added on a
  *        traced face (a,b,c,e) to give them a total signed volume vcor.  o lies
  *        over the barycenter of the face; the volume is linear in o along dir.
@@ -1435,59 +1412,6 @@ pure_flux_volume(
 }
 
 /**
- * \brief Signed liquid volume, in cell volumes, crossing the low face of cell
- *        (i,j,k) in direction dir, positive along +dir.
- *
- * \param back    traced position of each mesh node at the start of the step,
- *                in cell units (3 components)
- * \param courant the face velocity times dt/dx
- * \param bx      cells where F and plane are valid
- */
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real
-face_liquid_flux(
-  const int i,
-  const int j,
-  const int k,
-  const int dir,
-  const amrex::Real courant,
-  amrex::Array4<amrex::Real const> const& F,
-  amrex::Array4<amrex::Real const> const& plane,
-  amrex::Array4<amrex::Real const> const& back,
-  const amrex::Box& bx) noexcept
-{
-  // Most faces are far from the interface: at a Courant number below 1 the flux
-  // volume stays in the cells around the face, so that they need no geometry at
-  // all
-  int lo[3] = {i - 1, j - 1, k - 1};
-  int hi[3] = {i + 1, j + 1, k + 1};
-  lo[dir] -= 1;
-  bool is_liquid = false;
-  if (pure_cells(lo, hi, F, bx, is_liquid)) {
-    return is_liquid ? courant : 0.0_rt;
-  }
-
-  Tet tets[max_flux_tets];
-  const int ntet = flux_volume_tets(i, j, k, dir, courant, back, tets);
-
-  // Signed liquid volume: each tetrahedron carries the sign of its volume,
-  // and its pieces are unsigned (Sec. 3.2.3).  A flux volume entirely within
-  // pure cells needs no cutting.
-  amrex::Real liquid = 0.0_rt;
-  if (pure_flux_volume(tets, ntet, courant, F, bx, liquid)) {
-    return liquid;
-  }
-  for (int n = 0; n < ntet; ++n) {
-    const Tet& t = tets[n];
-    const amrex::Real v = signed_volume(t.v[0], t.v[1], t.v[2], t.v[3]);
-    if (v != 0.0_rt) {
-      const amrex::Real l = tet_liquid_in_mesh(t, F, plane, bx);
-      liquid += (v > 0.0_rt) ? l : -l;
-    }
-  }
-  return liquid;
-}
-
-/**
  * \brief Mass and momentum in the flux volume of the low face of cell (i,j,k)
  *        in direction dir, per cell volume.  Each piece of the flux volume
  *        carries the density of its phase and the velocity of the cell it lies
@@ -1498,7 +1422,7 @@ face_liquid_flux(
  * \param bx   cells where F, plane and vel are valid
  * \param mass signed mass crossing the face
  * \param mom  signed momentum crossing the face
- * \param liquid signed liquid volume crossing the face, as in face_liquid_flux
+ * \param liquid signed liquid volume crossing the face
  */
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void
 face_mass_momentum_flux(

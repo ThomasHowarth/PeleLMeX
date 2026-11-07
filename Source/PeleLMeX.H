@@ -966,13 +966,13 @@ public:
     const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
       a_umac,
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_flux,
-    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>* a_momflux);
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_momflux);
   // Liquid crossing the faces of one level in a step
   void VOFFluxes(
     const int lev,
     const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_umac,
     amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& flux,
-    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>* a_momflux);
+    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& momflux);
   // Conservative momentum advection term, with the mass the VOF flux volumes
   // carry
   void VOFMomentumAdvTerm(
