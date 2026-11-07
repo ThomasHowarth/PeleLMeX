@@ -348,6 +348,7 @@ PeleLM::readParameters()
   pp.query("closed_chamber", m_closed_chamber);
   pp.query("debug_check_compatibility", m_debug_check_compatibility);
   pp.query("debug_compatibility_tol", m_debug_compatibility_tol);
+  pp.query("debug_divu_mismatch", m_debug_divu_mismatch);
   if ((verbose != 0) && (m_closed_chamber != 0)) {
     amrex::Print()
       << " Simulation performed with the closed chamber algorithm \n";
@@ -806,10 +807,17 @@ PeleLM::readParameters()
   parseUserKey(pp, "load_balancing_cost_estimate", lbcost, m_loadBalanceCost);
   pp.query(
     "load_balancing_efficiency_threshold", m_loadBalanceEffRatioThreshold);
-  parseUserKey(
-    pp, "chem_load_balancing_method", lbmethod, m_loadBalanceMethodChem);
-  parseUserKey(
-    pp, "chem_load_balancing_cost_estimate", lbcost, m_loadBalanceCostChem);
+  // The chemistry keys share the flow keys' tables, whose "default" entries
+  // are the flow defaults (sfc, ncell). Parse them only when given, so that
+  // the chemistry defaults set in PeleLMeX.H apply otherwise.
+  if (pp.contains("chem_load_balancing_method")) {
+    parseUserKey(
+      pp, "chem_load_balancing_method", lbmethod, m_loadBalanceMethodChem);
+  }
+  if (pp.contains("chem_load_balancing_cost_estimate")) {
+    parseUserKey(
+      pp, "chem_load_balancing_cost_estimate", lbcost, m_loadBalanceCostChem);
+  }
 
   // Deactivate load balancing for serial runs
 #ifdef AMREX_USE_MPI
@@ -875,6 +883,13 @@ PeleLM::readParameters()
   ppmacproj.query("atol", m_mac_mg_atol);
   ppmacproj.query("rtol", m_mac_mg_rtol);
   ppmacproj.query("hypre_namespace", m_hypre_namespace_mac);
+  // Hydro's composite hypre solve (mac_proj.use_mlhypre) uses order-3
+  // boundary stencils; the MLMG fluxes must match
+  int mac_use_mlhypre = 0;
+  ppmacproj.query("use_mlhypre", mac_use_mlhypre);
+  if (mac_use_mlhypre != 0) {
+    m_mac_max_order = amrex::min(m_mac_max_order, 3);
+  }
   ppmacproj.query("mlmg_fail_sdc_miniter", m_mac_mg_fail_sdc_miniter);
   ppmacproj.query(
     "mlmg_fail_maxiter_after_sdc_miniter",

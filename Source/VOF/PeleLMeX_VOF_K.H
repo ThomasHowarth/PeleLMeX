@@ -29,13 +29,20 @@ using namespace amrex::literals;
 
 // Volume fraction below which a cell is considered pure gas / above
 // (1 - tol) pure liquid
-static constexpr amrex::Real vof_tol = 1.0e-12_rt;
+// Cells within this of 0 or 1 count as pure.  It must stay well above the noise
+// in F (about 1e-11 for the unsplit scheme): otherwise a cell flips between
+// mixed and pure from one neighbour to the next, which breaks the symmetry of
+// the flow.
+static constexpr amrex::Real vof_tol = 1.0e-8_rt;
 
 // Half-length of the height-function columns (7 cells); the volume fraction
 // carries one more ghost cell so that planes can be fitted in the first
 // ghost layer
 static constexpr int hf_half = 3;
 static constexpr int nghost = hf_half + 1;
+// Cells searched along a wall for the interface meeting it, on either side of
+// a wall ghost cell (see wall_ghost_fraction)
+static constexpr int wall_nsearch = 8;
 
 /**
  * \brief Analytic plane constant alpha such that the region
@@ -68,8 +75,9 @@ volume_intercept(
 
   // Volume at the breakpoints V1 < V2 < V3
   const amrex::Real m12 = m1 + m2;
-  const amrex::Real pr = amrex::max(6.0_rt * m1 * m2 * m3, tiny);
-  const amrex::Real V1 = m1 * m1 * m1 / pr;
+  const amrex::Real pr = 6.0_rt * m1 * m2 * m3;
+  // Without a corner region (m1 = 0, a 2D or grid-aligned plane), V1 = 0
+  const amrex::Real V1 = (pr > 0.0_rt) ? m1 * m1 * m1 / pr : 0.0_rt;
   const amrex::Real V2 = V1 + 0.5_rt * (m2 - m1) / (m3 + tiny);
   amrex::Real mm = 0.0_rt;
   amrex::Real V3 = 0.0_rt;
@@ -95,8 +103,10 @@ volume_intercept(
     const amrex::Real p = 2.0_rt * m1 * m2;
     const amrex::Real q = 1.5_rt * m1 * m2 * (m12 - 2.0_rt * m3 * ch);
     const amrex::Real p12 = std::sqrt(amrex::max(0.0_rt, p));
+    const amrex::Real pp = p * p12;
     const amrex::Real teta =
-      std::acos(amrex::max(-1.0_rt, amrex::min(1.0_rt, q / (p * p12 + tiny)))) /
+      std::acos(
+        (pp > 0.0_rt) ? amrex::Clamp(q / pp, -1.0_rt, 1.0_rt) : 1.0_rt) /
       3.0_rt;
     const amrex::Real cs = std::cos(teta);
     alpha = p12 * (std::sqrt(3.0_rt * (1.0_rt - cs * cs)) - cs) + m12;
@@ -106,8 +116,10 @@ volume_intercept(
     const amrex::Real p = m1 * (m2 + m3) + m2 * m3 - 0.25_rt;
     const amrex::Real q = 1.5_rt * m1 * m2 * m3 * (0.5_rt - ch);
     const amrex::Real p12 = std::sqrt(amrex::max(0.0_rt, p));
+    const amrex::Real pp = p * p12;
     const amrex::Real teta =
-      std::acos(amrex::max(-1.0_rt, amrex::min(1.0_rt, q / (p * p12 + tiny)))) /
+      std::acos(
+        (pp > 0.0_rt) ? amrex::Clamp(q / pp, -1.0_rt, 1.0_rt) : 1.0_rt) /
       3.0_rt;
     const amrex::Real cs = std::cos(teta);
     alpha = p12 * (std::sqrt(3.0_rt * (1.0_rt - cs * cs)) - cs) + 0.5_rt;
@@ -1225,7 +1237,8 @@ plane_fraction(
 /**
  * \brief Volume fraction of the ghost cell g beyond a wall normal to dir, by
  *        extending the PLIC plane of the interior interface: a free contact
- *        line, exact for a planar interface.  Used when the interface meets
+ *        line, exact for a planar interface and for one uniform normal to the
+ *        wall.  Used when the interface meets
  *        the wall within nsearch cells (tangentially) of g.  The plane is
  *        that of the nearest interface cell, 1 to hf_half layers inside the
  *        wall, whose reconstruction does not read ghost cells: height
@@ -1238,7 +1251,7 @@ plane_fraction(
  *        Otherwise the wall-adjacent value is copied (90 degrees).
  * \param iwall index along dir of the wall-adjacent interior cell
  * \param sgn   -1 for a low wall, +1 for a high wall
- * \param fbox  box of the array F
+ * \param limit cells of F that hold data and may be searched
  */
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real
 wall_ghost_fraction(
@@ -1246,13 +1259,13 @@ wall_ghost_fraction(
   const int dir,
   const int iwall,
   const int sgn,
-  const amrex::Box& fbox,
+  const amrex::Box& limit,
   amrex::Array4<amrex::Real const> const& F,
   const bool allow_ghost)
 {
-  constexpr int nsearch = 8;
+  constexpr int nsearch = wall_nsearch;
   constexpr int nfar = 1000;
-  const amrex::Box rbox = amrex::grow(fbox, -hf_half);
+  const amrex::Box rbox = amrex::grow(limit, -hf_half);
   amrex::IntVect iv_w = g;
   iv_w[dir] = iwall;
 
@@ -1282,7 +1295,7 @@ wall_ghost_fraction(
         const int tdist =
           AMREX_D_TERM(std::abs(a0), +std::abs(a1), +std::abs(b));
         const amrex::IntVect cw = iv_w + off;
-        if (fbox.contains(cw) && is_mixed(cw)) {
+        if (limit.contains(cw) && is_mixed(cw)) {
           contact = true;
         }
         for (int layer = 0; layer <= hf_half; ++layer) {
@@ -1339,12 +1352,20 @@ wall_ghost_fraction(
 #else
   fit_plane(ref[0], ref[1], ref[2], F, m[0], m[1], m[2], alpha);
 #endif
-  // Plane constant in the unit-cube coordinates of g
+  // Plane constant in the unit-cube coordinates of g and of the wall cell.  The
+  // ghost takes the change of the plane's volume from the wall cell: the same
+  // as the plane's volume at g for a planar interface, and the value of the
+  // wall cell where the plane does not vary across the wall, whichever cell the
+  // plane comes from, so that a flow uniform normal to the wall stays uniform.
+  amrex::Real alpha_g = alpha;
+  amrex::Real alpha_w = alpha;
   for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-    alpha -= m[d] * static_cast<amrex::Real>(g[d] - ref[d]);
+    alpha_g -= m[d] * static_cast<amrex::Real>(g[d] - ref[d]);
+    alpha_w -= m[d] * static_cast<amrex::Real>(iv_w[d] - ref[d]);
   }
-  return amrex::Clamp(
-    cut_volume(m[0], m[1], m[2], alpha, 0.0_rt, 1.0_rt), 0.0_rt, 1.0_rt);
+  const amrex::Real V_g = cut_volume(m[0], m[1], m[2], alpha_g, 0.0_rt, 1.0_rt);
+  const amrex::Real V_w = cut_volume(m[0], m[1], m[2], alpha_w, 0.0_rt, 1.0_rt);
+  return amrex::Clamp(F(iv_w) + V_g - V_w, 0.0_rt, 1.0_rt);
 }
 
 /**
