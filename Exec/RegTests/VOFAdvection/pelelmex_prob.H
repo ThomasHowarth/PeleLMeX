@@ -95,9 +95,10 @@ struct MyProblemSpecificFunctions : public DefaultProblemSpecificFunctions
     constexpr amrex::Real pi = amrex::Math::pi<amrex::Real>();
     const amrex::Real* prob_lo = geomdata.ProbLo();
     const amrex::Real* dx = geomdata.CellSize();
-    AMREX_D_TERM(const amrex::Real x = prob_lo[0] + (i + 0.5) * dx[0];
-                 , const amrex::Real y = prob_lo[1] + (j + 0.5) * dx[1];
-                 , const amrex::Real z = prob_lo[2] + (k + 0.5) * dx[2];)
+    AMREX_D_TERM(
+      const amrex::Real x = prob_lo[0] + (i + 0.5) * dx[0];
+      , const amrex::Real y = prob_lo[1] + (j + 0.5) * dx[1];
+      , const amrex::Real z = prob_lo[2] + (k + 0.5) * dx[2];)
     amrex::Real u[3] = {0.0, 0.0, 0.0};
     if (prob_parm.type == VOFTestType::Zalesak) {
       const amrex::Real omega = 2.0 * pi / prob_parm.period;
