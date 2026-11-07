@@ -27,7 +27,7 @@ using namespace amrex::literals;
 // Volume fraction below which a cell is considered pure gas / above
 // (1 - tol) pure liquid
 // Cells within this of 0 or 1 count as pure.  It must stay well above the noise
-// in F (about 1e-11 for the unsplit scheme): otherwise a cell flips between
+// in F (about 1e-11): otherwise a cell flips between
 // mixed and pure from one neighbour to the next, which breaks the symmetry of
 // the flow.
 static constexpr amrex::Real vof_tol = 1.0e-8_rt;

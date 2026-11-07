@@ -1046,7 +1046,6 @@ public:
   // cell-centered ones used in the estimate
   amrex::Real m_vof_cfl = 0.45;
   // Interface cells are tagged up to (excluding) this level; -1: max_level
-  int m_vof_refine_maxlev = -1;
   // Interface band half-width (in cells) tagged for refinement
   int m_vof_refine_band = 2;
   int m_vof_verbose = 0;
@@ -1054,7 +1053,6 @@ public:
   // u = curl(A) from ProblemSpecificFunctions::vof_vector_potential and
   // skip the momentum update
   int m_vof_advect_only = 0;
-  // Advection scheme: unsplit geometric fluxes (1) or split sweeps (0)
   //-----------------------------------------------------------------------------
 #endif
 #ifdef PELE_USE_SOOT

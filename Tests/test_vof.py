@@ -4,7 +4,7 @@
 Reads the run log (``peleLM.vof.v = 1``) and the ``temporals/tempExtremas``
 file (``peleLM.do_extremas = 1``) written in the working directory, and fails
 if:
-  - the volume fraction was clipped (``VOF: WARNING`` in the log),
+  - the solver warned (``VOF: WARNING`` in the log),
   - the liquid volume changed by more than ``--volume-rtol`` in any step, or is
     not finite,
   - the volume fraction left [0, 1] by more than ``--fraction-atol``,
@@ -72,7 +72,7 @@ def main():
     if not changes:
         failures.append("no 'VOF: liquid volume' lines: set peleLM.vof.v = 1")
     for w in warnings:
-        failures.append("clipping: " + w)
+        failures.append("warning: " + w)
     if changes:
         worst = max(abs(c) for c in changes)
         print(f"steps {len(changes)}, max |relative volume change| {worst:.3e}")
