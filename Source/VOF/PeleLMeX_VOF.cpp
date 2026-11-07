@@ -1343,6 +1343,10 @@ PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
       // of the search is dilated one direction at a time.
       amrex::LayoutData<amrex::IArrayBox> near(ext_ba, a_vof.DistributionMap());
       int wall_contact = 0;
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion()) \
+  reduction(max : wall_contact)
+#endif
       for (amrex::MFIter mfi(work); mfi.isValid(); ++mfi) {
         if (!beyond_wall(mfi.validbox(), dir, sgn).ok()) {
           continue;
@@ -1395,7 +1399,9 @@ PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
           amrex::MultiFab::Copy(snap, work, 0, 0, 1, nread);
         }
         const bool allow_ghost = (pass > 0);
-        int changed = 0;
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
         for (amrex::MFIter mfi(work); mfi.isValid(); ++mfi) {
           const amrex::Box gbx = beyond_wall(mfi.validbox(), dir, sgn);
           if (!gbx.ok()) {
@@ -1435,11 +1441,8 @@ PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
             plane.setVal<amrex::RunOn::Device>(0.0);
           }
 
-          amrex::ReduceOps<amrex::ReduceOpMax> reduce_op;
-          amrex::ReduceData<int> reduce_data(reduce_op);
-          reduce_op.eval(
-            gbx, reduce_data,
-            [=] AMREX_GPU_DEVICE(int i, int j, int k) -> amrex::GpuTuple<int> {
+          amrex::ParallelFor(
+            gbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
               const amrex::IntVect g(AMREX_D_DECL(i, j, k));
               amrex::IntVect iv_w = g;
               iv_w[dir] = iwall;
@@ -1454,17 +1457,27 @@ PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
                 val = pelelmex::vof::wall_ghost_fraction(
                   g, iv_w, ref, m, PL(iv_w, 4), F(iv_w));
               }
-              const int differs = (val != F(g)) ? 1 : 0;
               F(g) = val;
-              return {differs};
             });
-          changed =
-            amrex::max(changed, amrex::get<0>(reduce_data.value(reduce_op)));
         }
         amrex::Gpu::streamSynchronize();
-        amrex::ParallelDescriptor::ReduceIntMax(changed);
-        if (pass > 0 && changed == 0) {
-          break;
+        if (pass > 0) {
+          // The pass only changes this wall's ghost cells
+          auto const& work_ma = work.const_arrays();
+          auto const& snap_ma = snap.const_arrays();
+          const int changed = amrex::ParReduce(
+            amrex::TypeList<amrex::ReduceOpMax>{}, amrex::TypeList<int>{}, work,
+            amrex::IntVect(0),
+            [=] AMREX_GPU_DEVICE(
+              int box_no, int i, int j, int k) -> amrex::GpuTuple<int> {
+              return {static_cast<int>(
+                work_ma[box_no](i, j, k) != snap_ma[box_no](i, j, k))};
+            });
+          int any_changed = changed;
+          amrex::ParallelDescriptor::ReduceIntMax(any_changed);
+          if (any_changed == 0) {
+            break;
+          }
         }
         work.FillBoundary(periodicity);
       }
