@@ -142,6 +142,9 @@ PeleLM::initLevelVOF(const int lev)
         vof_ma[box_no](i, j, k), amrex::Real(0.0), amrex::Real(1.0));
     });
   amrex::Gpu::streamSynchronize();
+
+  // The tagging of this level reads the ghost cells
+  fillpatch_vof(lev, m_t_new[lev], m_leveldata_new[lev]->vof, m_nGrowVOF);
 }
 
 amrex::Vector<std::unique_ptr<amrex::MultiFab>>
@@ -1573,6 +1576,20 @@ PeleLM::fillpatch_vof(
   amrex::MultiFab& a_vof,
   const int nGhost)
 {
+  // The level data hold all their ghost cells at t_old and t_new, and this fill
+  // is called many times in a step on the same F
+  for (auto* ldata : {m_leveldata_new[lev].get(), m_leveldata_old[lev].get()}) {
+    const amrex::Real t =
+      (ldata == m_leveldata_new[lev].get()) ? m_t_new[lev] : m_t_old[lev];
+    if (
+      ldata != nullptr && a_time == t && &a_vof != &m_leveldata_new[lev]->vof &&
+      &a_vof != &m_leveldata_old[lev]->vof &&
+      a_vof.boxArray() == ldata->vof.boxArray() &&
+      a_vof.DistributionMap() == ldata->vof.DistributionMap()) {
+      amrex::MultiFab::Copy(a_vof, ldata->vof, 0, 0, 1, nGhost);
+      return;
+    }
+  }
   if (nGhost < m_nGrowVOF) {
     fillVOFAllLayers(a_vof, nGhost, [&](amrex::MultiFab& full) {
       fillpatch_vof(lev, a_time, full, m_nGrowVOF);

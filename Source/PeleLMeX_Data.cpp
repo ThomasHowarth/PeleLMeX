@@ -277,7 +277,8 @@ PeleLM::copyStateNewToOld(int nGhost)
     }
 #ifdef PELE_USE_VOF
     amrex::MultiFab::Copy(
-      m_leveldata_old[lev]->vof, m_leveldata_new[lev]->vof, 0, 0, 1, nGhost);
+      m_leveldata_old[lev]->vof, m_leveldata_new[lev]->vof, 0, 0, 1,
+      m_nGrowVOF);
 #endif
   }
 }
@@ -320,7 +321,8 @@ PeleLM::copyStateOldToNew(int nGhost)
     }
 #ifdef PELE_USE_VOF
     amrex::MultiFab::Copy(
-      m_leveldata_new[lev]->vof, m_leveldata_old[lev]->vof, 0, 0, 1, nGhost);
+      m_leveldata_new[lev]->vof, m_leveldata_old[lev]->vof, 0, 0, 1,
+      m_nGrowVOF);
 #endif
   }
 }
