@@ -555,10 +555,8 @@ PeleLM::WritePlotFile()
     amrex::MultiFab::Copy(mf_plt[lev], m_leveldata_new[lev]->vof, 0, cnt, 1, 0);
     cnt += 1;
     {
-      amrex::MultiFab rho(
-        grids[lev], dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
+      amrex::MultiFab rho(mf_plt[lev], amrex::make_alias, cnt, 1);
       fillVOFDensity(lev, getTime(lev, AmrNewTime), rho, 0);
-      amrex::MultiFab::Copy(mf_plt[lev], rho, 0, cnt, 1, 0);
     }
     cnt += 1;
 #endif
@@ -1653,8 +1651,8 @@ PeleLM::coarsenLevelFromPlt(
 
   if (m_verbose > 0) {
     amrex::Print() << "  Coarsening level " << a_lev
-                   << " from plotfile level 0 " << "with ratio "
-                   << coarsen_ratio << "\n";
+                   << " from plotfile level 0 "
+                   << "with ratio " << coarsen_ratio << "\n";
   }
 
 #ifdef AMREX_USE_EB

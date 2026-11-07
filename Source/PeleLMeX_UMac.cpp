@@ -283,6 +283,20 @@ PeleLM::macProject(
 {
   BL_PROFILE("PeleLMeX::macProject()");
 
+#ifdef PELE_USE_VOF
+  if (m_incompressible != 0) {
+    // Sharp face density (see VOFFaceProjection)
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> beta(
+      finest_level + 1);
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      beta[lev] = getVOFFaceBeta(lev, a_time, m_dt / 2.0);
+    }
+    VOFFaceProjection(GetVecOfArrOfPtrs(advData->umac), beta);
+    fillUMacGhosts(advData);
+    return;
+  }
+#endif
+
   const int has_divu = static_cast<int>(!a_divu.empty());
 
   // Get face rho inv
@@ -290,15 +304,6 @@ PeleLM::macProject(
   amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> rho_inv(
     finest_level + 1);
   for (int lev = 0; lev <= finest_level; ++lev) {
-#ifdef PELE_USE_VOF
-    if (m_incompressible != 0) {
-      rho_inv[lev] = getVOFSharpFaceDensity(lev, a_time);
-      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-        rho_inv[lev][idim].invert(m_dt / 2.0, 0);
-      }
-      continue;
-    }
-#endif
     if (m_incompressible != 0) {
       amrex::Real rhoInv = m_dt / (2.0 * m_rho);
       for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
@@ -318,15 +323,6 @@ PeleLM::macProject(
       }
     }
   }
-
-#ifdef PELE_USE_VOF
-  if (m_incompressible != 0) {
-    // Sharp face density (see VOFFaceProjection)
-    VOFFaceProjection(GetVecOfArrOfPtrs(advData->umac), rho_inv);
-    fillUMacGhosts(advData);
-    return;
-  }
-#endif
 
   // For closed chamber, compute change in chamber pressure and turn
   // a_divu (= advData->mac_divu) into S - theta dp0/dt, which it keeps.

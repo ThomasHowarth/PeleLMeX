@@ -245,13 +245,8 @@ PeleLM::Advance(const int is_initIter)
 
   //----------------------------------------------------------------
   BL_PROFILE_VAR("PeleLMeX::advance::velocity", PLM_VEL);
-#ifdef PELE_USE_VOF
-  // Prescribed velocity already set at t^{n+1}
-  const bool skip_velocity_advance = (m_vof_advect_only != 0);
-#else
-  constexpr bool skip_velocity_advance = false;
-#endif
-  if (!skip_velocity_advance) {
+  // A prescribed velocity is already set at t^{n+1}
+  if (!velocityIsPrescribed()) {
     // Velocity advance
     amrex::Real VelAdvStart = 0.0;
     if (m_verbose > 1) {
