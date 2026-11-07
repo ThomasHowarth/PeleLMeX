@@ -318,7 +318,7 @@ public:
     amrex::Vector<amrex::Vector<amrex::MultiFab>> vof_cmask;
     amrex::Real vof_dt_sub = 0.0;
     // VOF unsplit steps, for the momentum advection: liquid crossing each face
-    // in cell volumes [substep][lev][dir], and at the start of each sub-step
+    // per unit area [substep][lev][dir], and at the start of each sub-step
     // [substep][lev] F, the PLIC planes and the traced mesh nodes
     amrex::Vector<
       amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>>
@@ -983,6 +983,14 @@ public:
     const amrex::Real a_dt,
     const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
       a_umac,
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_flux,
+    amrex::Vector<amrex::MultiFab>& a_plane,
+    amrex::Vector<amrex::MultiFab>& a_back);
+  // Liquid crossing the faces of one level in an unsplit step
+  void VOFUnsplitFluxes(
+    const int lev,
+    const amrex::Real a_dt,
+    const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_umac,
     amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& flux,
     amrex::MultiFab& plane,
     amrex::MultiFab& back);

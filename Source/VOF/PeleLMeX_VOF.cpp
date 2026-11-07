@@ -96,9 +96,17 @@ PeleLM::VOFCheckSetup()
   }
   if (m_vof_unsplit != 0) {
     // Temporary, while the unsplit scheme is brought up
-    if (max_level > 0) {
-      amrex::Abort("peleLM.vof.advection = unsplit does not support AMR yet "
-                   "(amr.max_level = 0).");
+    if (max_level > 0 && m_vof_advect_only == 0) {
+      amrex::Abort(
+        "peleLM.vof.advection = unsplit supports AMR with "
+        "peleLM.vof.advect_only = 1 only for now.");
+    }
+    // The flux volumes do not tile across coarse/fine boundaries, which must
+    // stay in pure cells
+    if (m_vof_refine_maxlev >= 0 && m_vof_refine_maxlev < max_level) {
+      amrex::Abort(
+        "peleLM.vof.advection = unsplit requires the interface on "
+        "the finest level (peleLM.vof.refine_max_level).");
     }
   }
 #ifdef AMREX_USE_EB
@@ -554,7 +562,8 @@ PeleLM::VOFMomentumAdvTermUnsplit(
   for (int isub = 0; isub < nsub; ++isub) {
     for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
       const amrex::IntVect e = amrex::IntVect::TheDimensionVector(dir);
-      const amrex::Real dtdx = dt_sub * geom[lev].InvCellSize(dir);
+      const amrex::Real dxinv = geom[lev].InvCellSize(dir);
+      const amrex::Real dtdx = dt_sub * dxinv;
       const auto& lflux = advData->vof_lflux[isub][lev][dir];
 
       // Mass and momentum crossing the faces, per cell volume
@@ -596,7 +605,8 @@ PeleLM::VOFMomentumAdvTermUnsplit(
                 pf(iv, n) = p[n];
               }
             } else {
-              const amrex::Real m = rho_g * courant + (rho_l - rho_g) * lf(iv);
+              const amrex::Real m =
+                rho_g * courant + (rho_l - rho_g) * lf(iv) * dxinv;
               mf(iv) = m;
               for (int n = 0; n < AMREX_SPACEDIM; ++n) {
                 pf(iv, n) = m * face(iv, n);
@@ -976,8 +986,8 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
       advData->vof_plane[isub].resize(finest_level + 1);
       advData->vof_back[isub].resize(finest_level + 1);
       VOFUnsplitStep(
-        dt_sub, umac, advData->vof_lflux[isub][0], advData->vof_plane[isub][0],
-        advData->vof_back[isub][0]);
+        dt_sub, umac, advData->vof_lflux[isub], advData->vof_plane[isub],
+        advData->vof_back[isub]);
       continue;
     }
 
@@ -1038,21 +1048,74 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
 //-----------------------------------------------------------------------------
 // One unsplit geometric step of the volume fraction in the new state: each face
 // carries the liquid inside its flux volume, built from the mesh nodes traced
-// back along the flow (see PeleLMeX_VOF_Unsplit_K.H).  Single level for now.
+// back along the flow (see PeleLMeX_VOF_Unsplit_K.H).  a_flux is the liquid
+// crossing each face per unit face area: fine faces are averaged onto the
+// coarse faces below them, which conserves the volume across coarse/fine
+// boundaries. The flux volumes do not tile across those boundaries, which the
+// tagging keeps in pure cells.
 //-----------------------------------------------------------------------------
 void
 PeleLM::VOFUnsplitStep(
   const amrex::Real a_dt,
   const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
     a_umac,
+  amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_flux,
+  amrex::Vector<amrex::MultiFab>& a_plane,
+  amrex::Vector<amrex::MultiFab>& a_back)
+{
+  BL_PROFILE("PeleLMeX::VOFUnsplitStep()");
+
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    VOFUnsplitFluxes(
+      lev, a_dt, a_umac[lev], a_flux[lev], a_plane[lev], a_back[lev]);
+  }
+  for (int lev = finest_level; lev > 0; --lev) {
+    for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
+      amrex::average_down_faces(
+        a_flux[lev][dir], a_flux[lev - 1][dir], refRatio(lev - 1),
+        geom[lev - 1]);
+    }
+  }
+
+  // Update, Eq. (18) of the paper.  F is not clipped or limited: it conserves
+  // the liquid volume, and departs from [0,1] by the errors of the fluxes
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    auto& vof = m_leveldata_new[lev]->vof;
+    const auto dxinv = geom[lev].InvCellSizeArray();
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+    for (amrex::MFIter mfi(vof); mfi.isValid(); ++mfi) {
+      const amrex::Box& bx = mfi.validbox();
+      auto const& F = vof.array(mfi);
+      AMREX_D_TERM(
+        auto const& fx = a_flux[lev][0].const_array(mfi);
+        , auto const& fy = a_flux[lev][1].const_array(mfi);
+        , auto const& fz = a_flux[lev][2].const_array(mfi););
+      amrex::ParallelFor(
+        bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+          F(i, j, k) += AMREX_D_TERM(
+            (fx(i, j, k) - fx(i + 1, j, k)) * dxinv[0],
+            +(fy(i, j, k) - fy(i, j + 1, k)) * dxinv[1],
+            +(fz(i, j, k) - fz(i, j, k + 1)) * dxinv[2]);
+        });
+    }
+  }
+  amrex::Gpu::streamSynchronize();
+
+  averageDownVOF(AmrNewTime);
+  fillPatchVOF(AmrNewTime);
+}
+
+void
+PeleLM::VOFUnsplitFluxes(
+  const int lev,
+  const amrex::Real a_dt,
+  const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_umac,
   amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& flux,
   amrex::MultiFab& plane,
   amrex::MultiFab& back)
 {
-  BL_PROFILE("PeleLMeX::VOFUnsplitStep()");
-  AMREX_ALWAYS_ASSERT(finest_level == 0);
-  const int lev = 0;
-
   const amrex::Box& domain = geom[lev].Domain();
   const auto periodicity = geom[lev].periodicity();
   const amrex::IntVect is_periodic(AMREX_D_DECL(
@@ -1060,20 +1123,30 @@ PeleLM::VOFUnsplitStep(
   const amrex::BoxArray nodal_ba =
     amrex::convert(grids[lev], amrex::IntVect::TheNodeVector());
 
+  // Nodes that can be traced to.  Positions beyond the domain use its nearest
+  // nodes, except across periodic boundaries.
+  amrex::Box node_limit = amrex::surroundingNodes(domain);
+  for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+    if (is_periodic[d] != 0) {
+      node_limit.grow(d, 1000000);
+    }
+  }
+
   // Node velocities in Courant numbers: each component is the average of the
   // faces normal to it that touch the node, one-sided at domain boundaries.
   // A node shared by several boxes gets one value, so that it is traced to one
-  // position and the flux volumes tile across boxes.
+  // position and the flux volumes tile across boxes.  The ghost nodes at
+  // coarse/fine boundaries use the ghost faces that are available.
   amrex::MultiFab nvel(nodal_ba, dmap[lev], AMREX_SPACEDIM, 1);
   nvel.setVal(0.0);
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
 #endif
   for (amrex::MFIter mfi(nvel); mfi.isValid(); ++mfi) {
-    const amrex::Box& nbx = mfi.validbox();
+    const amrex::Box nbx = amrex::grow(mfi.validbox(), 1) & node_limit;
     auto const& vel = nvel.array(mfi);
     for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
-      auto const& um = a_umac[lev][dir]->const_array(mfi);
+      auto const& um = a_umac[dir]->const_array(mfi);
       const amrex::Real dtdx = a_dt * geom[lev].InvCellSize(dir);
       amrex::ParallelFor(
         nbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
@@ -1098,7 +1171,7 @@ PeleLM::VOFUnsplitStep(
                 inside &&
                 ((AMREX_SPACEDIM != 3) || (is_periodic[t2] != 0) ||
                  (f[t2] >= domain.smallEnd(t2) && f[t2] <= domain.bigEnd(t2)));
-              if (inside) {
+              if (inside && um.contains(f)) {
                 sum += um(f);
                 ++count;
               }
@@ -1111,14 +1184,7 @@ PeleLM::VOFUnsplitStep(
   nvel.FillBoundary(periodicity);
 
   // Traced position of each node at the start of the step (midpoint rule),
-  // in cell units.  Positions beyond the domain use its nearest nodes,
-  // except across periodic boundaries.
-  amrex::Box node_limit = amrex::surroundingNodes(domain);
-  for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-    if (is_periodic[d] != 0) {
-      node_limit.grow(d, 1000000);
-    }
-  }
+  // in cell units
   back.define(nodal_ba, dmap[lev], 3, 0);
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
@@ -1168,12 +1234,13 @@ PeleLM::VOFUnsplitStep(
     });
   }
 
-  // Liquid crossing each face, in cell volumes
+  // Liquid crossing each face per unit face area
   for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
     flux[dir].define(
       amrex::convert(grids[lev], amrex::IntVect::TheDimensionVector(dir)),
       dmap[lev], 1, 0);
-    const amrex::Real dtdx = a_dt * geom[lev].InvCellSize(dir);
+    const amrex::Real dx = geom[lev].CellSize(dir);
+    const amrex::Real dtdx = a_dt / dx;
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
 #endif
@@ -1181,14 +1248,15 @@ PeleLM::VOFUnsplitStep(
       const amrex::Box& fbx = mfi.validbox();
       const amrex::Box cells = amrex::grow(amrex::enclosedCells(fbx), 1);
       auto const& fl = flux[dir].array(mfi);
-      auto const& um = a_umac[lev][dir]->const_array(mfi);
+      auto const& um = a_umac[dir]->const_array(mfi);
       auto const& F = vof.const_array(mfi);
       auto const& pl = plane.const_array(mfi);
       auto const& bk = back.const_array(mfi);
       amrex::ParallelFor(
         fbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-          fl(i, j, k) = pelelmex::vof::unsplit::face_liquid_flux(
-            i, j, k, dir, um(i, j, k) * dtdx, F, pl, bk, cells);
+          fl(i, j, k) =
+            dx * pelelmex::vof::unsplit::face_liquid_flux(
+                   i, j, k, dir, um(i, j, k) * dtdx, F, pl, bk, cells);
         });
     }
     // Faces between boxes compute the same value, up to round-off across a
@@ -1196,27 +1264,6 @@ PeleLM::VOFUnsplitStep(
     flux[dir].OverrideSync(periodicity);
   }
   amrex::Gpu::streamSynchronize();
-
-  // Update, Eq. (18) of the paper.  F is not clipped or limited: it conserves
-  // the liquid volume, and departs from [0,1] by the errors of the fluxes
-#ifdef AMREX_USE_OMP
-#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
-#endif
-  for (amrex::MFIter mfi(vof); mfi.isValid(); ++mfi) {
-    const amrex::Box& bx = mfi.validbox();
-    auto const& F = vof.array(mfi);
-    AMREX_D_TERM(auto const& fx = flux[0].const_array(mfi);
-                 , auto const& fy = flux[1].const_array(mfi);
-                 , auto const& fz = flux[2].const_array(mfi););
-    amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      F(i, j, k) += AMREX_D_TERM(
-        fx(i, j, k) - fx(i + 1, j, k), +fy(i, j, k) - fy(i, j + 1, k),
-        +fz(i, j, k) - fz(i, j, k + 1));
-    });
-  }
-  amrex::Gpu::streamSynchronize();
-
-  fillPatchVOF(AmrNewTime);
 }
 
 void
