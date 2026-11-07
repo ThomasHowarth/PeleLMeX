@@ -309,7 +309,7 @@ PeleLM::VOFMomentumAdvTerm(
   for (int lev = 0; lev <= finest_level; ++lev) {
     rho[lev].define(grids[lev], dmap[lev], 1, 0);
     mom[lev].define(grids[lev], dmap[lev], AMREX_SPACEDIM, 0);
-    auto const& vof_ma = advData->vof_fstart[lev].const_arrays();
+    auto const& vof_ma = m_leveldata_old[lev]->vof.const_arrays();
     auto const& rho_ma = rho[lev].arrays();
     auto const& mom_ma = mom[lev].arrays();
     auto const& velo_ma =
@@ -339,7 +339,7 @@ PeleLM::VOFMomentumAdvTerm(
       const auto& lflux = advData->vof_lflux[lev][dir];
       mflux[lev].define(lflux.boxArray(), dmap[lev], 1, 0);
       pflux[lev].define(lflux.boxArray(), dmap[lev], AMREX_SPACEDIM, 0);
-      auto const& F_mf = advData->vof_fstart[lev];
+      auto const& F_mf = m_leveldata_old[lev]->vof;
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
 #endif
@@ -673,8 +673,8 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
   const amrex::Real vol_old =
     (m_vof_verbose > 0) ? VOFLiquidVolume(AmrNewTime) : 0.0;
 
-  // Working state is the new VOF, which holds t^n at this point
-  fillPatchVOF(AmrNewTime);
+  // Working state is the new VOF, which holds t^n and its ghost cells at this
+  // point
 
   // Largest face velocity / dx.  The step is estimated from the
   // cell-centered velocity at t^n, while the advection uses the face velocity
@@ -697,14 +697,6 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
       "time step.");
   }
 
-  // F with the two ghost layers of the interface band of the momentum
-  // advection, at the start of the step
-  advData->vof_fstart.resize(finest_level + 1);
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    advData->vof_fstart[lev].define(grids[lev], dmap[lev], 1, 2);
-    amrex::MultiFab::Copy(
-      advData->vof_fstart[lev], m_leveldata_new[lev]->vof, 0, 0, 1, 2);
-  }
   advData->vof_lflux.resize(finest_level + 1);
   // The fluxes of the momentum advection near the interface use the same cuts
   const bool with_mom = (m_vof_advect_only == 0);
