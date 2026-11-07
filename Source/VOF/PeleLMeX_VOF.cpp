@@ -22,6 +22,10 @@ constexpr int vof_bc[] = {amrex::BCType::int_dir,  amrex::BCType::ext_dir,
 void
 PeleLM::VOFReadParameters()
 {
+  // GMRES by default for the face coefficient jump of the projections.  Set
+  // before the MacProjector reads its options.
+  int mac_use_gmres = 1;
+  amrex::ParmParse("mac_proj").queryAdd("use_gmres", mac_use_gmres);
   amrex::ParmParse pp("peleLM.vof");
   pp.query("cfl", m_vof_cfl);
   pp.query("refine_max_level", m_vof_refine_maxlev);
@@ -648,10 +652,10 @@ PeleLM::VOFMomentumAdvTermUnsplit(
 }
 
 //-----------------------------------------------------------------------------
-// Face projection umac -= beta grad phi with div(beta grad phi) = div(umac),
-// the MacProjector operator, solved with GMRES preconditioned by MLMG: plain
-// MLMG stalls on the large face-coefficient jumps of a sharp, high density
-// ratio interface.
+// Face projection umac -= beta grad phi with div(beta grad phi) = div(umac), by
+// the MacProjector with its solver options (mac_proj.*).  GMRES preconditioned
+// by MLMG is the VOF default, for the large face-coefficient jumps of a sharp,
+// high density ratio interface.
 //-----------------------------------------------------------------------------
 void
 PeleLM::VOFFaceProjection(
@@ -660,19 +664,8 @@ PeleLM::VOFFaceProjection(
 {
   BL_PROFILE("PeleLMeX::VOFFaceProjection()");
 
-  if (macproj->needInitialization()) {
-    amrex::LPInfo lpInfo;
-    lpInfo.setMaxCoarseningLevel(m_mac_mg_max_coarsening_level);
-    macproj->initProjector(lpInfo, GetVecOfArrOfConstPtrs(a_beta));
-    macproj->setDomainBC(
-      getMACProjectionBC(amrex::Orientation::low),
-      getMACProjectionBC(amrex::Orientation::high));
-  } else {
-    macproj->updateBeta(GetVecOfArrOfConstPtrs(a_beta));
-  }
-  auto& linop = macproj->getLinOp();
-  auto& mlmg = macproj->getMLMG();
-  linop.setMaxOrder(m_mac_max_order);
+  setupMacProjector(a_beta);
+  macproj->setUMAC(a_umac);
   // Coarse faces under fine faces take the fine-face average, so that the
   // composite divergence is consistent across coarse-fine interfaces
   for (int lev = finest_level; lev > 0; --lev) {
@@ -680,92 +673,34 @@ PeleLM::VOFFaceProjection(
       GetArrOfConstPtrs(a_umac[lev]), a_umac[lev - 1], refRatio(lev - 1),
       geom[lev - 1]);
   }
-  // GMRES stops on its own estimate of the residual in the 2-norm.  Convergence
-  // is judged here on the divergence actually left in umac, solving again for
-  // what remains, with a warning if the target is not reached: a wrong operator
-  // (a face with two coefficients) gives a converged solve and a divergent
-  // umac.
-  constexpr int max_solves = 10;
-  amrex::Real div_target = 0.0;
-  amrex::Real div_left = 0.0;
-  int nsolve = 0;
-  for (nsolve = 0; nsolve <= max_solves; ++nsolve) {
-    amrex::Vector<amrex::MultiFab> phi(finest_level + 1);
-    amrex::Vector<amrex::MultiFab> rhs(finest_level + 1);
+  // The solvers stop on their own estimate of the residual.  Convergence is
+  // judged here on the divergence actually left in umac, including its mean,
+  // solving again for what remains, with a warning if the target is not
+  // reached: a wrong operator (a face with two coefficients) gives a converged
+  // solve and a divergent umac.
+  const auto max_divergence = [&]() {
+    amrex::Real div = 0.0;
     for (int lev = 0; lev <= finest_level; ++lev) {
-      rhs[lev].define(
+      amrex::MultiFab divu(
         grids[lev], dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
-      phi[lev].define(
-        grids[lev], dmap[lev], 1, 1, amrex::MFInfo(), Factory(lev));
-      phi[lev].setVal(0.0);
-      amrex::computeDivergence(
-        rhs[lev], GetArrOfConstPtrs(a_umac[lev]), geom[lev]);
-      rhs[lev].mult(-1.0);
-      linop.setLevelBC(lev, nullptr);
+      amrex::computeDivergence(divu, GetArrOfConstPtrs(a_umac[lev]), geom[lev]);
+      div = amrex::max(div, divu.norm0());
     }
-    // GMRESMLMG does not make a singular system solvable: remove the mean
-    // (round-off for a closed domain) as MLMG would
-    bool singular = true;
-    for (const auto& bcs :
-         {getMACProjectionBC(amrex::Orientation::low),
-          getMACProjectionBC(amrex::Orientation::high)}) {
-      for (const auto bc : bcs) {
-        if (bc == amrex::LinOpBCType::Dirichlet) {
-          singular = false;
-        }
-      }
+    return div;
+  };
+  constexpr int max_solves = 10;
+  amrex::Real div_left = max_divergence();
+  const amrex::Real div_target =
+    amrex::max(m_mac_mg_rtol * div_left, m_mac_mg_atol);
+  int nsolve = 0;
+  while (div_left > div_target && nsolve < max_solves) {
+    solveMacProjection();
+    if (m_macproj_verbose > 0) {
+      amrex::Print() << "   VOF face projection: " << macproj->getNumIters()
+                     << " iterations\n";
     }
-    // Measured before the mean is removed: a mean left in umac is divergence
-    // too, and later solves cannot remove it
-    div_left = 0.0;
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      div_left = amrex::max(div_left, rhs[lev].norm0());
-    }
-    if (singular) {
-      const amrex::Real mean =
-        rhs[0].sum() / static_cast<amrex::Real>(geom[0].Domain().numPts());
-      for (int lev = 0; lev <= finest_level; ++lev) {
-        rhs[lev].plus(-mean, 0, 1);
-      }
-    }
-    if (nsolve == 0) {
-      div_target = amrex::max(m_mac_mg_rtol * div_left, m_mac_mg_atol);
-    }
-    if (div_left <= div_target || nsolve == max_solves) {
-      break;
-    }
-    {
-      amrex::GMRESMLMG gmres(mlmg);
-      gmres.setVerbose(m_macproj_verbose);
-      gmres.solve(
-        GetVecOfPtrs(phi), GetVecOfConstPtrs(rhs), m_mac_mg_rtol,
-        m_mac_mg_atol);
-      if (m_macproj_verbose > 0) {
-        amrex::Print() << "   VOF face projection: " << gmres.getNumIters()
-                       << " GMRES iterations\n";
-      }
-    }
-    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> flux(
-      finest_level + 1);
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-        flux[lev][idim].define(
-          a_umac[lev][idim]->boxArray(), dmap[lev], 1, 0, amrex::MFInfo(),
-          Factory(lev));
-      }
-    }
-    mlmg.prepareForFluxes(GetVecOfConstPtrs(phi));
-    mlmg.getFluxes(GetVecOfArrOfPtrs(flux), GetVecOfPtrs(phi));
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-        amrex::MultiFab::Add(*a_umac[lev][idim], flux[lev][idim], 0, 0, 1, 0);
-      }
-    }
-    for (int lev = finest_level; lev > 0; --lev) {
-      amrex::average_down_faces(
-        GetArrOfConstPtrs(a_umac[lev]), a_umac[lev - 1], refRatio(lev - 1),
-        geom[lev - 1]);
-    }
+    div_left = max_divergence();
+    ++nsolve;
   }
   if (div_left > div_target) {
     amrex::Print() << "   VOF: WARNING face projection left a divergence of "
