@@ -353,8 +353,6 @@ if(NOT PELE_ENABLE_EB)
     if(PELE_DIM EQUAL 2)
       add_test_vof(vof-zalesak-2d VOFAdvection)
       add_test_vof(vof-translate-2d VOFAdvection --uniform-velocity 1.0 1.0)
-      add_test_vof(vof-translate-split-2d VOFAdvection
-                   --require-substeps --uniform-velocity 1.0 1.0)
       add_test_vof(vof-pool-2d VOFTwoPhase --max-velocity 1.0e-8)
       add_test_vof(vof-dambreak-2d VOFTwoPhase --max-velocity 10.0)
     endif()

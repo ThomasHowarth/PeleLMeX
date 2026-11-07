@@ -55,4 +55,3 @@ CTest when configuring with `-DPELE_ENABLE_VOF=ON` (`ctest -L vof`).
 `Tests/test_vof.py` checks physical invariants rather than gold files: liquid
 volume conserved to 1e-13 per step, the volume fraction within 1e-9 of [0, 1],
 and for `vof-translate-2d`, a velocity that stays exactly uniform.
-`vof-translate-split-2d` covers the split scheme and its sub-stepping.

@@ -412,12 +412,6 @@ boundaries, so the interface must stay on the finest level
 implementation requires ``peleLM.incompressible = 1``, uniform cubic cells (no
 ``geometry.mesh_mapping``) and no embedded boundaries.
 
-``peleLM.vof.advection = split`` selects the previous scheme, the directionally
-split PLIC of Weymouth & Yue (2010), which is to be removed. It keeps the volume
-fraction in [0, 1] for a per-sweep face Courant number of at most 1/2, and
-sub-steps the advection above that, as does the unsplit scheme on a single level;
-any volume removed by clipping is reported as a warning.
-
 The density and viscosity are fields derived from the volume fraction,
 :math:`\rho = F \rho_l + (1 - F) \rho_g` and either the arithmetic
 :math:`\mu = F \mu_l + (1 - F) \mu_g` or the harmonic average
@@ -460,16 +454,11 @@ beyond the upwind cell. Elsewhere :math:`p_f = m_f u_f`, with :math:`u_f` the
 Godunov face state. Coarse faces under fine faces take the average of the fine
 fluxes per unit area, so the composite update is conservative.
 
-With ``peleLM.vof.advection = split``, the sweeps are replayed on the density and
-momentum instead, with the upwind intermediate cell velocity near the interface
-(Arrufat et al., 2021).
-
 ::
 
     #-----------------------Volume of fluid -----------------------
-    peleLM.vof.advection        = unsplit # [OPT, DEF=unsplit] Advection scheme: unsplit, or split (to be removed)
-    peleLM.vof.cfl              = 0.45  # [OPT, DEF=0.45] Courant number target, below 1 (at most 0.5 for split)
-    peleLM.vof.refine_max_level = 2     # [OPT, DEF=amr.max_level] Interface cells are tagged on levels below this; unsplit requires amr.max_level
+    peleLM.vof.cfl              = 0.45  # [OPT, DEF=0.45] Courant number target, below 1
+    peleLM.vof.refine_max_level = 2     # [OPT, DEF=amr.max_level] Interface cells are tagged on levels below this; must not be below amr.max_level
     peleLM.vof.refine_band      = 2     # [OPT, DEF=2] Half-width (cells) of the tagged interface band
     peleLM.vof.advect_only      = 0     # [OPT, DEF=0] Advect with the prescribed velocity curl(A), skip the momentum update
     peleLM.vof.v                = 1     # [OPT, DEF=0] Verbose: 1 prints the liquid volume
