@@ -31,7 +31,7 @@ PeleLM::VOFReadParameters()
   pp.query("refine_band", m_vof_refine_band);
   pp.query("v", m_vof_verbose);
   pp.query("advect_only", m_vof_advect_only);
-  std::string advection = "split";
+  std::string advection = "unsplit";
   pp.query("advection", advection);
   if (advection == "unsplit") {
     m_vof_unsplit = 1;
@@ -75,7 +75,12 @@ PeleLM::VOFReadParameters()
       "peleLM.vof.refine_band cannot exceed the number of state ghost cells (" +
       std::to_string(m_nGrowState) + ")");
   }
-  if (m_vof_cfl <= 0.0 || m_vof_cfl > 0.5) {
+  if (m_vof_unsplit != 0) {
+    if (m_vof_cfl <= 0.0 || m_vof_cfl >= 1.0) {
+      amrex::Abort(
+        "peleLM.vof.cfl must be in (0, 1): the unsplit advection is explicit");
+    }
+  } else if (m_vof_cfl <= 0.0 || m_vof_cfl > 0.5) {
     amrex::Abort(
       "peleLM.vof.cfl must be in (0, 0.5]: the split PLIC advection is "
       "only bounded and conservative for a per-sweep Courant number <= 0.5");

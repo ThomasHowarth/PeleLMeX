@@ -5,7 +5,9 @@ Reads the run log (``peleLM.vof.v = 1``) and the ``temporals/tempExtremas``
 file (``peleLM.do_extremas = 1``) written in the working directory, and fails
 if:
   - the volume fraction was clipped (``VOF: WARNING`` in the log),
-  - the liquid volume changed by more than ``--volume-rtol`` in any step,
+  - the liquid volume changed by more than ``--volume-rtol`` in any step, or is
+    not finite,
+  - the volume fraction left [0, 1] by more than ``--fraction-atol``,
   - the largest velocity magnitude component exceeds ``--max-velocity``,
   - the z velocity exceeds ``--max-z-velocity`` (a flow extruded along z),
   - any velocity component departs from ``--uniform-velocity`` by more than
@@ -13,6 +15,7 @@ if:
   - ``--require-substeps`` is given and the advection was never sub-stepped.
 """
 import argparse
+import math
 import re
 import sys
 
@@ -20,8 +23,10 @@ import sys
 def read_log(fname):
     warnings = []
     changes = []
+    bounds = []
     substeps = 0
     pattern = re.compile(r"VOF: liquid volume \S+, relative change (\S+)")
+    pattern_bounds = re.compile(r"F below 0 by ([^\s,]+), above 1 by (\S+)")
     with open(fname) as f:
         for line in f:
             if "VOF: WARNING" in line:
@@ -31,7 +36,10 @@ def read_log(fname):
             m = pattern.search(line)
             if m:
                 changes.append(float(m.group(1)))
-    return warnings, changes, substeps
+            m = pattern_bounds.search(line)
+            if m:
+                bounds.append(max(float(m.group(1)), float(m.group(2))))
+    return warnings, changes, bounds, substeps
 
 
 def read_velocity_extrema(fname, ndim):
@@ -54,6 +62,7 @@ def main():
     parser.add_argument("log", help="run log")
     parser.add_argument("--dim", type=int, required=True)
     parser.add_argument("--volume-rtol", type=float, default=1.0e-13)
+    parser.add_argument("--fraction-atol", type=float, default=1.0e-9)
     parser.add_argument("--max-velocity", type=float, default=None)
     parser.add_argument("--max-z-velocity", type=float, default=None)
     parser.add_argument("--uniform-velocity", type=float, nargs="+", default=None)
@@ -63,7 +72,7 @@ def main():
     args = parser.parse_args()
 
     failures = []
-    warnings, changes, substeps = read_log(args.log)
+    warnings, changes, bounds, substeps = read_log(args.log)
 
     if not changes:
         failures.append("no 'VOF: liquid volume' lines: set peleLM.vof.v = 1")
@@ -72,9 +81,20 @@ def main():
     if changes:
         worst = max(abs(c) for c in changes)
         print(f"steps {len(changes)}, max |relative volume change| {worst:.3e}")
-        if worst > args.volume_rtol:
+        if not all(math.isfinite(c) for c in changes):
+            failures.append("the liquid volume is not finite")
+        elif worst > args.volume_rtol:
             failures.append(
                 f"liquid volume changed by {worst:.3e} > {args.volume_rtol:.1e}"
+            )
+    if bounds:
+        worst = max(bounds)
+        print(f"max departure of F from [0, 1] {worst:.3e}")
+        if not all(math.isfinite(b) for b in bounds):
+            failures.append("the volume fraction is not finite")
+        elif worst > args.fraction_atol:
+            failures.append(
+                f"F left [0, 1] by {worst:.3e} > {args.fraction_atol:.1e}"
             )
     print(f"sub-stepped steps {substeps}")
     if args.require_substeps and substeps == 0:

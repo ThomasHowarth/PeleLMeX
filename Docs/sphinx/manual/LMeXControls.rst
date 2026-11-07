@@ -392,20 +392,31 @@ Volume of fluid
 Two-phase interface capturing is compiled in with ``USE_VOF = TRUE`` (GNUmake)
 or, for the CMake test suite, ``PELE_ENABLE_VOF = ON``, which builds the cases
 whose ``CMakeLists.txt`` sets ``PELELM_USE_VOF ON``. The liquid volume fraction
-``vof`` is advected with the MAC velocities by the geometric, directionally split
-PLIC scheme of Weymouth & Yue (2010), with the analytic plane/volume relations
-of Scardovelli & Zaleski (2000) ported from Kynema-SGF (formerly AMR-Wind). The
-interface normals come from height functions over 7-cell columns, which are
-exact for any planar interface, with Mixed Youngs-Centered normals where the
-heights are undefined (thin or strongly curved structures); the volume fraction
-carries 4 ghost cells. The liquid volume is conserved to round-off for a
-discretely divergence-free face velocity, including across coarse/fine
-boundaries, and the volume fraction stays in [0, 1] without clipping for a
-per-sweep face Courant number of at most 1/2. The time step uses the
-cell-centered velocity (``peleLM.vof.cfl``); when the face velocity used by the
-sweeps exceeds that limit, the advection is sub-stepped. Any volume removed by
-clipping is reported as a warning. The current implementation requires ``peleLM.incompressible = 1``,
-uniform cubic cells (no ``geometry.mesh_mapping``) and no embedded boundaries.
+``vof`` is advected with the MAC velocities by the unsplit geometric PLIC scheme
+of Owkes & Desjardins (2014): the liquid crossing a face in a step is the liquid
+inside its flux volume, the region bounded by the face and its corners traced
+back along the flow. The analytic plane/volume relations of Scardovelli & Zaleski
+(2000) are ported from Kynema-SGF (formerly AMR-Wind). The interface normals come
+from height functions over 7-cell columns, which are exact for any planar
+interface, with Mixed Youngs-Centered normals where the heights are undefined
+(thin or strongly curved structures); the volume fraction carries 4 ghost cells.
+The liquid volume is conserved to round-off for a discretely divergence-free face
+velocity, including across coarse/fine boundaries, and the volume fraction is not
+clipped or limited: it leaves [0, 1] only by the round-off of the fluxes. The
+advection is explicit, so the face Courant number must stay below 1. The time
+step uses the cell-centered velocity (``peleLM.vof.cfl``), while the advection
+uses the face velocity, which can be larger; with AMR, a run stops if the face
+Courant number reaches 1. The flux volumes do not tile across coarse/fine
+boundaries, so the interface must stay on the finest level
+(``peleLM.vof.refine_max_level`` cannot be below ``amr.max_level``). The current
+implementation requires ``peleLM.incompressible = 1``, uniform cubic cells (no
+``geometry.mesh_mapping``) and no embedded boundaries.
+
+``peleLM.vof.advection = split`` selects the previous scheme, the directionally
+split PLIC of Weymouth & Yue (2010), which is to be removed. It keeps the volume
+fraction in [0, 1] for a per-sweep face Courant number of at most 1/2, and
+sub-steps the advection above that, as does the unsplit scheme on a single level;
+any volume removed by clipping is reported as a warning.
 
 The density and viscosity are fields derived from the volume fraction,
 :math:`\rho = F \rho_l + (1 - F) \rho_g` and either the arithmetic
@@ -437,26 +448,28 @@ high density ratio interface (``mac_proj.use_gmres = 0`` selects plain MLMG).
 After each solve the divergence left in the face velocity is checked, and the
 solve is repeated until it reaches the target, with a warning otherwise.
 
-Momentum is advected in conservative form with the mass fluxes of the VOF sweeps,
+Momentum is advected in conservative form with the mass the flux volumes carry,
 :math:`m_f = \rho_g u_f \Delta t + (\rho_l - \rho_g) \Phi_l`, with
-:math:`\Phi_l` the swept liquid volume (Rudman, 1998; Arrufat et al., 2021): the
-split sweeps are replayed on the density and momentum,
-:math:`\rho' = \rho - \delta_d m_f + \rho_c \delta_d a` and
-:math:`(\rho u)' = \rho u - \delta_d (m_f u_f) + \rho_c u_c \delta_d a`, with
-:math:`a = u_f \Delta t / \Delta x`, :math:`\rho_c` the phase density of
-:math:`c = H(F - 1/2)` and :math:`u_c` the velocity, frozen over each
-(sub-)step. After each sweep the density is exactly that of the swept volume
-fraction, so momentum is carried with the liquid and a uniform flow stays
-uniform across the interface. Within one cell of the interface the face velocity
-:math:`u_f` is the upwind intermediate cell velocity, so that liquid crossing a
-gas cell within a step leaves it with the velocity it entered with; it is the
-Godunov face state elsewhere.
+:math:`\Phi_l` the liquid volume crossing the face (Rudman, 1998):
+:math:`\rho' = \rho - \sum_d \delta_d m_f` and
+:math:`(\rho u)' = \rho u - \sum_d \delta_d p_f`, so momentum is carried with the
+liquid and a uniform flow stays uniform across the interface. Near the interface
+the momentum flux :math:`p_f` is the integral over the flux volume, each piece
+carrying the velocity of the cell it lies in, because a flux volume reaches
+beyond the upwind cell. Elsewhere :math:`p_f = m_f u_f`, with :math:`u_f` the
+Godunov face state. Coarse faces under fine faces take the average of the fine
+fluxes per unit area, so the composite update is conservative.
+
+With ``peleLM.vof.advection = split``, the sweeps are replayed on the density and
+momentum instead, with the upwind intermediate cell velocity near the interface
+(Arrufat et al., 2021).
 
 ::
 
     #-----------------------Volume of fluid -----------------------
-    peleLM.vof.cfl              = 0.45  # [OPT, DEF=0.45] Per-sweep Courant number target, at most 0.5
-    peleLM.vof.refine_max_level = 2     # [OPT, DEF=amr.max_level] Interface cells are tagged on levels below this
+    peleLM.vof.advection        = unsplit # [OPT, DEF=unsplit] Advection scheme: unsplit, or split (to be removed)
+    peleLM.vof.cfl              = 0.45  # [OPT, DEF=0.45] Courant number target, below 1 (at most 0.5 for split)
+    peleLM.vof.refine_max_level = 2     # [OPT, DEF=amr.max_level] Interface cells are tagged on levels below this; unsplit requires amr.max_level
     peleLM.vof.refine_band      = 2     # [OPT, DEF=2] Half-width (cells) of the tagged interface band
     peleLM.vof.advect_only      = 0     # [OPT, DEF=0] Advect with the prescribed velocity curl(A), skip the momentum update
     peleLM.vof.v                = 1     # [OPT, DEF=0] Verbose: 1 prints the liquid volume

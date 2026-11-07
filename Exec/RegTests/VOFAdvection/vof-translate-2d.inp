@@ -1,6 +1,6 @@
 # CI: 1000:1 drop in a uniform flow, 2 levels.  The fixed step gives a
-# face Courant number of 0.77 on the fine level, so the VOF advection is
-# sub-stepped; the velocity must stay exactly uniform
+# face Courant number of 0.77 on the fine level; the velocity must stay
+# exactly uniform
 #----------------------- Geometry ------------------------------
 geometry.is_periodic = 1 1
 geometry.coord_sys   = 0

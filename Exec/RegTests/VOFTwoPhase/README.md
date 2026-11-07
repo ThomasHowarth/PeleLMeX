@@ -31,7 +31,7 @@ volume is conserved to round-off in all cases.
   degrees and drive currents of order 1e-2 m/s.
 - `input.2d-rt` with `prob.amplitude=0.01 amr.n_cell="64 256" amr.max_level=0`:
   the amplitude of the first Fourier mode of the interface height follows
-  the viscous linear theory, `cosh(sigma t)`, to 0.7% at t = 0.4 and 2.7% at
+  the viscous linear theory, `cosh(sigma t)`, to about 1% at t = 0.4 and 3% at
   t = 0.8 (the departure grows with the nonlinear saturation).  The
   amplitude must be measured on the mode-1 Fourier coefficient: a two-point
   difference is dominated by the PLIC height quantization at small
@@ -39,20 +39,20 @@ volume is conserved to round-off in all cases.
 - `input.2d-dambreak` runs to t = 0.4 s through the wall impact and run-up.
   The surge front is ahead of the Martin & Moyce data by about 0.3 column
   widths with a similar speed, as is usual for simulations that ignore the
-  gate opening.  With `amr.cfl=0.9` the face Courant number exceeds 1/2 and
-  the VOF advection is sub-stepped; the volume fraction is still never
-  clipped.
+  gate opening.  It also runs with `amr.cfl=0.9`.
 - A uniform flow carrying a 1000:1 drop (`Exec/RegTests/VOFAdvection`,
   `input.2d-translate peleLM.vof.rho_liquid=1000`) stays exactly uniform, and
-  its solution is bitwise identical to that of the equal-density case.
+  its volume fraction and velocity are identical to those of the equal-density
+  case.
 
 ## Regression tests
 
 The `vof-*.inp` inputs are short versions of these cases registered with
 CTest when configuring with `-DPELE_ENABLE_VOF=ON` (`ctest -L vof`).
-`Tests/test_vof.py` checks physical invariants rather than gold files: no
-clipping, liquid volume conserved to 1e-13 per step, and for the tilted
-pools, a velocity below 1e-8 m/s (without the free contact line it reaches
-6e-3 m/s within 20 steps).
+`Tests/test_vof.py` checks physical invariants rather than gold files: liquid
+volume conserved to 1e-13 per step, the volume fraction within 1e-9 of [0, 1],
+and for the tilted pools, a velocity below 1e-8 m/s (without the free contact
+line it reaches 6e-3 m/s within 20 steps).  `vof-dambreak-3d` and
+`vof-dambreak-amr-3d` check that w stays at round-off in an extruded flow.
 
 Surface tension is the next step.
