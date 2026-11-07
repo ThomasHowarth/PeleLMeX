@@ -536,6 +536,18 @@ public:
     const std::unique_ptr<AdvanceAdvData>& advData);
 
   /**
+   * \brief Initialize the MAC projector, or update its coefficients
+   * \param a_beta face coefficients of the projection on all levels
+   */
+  void setupMacProjector(
+    const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_beta);
+
+  /**
+   * \brief Run the MAC projector, dumping the residuals on failure if asked to
+   */
+  void solveMacProjection();
+
+  /**
    * \brief Perform MAC projection to obtained divergence constrained
    * face-centered (MAC) velocities
    * \param a_time time stamp to access the density used in the projection
