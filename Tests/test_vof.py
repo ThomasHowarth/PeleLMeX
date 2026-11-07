@@ -7,6 +7,7 @@ if:
   - the volume fraction was clipped (``VOF: WARNING`` in the log),
   - the liquid volume changed by more than ``--volume-rtol`` in any step,
   - the largest velocity magnitude component exceeds ``--max-velocity``,
+  - the z velocity exceeds ``--max-z-velocity`` (a flow extruded along z),
   - any velocity component departs from ``--uniform-velocity`` by more than
     ``--uniform-atol``,
   - ``--require-substeps`` is given and the advection was never sub-stepped.
@@ -54,6 +55,7 @@ def main():
     parser.add_argument("--dim", type=int, required=True)
     parser.add_argument("--volume-rtol", type=float, default=1.0e-13)
     parser.add_argument("--max-velocity", type=float, default=None)
+    parser.add_argument("--max-z-velocity", type=float, default=None)
     parser.add_argument("--uniform-velocity", type=float, nargs="+", default=None)
     parser.add_argument("--uniform-atol", type=float, default=1.0e-12)
     parser.add_argument("--require-substeps", action="store_true")
@@ -78,7 +80,11 @@ def main():
     if args.require_substeps and substeps == 0:
         failures.append("the VOF advection was never sub-stepped")
 
-    if args.max_velocity is not None or args.uniform_velocity is not None:
+    if (
+        args.max_velocity is not None
+        or args.max_z_velocity is not None
+        or args.uniform_velocity is not None
+    ):
         vmin, vmax = read_velocity_extrema(args.extremas, args.dim)
         print("velocity range " + ", ".join(
             f"[{lo:.6e}, {hi:.6e}]" for lo, hi in zip(vmin, vmax)))
@@ -87,6 +93,12 @@ def main():
             if umax > args.max_velocity:
                 failures.append(
                     f"max |u| {umax:.3e} > {args.max_velocity:.1e}"
+                )
+        if args.max_z_velocity is not None:
+            wmax = max(abs(vmin[2]), abs(vmax[2]))
+            if wmax > args.max_z_velocity:
+                failures.append(
+                    f"max |w| {wmax:.3e} > {args.max_z_velocity:.1e}"
                 )
         if args.uniform_velocity is not None:
             for d, (lo, hi) in enumerate(zip(vmin, vmax)):
