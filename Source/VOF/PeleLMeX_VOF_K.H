@@ -24,12 +24,9 @@ namespace pelelmex::vof {
 
 using namespace amrex::literals;
 
-// Volume fraction below which a cell is considered pure gas / above
-// (1 - tol) pure liquid
 // Cells within this of 0 or 1 count as pure.  It must stay well above the noise
-// in F (about 1e-11): otherwise a cell flips between
-// mixed and pure from one neighbour to the next, which breaks the symmetry of
-// the flow.
+// in F (about 1e-11): otherwise a cell flips between mixed and pure from one
+// neighbour to the next, which breaks the symmetry of the flow.
 static constexpr amrex::Real vof_tol = 1.0e-8_rt;
 
 // Half-length of the height-function columns (7 cells); the volume fraction
@@ -339,8 +336,7 @@ myc_normal(
 
   // Youngs wins when its largest component is smaller than the centered
   // scheme's height component (interface not aligned with a grid plane)
-  t = amrex::max(
-    std::abs(m[3][0]), amrex::max(std::abs(m[3][1]), std::abs(m[3][2])));
+  t = amrex::max(std::abs(m[3][0]), std::abs(m[3][1]), std::abs(m[3][2]));
   if (std::abs(m[cn][cn]) > t && t > 0.0_rt) {
     cn = 3;
   }

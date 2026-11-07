@@ -32,7 +32,7 @@ PeleLM::ErrorEst(
   }
 
 #ifdef PELE_USE_VOF
-  // Keep the interface on the finest VOF level so that coarse/fine faces
+  // Keep the interface on the finest level so that coarse/fine faces
   // only carry pure-phase fluxes
   VOFTagInterface(lev, tags);
 #endif

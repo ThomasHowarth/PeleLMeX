@@ -549,6 +549,9 @@ public:
     const std::unique_ptr<AdvanceAdvData>& advData,
     const amrex::Vector<amrex::MultiFab*>& a_divu);
 
+  // Fill the umac ghost faces (periodic and coarse/fine) after a projection
+  void fillUMacGhosts(const std::unique_ptr<AdvanceAdvData>& advData);
+
   /**
    * \brief Fill the projected face velocities ghost faces, ensuring
    * that the ghost cell velocities are constrained by the ghost cell
@@ -562,8 +565,6 @@ public:
    * the function) \param divu pointer to the current level divU \param
    * crse_ratio refinement ratio with the next coarser level
    */
-  // Fill the umac ghost faces (periodic and coarse/fine) after a projection
-  void fillUMacGhosts(const std::unique_ptr<AdvanceAdvData>& advData);
   void create_constrained_umac_grown(
     const int a_nGrow,
     const amrex::Geometry* crse_geom,
@@ -1000,8 +1001,6 @@ public:
   void averageDownVOF(const PeleLM::TimeStamp a_time);
   // Free-contact-line wall ghost cells, after a fill
   void VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost);
-  amrex::Vector<std::unique_ptr<amrex::MultiFab>>
-  getVOFVect(const PeleLM::TimeStamp a_time);
   // Mixture density / viscosity from the volume fraction at a_time, in
   // nGhost ghost cells
   void fillVOFDensity(
@@ -1042,10 +1041,9 @@ public:
   amrex::Real m_vof_mu_gas = -1.0;
   // Cell viscosity: 0 arithmetic, 1 harmonic average of the phase values
   int m_vof_mu_harmonic = 0;
-  // Below the 0.5 bound to leave room for face velocities exceeding the
+  // Well below the limit of 1 to leave room for face velocities exceeding the
   // cell-centered ones used in the estimate
   amrex::Real m_vof_cfl = 0.45;
-  // Interface cells are tagged up to (excluding) this level; -1: max_level
   // Interface band half-width (in cells) tagged for refinement
   int m_vof_refine_band = 2;
   int m_vof_verbose = 0;

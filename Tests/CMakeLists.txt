@@ -304,7 +304,7 @@ function(add_test_spray TEST_EXE_DIR)
 endfunction(add_test_spray)
 
 # Volume-of-fluid test: run the number of steps set in TEST_NAME.inp and check
-# physical invariants with test_vof.py (no clipping, liquid volume conserved,
+# physical invariants with test_vof.py (F within [0, 1], liquid volume conserved,
 # plus the CHECK_ARGS given, e.g. a bound on the velocity) instead of
 # comparing against gold files
 function(add_test_vof TEST_NAME TEST_EXE_DIR)
