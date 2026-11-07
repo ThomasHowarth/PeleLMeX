@@ -120,24 +120,14 @@ PeleLM::initLevelVOF(const int lev)
   fillpatch_vof(lev, m_t_new[lev], m_leveldata_new[lev]->vof, m_nGrowVOF);
 }
 
-amrex::Vector<std::unique_ptr<amrex::MultiFab>>
-PeleLM::getVOFVect(const TimeStamp a_time)
-{
-  amrex::Vector<std::unique_ptr<amrex::MultiFab>> r;
-  r.reserve(finest_level + 1);
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    auto& vof = (a_time == AmrOldTime) ? m_leveldata_old[lev]->vof
-                                       : m_leveldata_new[lev]->vof;
-    r.push_back(
-      std::make_unique<amrex::MultiFab>(vof, amrex::make_alias, 0, 1));
-  }
-  return r;
-}
-
 amrex::Real
 PeleLM::VOFLiquidVolume(const TimeStamp a_time)
 {
-  return MFSum(GetVecOfConstPtrs(getVOFVect(a_time)), 0);
+  amrex::Vector<const amrex::MultiFab*> vof(finest_level + 1);
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    vof[lev] = &getLevelDataPtr(lev, a_time)->vof;
+  }
+  return MFSum(vof, 0);
 }
 
 //-----------------------------------------------------------------------------
@@ -197,10 +187,8 @@ PeleLM::VOFDeriveState(
   auto mf = std::make_unique<amrex::MultiFab>(
     grids[lev], dmap[lev], DENSITY + 1, nGhost, amrex::MFInfo(), Factory(lev));
   amrex::MultiFab::Copy(*mf, a_state, VELX, VELX, AMREX_SPACEDIM, nGhost);
-  amrex::MultiFab rho(
-    grids[lev], dmap[lev], 1, nGhost, amrex::MFInfo(), Factory(lev));
+  amrex::MultiFab rho(*mf, amrex::make_alias, DENSITY, 1);
   fillVOFDensity(lev, a_time, rho, nGhost);
-  amrex::MultiFab::Copy(*mf, rho, 0, DENSITY, 1, nGhost);
   return mf;
 }
 
@@ -291,11 +279,9 @@ PeleLM::getVOFSharpFaceDensity(const int lev, const TimeStamp a_time)
         fc_ma[box_no](i, j, k) =
           rho_g + (rho_l - rho_g) * fc_ma[box_no](i, j, k);
       });
-  }
-  amrex::Gpu::streamSynchronize();
-  // A face must have one coefficient, or the projection operator is neither
-  // conservative nor symmetric.  Keep one copy against round-off.
-  for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+    amrex::Gpu::streamSynchronize();
+    // A face must have one coefficient, or the projection operator is neither
+    // conservative nor symmetric.  Keep one copy against round-off.
     rho_fc[idim].OverrideSync(geom[lev].periodicity());
   }
   return rho_fc;
@@ -711,12 +697,10 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
   // Largest face velocity / dx.  The step is estimated from the
   // cell-centered velocity at t^n, while the advection uses the face velocity
   // at t^{n+1/2}, which can be larger
-  amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>> umac(
-    finest_level + 1);
+  const auto umac = GetVecOfArrOfConstPtrs(advData->umac);
   amrex::Real umac_rate = 0.0;
   for (int lev = 0; lev <= finest_level; ++lev) {
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      umac[lev][idim] = &(advData->umac[lev][idim]);
       umac_rate = amrex::max(
         umac_rate,
         umac[lev][idim]->norm0(0, 0, true) * geom[lev].InvCellSize(idim));
@@ -725,8 +709,7 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
   amrex::ParallelDescriptor::ReduceRealMax(umac_rate);
 
   // The advection is explicit
-  const amrex::Real courant_max = umac_rate * m_dt;
-  if (courant_max >= 1.0) {
+  if (umac_rate * m_dt >= 1.0) {
     amrex::Abort(
       "VOF: the advection requires a face Courant number below 1: reduce the "
       "time step.");
@@ -804,8 +787,9 @@ PeleLM::VOFAdvectStep(
     }
   }
 
-  // Update, Eq. (18) of the paper.  F is not clipped or limited: it conserves
-  // the liquid volume, and departs from [0,1] by the errors of the fluxes
+  // Update, Eq. (18) of Owkes & Desjardins.  F is not clipped or limited: it
+  // conserves the liquid volume, and departs from [0,1] by the errors of the
+  // fluxes
   for (int lev = 0; lev <= finest_level; ++lev) {
     auto& vof = m_leveldata_new[lev]->vof;
     const auto dxinv = geom[lev].InvCellSizeArray();
@@ -879,7 +863,7 @@ PeleLM::VOFFluxes(
           amrex::Real sum = 0.0;
           int count = 0;
           const int t1 = (dir + 1) % AMREX_SPACEDIM;
-          const int n1 = (AMREX_SPACEDIM > 1) ? 2 : 1;
+          constexpr int n1 = 2;
           const int t2 = (AMREX_SPACEDIM == 3) ? (dir + 2) % 3 : t1;
           const int n2 = (AMREX_SPACEDIM == 3) ? 2 : 1;
           for (int s2 = 0; s2 < n2; ++s2) {
@@ -1195,20 +1179,6 @@ PeleLM::fillPatchVOF(const TimeStamp a_time)
   }
 }
 
-// The wall ghost values read further than nGhost layers (VOFWallGhosts), so a
-// smaller fill would see zeros there and give different values for the same
-// ghost cell.  Always fill all the layers, and keep those requested.
-template <typename Fill>
-static void
-fillVOFAllLayers(amrex::MultiFab& a_vof, const int nGhost, Fill&& fill)
-{
-  amrex::MultiFab full(
-    a_vof.boxArray(), a_vof.DistributionMap(), 1, PeleLM::m_nGrowVOF,
-    amrex::MFInfo(), a_vof.Factory());
-  fill(full);
-  amrex::MultiFab::Copy(a_vof, full, 0, 0, 1, nGhost);
-}
-
 void
 PeleLM::fillpatch_vof(
   const int lev,
@@ -1218,22 +1188,26 @@ PeleLM::fillpatch_vof(
 {
   // The level data hold all their ghost cells at t_old and t_new, and this fill
   // is called many times in a step on the same F
-  for (auto* ldata : {m_leveldata_new[lev].get(), m_leveldata_old[lev].get()}) {
-    const amrex::Real t =
-      (ldata == m_leveldata_new[lev].get()) ? m_t_new[lev] : m_t_old[lev];
-    if (
-      ldata != nullptr && a_time == t && &a_vof != &m_leveldata_new[lev]->vof &&
-      &a_vof != &m_leveldata_old[lev]->vof &&
-      a_vof.boxArray() == ldata->vof.boxArray() &&
-      a_vof.DistributionMap() == ldata->vof.DistributionMap()) {
-      amrex::MultiFab::Copy(a_vof, ldata->vof, 0, 0, 1, nGhost);
-      return;
-    }
+  const auto* ldata = (a_time == m_t_new[lev])   ? m_leveldata_new[lev].get()
+                      : (a_time == m_t_old[lev]) ? m_leveldata_old[lev].get()
+                                                 : nullptr;
+  if (
+    ldata != nullptr && &a_vof != &m_leveldata_new[lev]->vof &&
+    &a_vof != &m_leveldata_old[lev]->vof &&
+    a_vof.boxArray() == ldata->vof.boxArray() &&
+    a_vof.DistributionMap() == ldata->vof.DistributionMap()) {
+    amrex::MultiFab::Copy(a_vof, ldata->vof, 0, 0, 1, nGhost);
+    return;
   }
-  if (nGhost < m_nGrowVOF) {
-    fillVOFAllLayers(a_vof, nGhost, [&](amrex::MultiFab& full) {
-      fillpatch_vof(lev, a_time, full, m_nGrowVOF);
-    });
+  // The wall ghost values read further than nGhost layers (VOFWallGhosts), so a
+  // smaller fill would see zeros there and give different values for the same
+  // ghost cell.  Fill all the layers and keep those requested.
+  if (nGhost > 0 && nGhost < m_nGrowVOF) {
+    amrex::MultiFab full(
+      a_vof.boxArray(), a_vof.DistributionMap(), 1, m_nGrowVOF, amrex::MFInfo(),
+      a_vof.Factory());
+    fillpatch_vof(lev, a_time, full, m_nGrowVOF);
+    amrex::MultiFab::Copy(a_vof, full, 0, 0, 1, nGhost);
     return;
   }
   ProbParm const* lprobparm = prob_parm_d;
@@ -1279,13 +1253,8 @@ PeleLM::fillcoarsepatch_vof(
   amrex::MultiFab& a_vof,
   const int nGhost)
 {
-  if (nGhost < m_nGrowVOF) {
-    fillVOFAllLayers(a_vof, nGhost, [&](amrex::MultiFab& full) {
-      fillcoarsepatch_vof(lev, a_time, full, m_nGrowVOF);
-    });
-    return;
-  }
   AMREX_ASSERT(lev > 0);
+  AMREX_ASSERT(nGhost == m_nGrowVOF);
   ProbParm const* lprobparm = prob_parm_d;
   amrex::Vector<amrex::BCRec> bcrec{m_bcrec_vof};
 
@@ -1351,6 +1320,16 @@ PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
     pelelmex::vof::wall_nsearch + pelelmex::vof::hf_half + 1;
   const amrex::Box& domain = geom[lev].Domain();
   const auto periodicity = geom[lev].periodicity();
+  // The part of a box beyond a wall
+  const auto beyond_wall =
+    [&domain](amrex::Box b, const int dir, const int sgn) {
+      if (sgn < 0) {
+        b.setBig(dir, domain.smallEnd(dir) - 1);
+      } else {
+        b.setSmall(dir, domain.bigEnd(dir) + 1);
+      }
+      return b;
+    };
 
   // Boxes extended through the walls they touch.  They stay disjoint.
   amrex::BoxList boxes;
@@ -1399,12 +1378,7 @@ PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
 #endif
         for (amrex::MFIter mfi(work); mfi.isValid(); ++mfi) {
-          amrex::Box gbx = mfi.validbox();
-          if (sgn < 0) {
-            gbx.setBig(dir, iwall - 1);
-          } else {
-            gbx.setSmall(dir, iwall + 1);
-          }
+          const amrex::Box gbx = beyond_wall(mfi.validbox(), dir, sgn);
           if (!gbx.ok()) {
             continue;
           }
@@ -1436,12 +1410,7 @@ PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
         if (!is_wall(dir, sgn)) {
           continue;
         }
-        amrex::Box gbx = bx;
-        if (sgn < 0) {
-          gbx.setBig(dir, domain.smallEnd(dir) - 1);
-        } else {
-          gbx.setSmall(dir, domain.bigEnd(dir) + 1);
-        }
+        const amrex::Box gbx = beyond_wall(bx, dir, sgn);
         if (gbx.ok()) {
           a_vof[mfi].copy<amrex::RunOn::Device>(work[mfi], gbx, 0, gbx, 0, 1);
         }
