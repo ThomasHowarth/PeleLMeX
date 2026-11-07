@@ -174,8 +174,10 @@ PeleLM::getDensityVect(const TimeStamp a_time)
     // Two-phase mixture density from the volume fraction (a copy, not an
     // alias of the state)
     for (int lev = 0; lev <= finest_level; ++lev) {
-      r.push_back(std::make_unique<amrex::MultiFab>(
-        grids[lev], dmap[lev], 1, m_nGrowState, amrex::MFInfo(), Factory(lev)));
+      r.push_back(
+        std::make_unique<amrex::MultiFab>(
+          grids[lev], dmap[lev], 1, m_nGrowState, amrex::MFInfo(),
+          Factory(lev)));
       fillVOFDensity(lev, getTime(lev, a_time), *(r[lev]), m_nGrowState);
     }
     return r;

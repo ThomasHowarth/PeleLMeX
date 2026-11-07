@@ -73,8 +73,9 @@ void
 PeleLM::VOFCheckSetup()
 {
   if (m_incompressible == 0) {
-    amrex::Abort("The VOF solver currently requires peleLM.incompressible = 1. "
-                 "Low-Mach two-phase coupling is not implemented yet.");
+    amrex::Abort(
+      "The VOF solver currently requires peleLM.incompressible = 1. "
+      "Low-Mach two-phase coupling is not implemented yet.");
   }
   if (m_mesh_mapping) {
     amrex::Abort(
@@ -708,8 +709,8 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
   fillPatchVOF(AmrNewTime);
 
   // Largest face velocity / dx.  The step is estimated from the
-  // cell-centered velocity at t^n, while the advection uses the face velocity at
-  // t^{n+1/2}, which can be larger
+  // cell-centered velocity at t^n, while the advection uses the face velocity
+  // at t^{n+1/2}, which can be larger
   amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>> umac(
     finest_level + 1);
   amrex::Real umac_rate = 0.0;
