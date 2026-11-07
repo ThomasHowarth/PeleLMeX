@@ -1322,33 +1322,55 @@ PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
       }
       const int iwall = (sgn < 0) ? domain.smallEnd(dir) : domain.bigEnd(dir);
 
-      // Mixed cells in the wall-adjacent layer that the ghost cells of each box
-      // can see.  The passes of this wall do not change that layer.  Without
-      // any, a ghost cell takes the value of the wall cell, without a search,
-      // and the passes beyond the first have nothing to refine.
-      amrex::LayoutData<int> box_contact(ext_ba, a_vof.DistributionMap());
+      // Cells of the wall-adjacent layer with a mixed cell of that layer within
+      // the search.  The passes of this wall do not change that layer.  A ghost
+      // cell over any other cell takes the value of the wall cell, without a
+      // search, and a wall with none needs no more than one pass.  The square
+      // of the search is dilated one direction at a time.
+      amrex::LayoutData<amrex::IArrayBox> near(ext_ba, a_vof.DistributionMap());
       int wall_contact = 0;
       for (amrex::MFIter mfi(work); mfi.isValid(); ++mfi) {
-        box_contact[mfi] = 0;
+        if (!beyond_wall(mfi.validbox(), dir, sgn).ok()) {
+          continue;
+        }
         amrex::Box scan = amrex::grow(mfi.validbox(), wall_nsearch);
         scan.setRange(dir, iwall);
         scan &= (work[mfi].box() & extent);
-        if (!beyond_wall(mfi.validbox(), dir, sgn).ok() || !scan.ok()) {
-          continue;
-        }
+        near[mfi].resize(scan, 1);
+        amrex::IArrayBox prev(scan, 1, amrex::The_Async_Arena());
         auto const& F = work.const_array(mfi);
-        amrex::ReduceOps<amrex::ReduceOpMax> reduce_op;
-        amrex::ReduceData<int> reduce_data(reduce_op);
-        reduce_op.eval(
-          scan, reduce_data,
-          [=] AMREX_GPU_DEVICE(int i, int j, int k) -> amrex::GpuTuple<int> {
+        auto const& N = near[mfi].array();
+        auto const& P = prev.array();
+        amrex::ParallelFor(
+          scan, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
             const amrex::Real f = F(i, j, k);
-            return {static_cast<int>(
-              f > pelelmex::vof::vof_tol && f < 1.0 - pelelmex::vof::vof_tol)};
+            N(i, j, k) = static_cast<int>(
+              f > pelelmex::vof::vof_tol && f < 1.0 - pelelmex::vof::vof_tol);
           });
-        box_contact[mfi] = amrex::get<0>(reduce_data.value(reduce_op));
-        wall_contact = amrex::max(wall_contact, box_contact[mfi]);
+        for (int t = 0; t < AMREX_SPACEDIM; ++t) {
+          if (t == dir) {
+            continue;
+          }
+          const amrex::IntVect et = amrex::IntVect::TheDimensionVector(t);
+          amrex::ParallelFor(
+            scan, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+              P(i, j, k) = N(i, j, k);
+            });
+          amrex::ParallelFor(
+            scan, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+              const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
+              int any = 0;
+              for (int a = -wall_nsearch; a <= wall_nsearch && any == 0; ++a) {
+                const amrex::IntVect c = iv + a * et;
+                any = (scan.contains(c) && P(c) != 0) ? 1 : 0;
+              }
+              N(i, j, k) = any;
+            });
+        }
+        wall_contact =
+          amrex::max(wall_contact, near[mfi].max<amrex::RunOn::Device>());
       }
+      amrex::Gpu::streamSynchronize();
       amrex::ParallelDescriptor::ReduceIntMax(wall_contact);
 
       const int wall_npass = (wall_contact != 0) ? npass : 1;
@@ -1365,25 +1387,20 @@ PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
           if (!gbx.ok()) {
             continue;
           }
-          auto const& F = work.array(mfi);
-          if (box_contact[mfi] == 0) {
-            amrex::ParallelFor(
-              gbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-                const amrex::IntVect g(AMREX_D_DECL(i, j, k));
-                amrex::IntVect iv_w = g;
-                iv_w[dir] = iwall;
-                F(g) = F(iv_w);
-              });
-            continue;
-          }
           const amrex::Box limit = work[mfi].box() & extent;
+          auto const& F = work.array(mfi);
           auto const& S = snap.const_array(mfi);
+          auto const& N = near[mfi].const_array();
+          const bool any_near = (wall_contact != 0);
           amrex::ParallelFor(
             gbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-              amrex::ignore_unused(k);
               const amrex::IntVect g(AMREX_D_DECL(i, j, k));
-              F(g) = pelelmex::vof::wall_ghost_fraction(
-                g, dir, iwall, sgn, limit, S, allow_ghost);
+              amrex::IntVect iv_w = g;
+              iv_w[dir] = iwall;
+              F(g) = (any_near && N(iv_w) != 0)
+                       ? pelelmex::vof::wall_ghost_fraction(
+                           g, dir, iwall, sgn, limit, S, allow_ghost)
+                       : F(iv_w);
             });
         }
         amrex::Gpu::streamSynchronize();
