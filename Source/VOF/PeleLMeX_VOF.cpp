@@ -1,5 +1,6 @@
 #include <PeleLMeX.H>
 #include <PeleLMeX_BCfill.H>
+#include <PeleLMeX_K.H>
 #include <PeleLMeX_VOF_K.H>
 #include <AMReX_FillPatchUtil.H>
 #include <AMReX_MultiFabUtil.H>
@@ -136,22 +137,35 @@ PeleLM::VOFLiquidVolume(const TimeStamp a_time)
 // in place to the property.
 //-----------------------------------------------------------------------------
 void
+PeleLM::fillVOFMixture(
+  const int lev,
+  const amrex::Real a_time,
+  amrex::MultiFab& a_mf,
+  const int nGhost,
+  const amrex::Real a_liq,
+  const amrex::Real a_gas,
+  const int a_harmonic)
+{
+  fillpatch_vof(lev, a_time, a_mf, nGhost);
+  auto const& ma = a_mf.arrays();
+  amrex::ParallelFor(
+    a_mf, amrex::IntVect(nGhost),
+    [ma, a_liq, a_gas,
+     a_harmonic] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+      ma[box_no](i, j, k) =
+        pelelmex::vof::mixture(ma[box_no](i, j, k), a_liq, a_gas, a_harmonic);
+    });
+  amrex::Gpu::streamSynchronize();
+}
+
+void
 PeleLM::fillVOFDensity(
   const int lev,
   const amrex::Real a_time,
   amrex::MultiFab& a_rho,
   const int nGhost)
 {
-  fillpatch_vof(lev, a_time, a_rho, nGhost);
-  auto const& rho_ma = a_rho.arrays();
-  amrex::ParallelFor(
-    a_rho, amrex::IntVect(nGhost),
-    [rho_ma, rho_l = m_vof_rho_liq, rho_g = m_vof_rho_gas] AMREX_GPU_DEVICE(
-      int box_no, int i, int j, int k) noexcept {
-      rho_ma[box_no](i, j, k) =
-        pelelmex::vof::mixture_density(rho_ma[box_no](i, j, k), rho_l, rho_g);
-    });
-  amrex::Gpu::streamSynchronize();
+  fillVOFMixture(lev, a_time, a_rho, nGhost, m_vof_rho_liq, m_vof_rho_gas, 0);
 }
 
 void
@@ -161,17 +175,8 @@ PeleLM::fillVOFViscosity(
   amrex::MultiFab& a_mu,
   const int nGhost)
 {
-  fillpatch_vof(lev, a_time, a_mu, nGhost);
-  auto const& mu_ma = a_mu.arrays();
-  amrex::ParallelFor(
-    a_mu, amrex::IntVect(nGhost),
-    [mu_ma, mu_l = m_vof_mu_liq, mu_g = m_vof_mu_gas,
-     harmonic =
-       m_vof_mu_harmonic] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
-      mu_ma[box_no](i, j, k) = pelelmex::vof::mixture_viscosity(
-        mu_ma[box_no](i, j, k), mu_l, mu_g, harmonic);
-    });
-  amrex::Gpu::streamSynchronize();
+  fillVOFMixture(
+    lev, a_time, a_mu, nGhost, m_vof_mu_liq, m_vof_mu_gas, m_vof_mu_harmonic);
 }
 
 // State for the derived quantities: the incompressible state holds only the
@@ -199,36 +204,8 @@ PeleLM::getVOFFaceDensity(const int lev, const amrex::Real a_time)
     grids[lev], dmap[lev], 1, 1, amrex::MFInfo(), Factory(lev));
   fillVOFDensity(lev, a_time, rho, 1);
 
-  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> rho_fc;
-  const amrex::Box& domain = geom[lev].Domain();
-  auto const& rho_ma = rho.const_arrays();
-  for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-    rho_fc[idim].define(
-      amrex::convert(grids[lev], amrex::IntVect::TheDimensionVector(idim)),
-      dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
-    // Dirichlet faces take the boundary value held in the ghost cell
-    const bool ext_lo = m_bcrec_vof.lo(idim) == amrex::BCType::ext_dir;
-    const bool ext_hi = m_bcrec_vof.hi(idim) == amrex::BCType::ext_dir;
-    const int dlo = domain.smallEnd(idim);
-    const int dhi = domain.bigEnd(idim) + 1;
-    auto const& fc_ma = rho_fc[idim].arrays();
-    amrex::ParallelFor(
-      rho_fc[idim], [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) {
-        const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
-        const amrex::IntVect ivm =
-          iv - amrex::IntVect::TheDimensionVector(idim);
-        const auto& r = rho_ma[box_no];
-        if (ext_lo && iv[idim] == dlo) {
-          fc_ma[box_no](i, j, k) = r(ivm);
-        } else if (ext_hi && iv[idim] == dhi) {
-          fc_ma[box_no](i, j, k) = r(iv);
-        } else {
-          fc_ma[box_no](i, j, k) = 0.5 * (r(ivm) + r(iv));
-        }
-      });
-  }
-  amrex::Gpu::streamSynchronize();
-  return rho_fc;
+  constexpr int doZeroVisc = 0;
+  return getDiffusivity(lev, 0, 1, doZeroVisc, {m_bcrec_vof}, rho);
 }
 
 amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
@@ -287,6 +264,17 @@ PeleLM::getVOFSharpFaceDensity(const int lev, const TimeStamp a_time)
   return rho_fc;
 }
 
+amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
+PeleLM::getVOFFaceBeta(
+  const int lev, const TimeStamp a_time, const amrex::Real a_numerator)
+{
+  auto beta = getVOFSharpFaceDensity(lev, a_time);
+  for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+    beta[idim].invert(a_numerator, 0);
+  }
+  return beta;
+}
+
 //-----------------------------------------------------------------------------
 // Momentum advection consistent with the VOF mass transport (Rudman 1998), with
 // the fluxes of the VOF step.  It carries the mass that the flux volumes carry,
@@ -329,7 +317,7 @@ PeleLM::VOFMomentumAdvTerm(
     amrex::ParallelFor(
       rho[lev], [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
         const amrex::Real r =
-          pelelmex::vof::mixture_density(vof_ma[box_no](i, j, k), rho_l, rho_g);
+          pelelmex::vof::mixture(vof_ma[box_no](i, j, k), rho_l, rho_g);
         rho_ma[box_no](i, j, k) = r;
         for (int n = 0; n < AMREX_SPACEDIM; ++n) {
           mom_ma[box_no](i, j, k, n) = r * velo_ma[box_no](i, j, k, VELX + n);
@@ -573,17 +561,12 @@ PeleLM::VOFVelocityProjection(const int a_initPress, const amrex::Real a_dt)
       amrex::ParallelFor(
         ub[lev][idim], [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) {
           const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
-          const amrex::IntVect ivm =
-            iv - amrex::IntVect::TheDimensionVector(idim);
-          const auto& v = vel_ma[box_no];
-          if (ext_lo && iv[idim] == dlo) {
-            ub_ma[box_no](i, j, k) = v(ivm, VELX + idim);
-          } else if (ext_hi && iv[idim] == dhi) {
-            ub_ma[box_no](i, j, k) = v(iv, VELX + idim);
-          } else {
-            ub_ma[box_no](i, j, k) =
-              0.5 * (v(ivm, VELX + idim) + v(iv, VELX + idim));
-          }
+          const bool on_lo = ext_lo && iv[idim] == dlo;
+          const bool on_hi = ext_hi && iv[idim] == dhi;
+          cen2edg_cpp(
+            i, j, k, idim, 1, false, on_lo, on_hi,
+            amrex::Array4<amrex::Real const>(vel_ma[box_no], VELX + idim),
+            ub_ma[box_no]);
         });
     }
   }
@@ -599,9 +582,8 @@ PeleLM::VOFVelocityProjection(const int a_initPress, const amrex::Real a_dt)
   const TimeStamp rhoTime = (a_initPress != 0) ? AmrNewTime : AmrHalfTime;
   for (int lev = 0; lev <= finest_level; ++lev) {
     const amrex::Box& domain = geom[lev].Domain();
-    beta[lev] = getVOFSharpFaceDensity(lev, rhoTime);
+    beta[lev] = getVOFFaceBeta(lev, rhoTime, a_dt);
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      beta[lev][idim].invert(a_dt, 0);
       // Gravity acts on all faces except those where the velocity is
       // prescribed (walls, inflow)
       const bool periodic = geom[lev].isPeriodic(idim);
@@ -1168,6 +1150,21 @@ PeleLM::VOFTagInterface(const int lev, amrex::TagBoxArray& tags)
 //-----------------------------------------------------------------------------
 // Fill patch / average down
 //-----------------------------------------------------------------------------
+namespace {
+
+auto
+makeVOFBndryFunc(
+  const amrex::Geometry& a_geom,
+  const amrex::Vector<amrex::BCRec>& a_bcrec,
+  ProbParm const* a_prob_parm)
+{
+  using Fill = PeleLMCCFillExtDirVOF<ProblemSpecificFunctions>;
+  return amrex::PhysBCFunct<amrex::GpuBndryFuncFab<Fill>>(
+    a_geom, a_bcrec, Fill{a_prob_parm});
+}
+
+} // namespace
+
 void
 PeleLM::fillPatchVOF(const TimeStamp a_time)
 {
@@ -1213,25 +1210,16 @@ PeleLM::fillpatch_vof(
   ProbParm const* lprobparm = prob_parm_d;
   amrex::Vector<amrex::BCRec> bcrec{m_bcrec_vof};
 
-  using BndryFunc = amrex::PhysBCFunct<
-    amrex::GpuBndryFuncFab<PeleLMCCFillExtDirVOF<ProblemSpecificFunctions>>>;
-
   if (lev == 0) {
-    BndryFunc bndry_func(
-      geom[lev], bcrec,
-      PeleLMCCFillExtDirVOF<ProblemSpecificFunctions>{lprobparm});
+    auto bndry_func = makeVOFBndryFunc(geom[lev], bcrec, lprobparm);
     amrex::FillPatchSingleLevel(
       a_vof, amrex::IntVect(nGhost), a_time,
       {&(m_leveldata_old[lev]->vof), &(m_leveldata_new[lev]->vof)},
       {m_t_old[lev], m_t_new[lev]}, 0, 0, 1, geom[lev], bndry_func, 0);
   } else {
     // Limited conservative linear interpolation keeps F within [0,1]
-    BndryFunc crse_bndry_func(
-      geom[lev - 1], bcrec,
-      PeleLMCCFillExtDirVOF<ProblemSpecificFunctions>{lprobparm});
-    BndryFunc fine_bndry_func(
-      geom[lev], bcrec,
-      PeleLMCCFillExtDirVOF<ProblemSpecificFunctions>{lprobparm});
+    auto crse_bndry_func = makeVOFBndryFunc(geom[lev - 1], bcrec, lprobparm);
+    auto fine_bndry_func = makeVOFBndryFunc(geom[lev], bcrec, lprobparm);
     amrex::FillPatchTwoLevels(
       a_vof, amrex::IntVect(nGhost), a_time,
       {&(m_leveldata_old[lev - 1]->vof), &(m_leveldata_new[lev - 1]->vof)},
@@ -1258,14 +1246,8 @@ PeleLM::fillcoarsepatch_vof(
   ProbParm const* lprobparm = prob_parm_d;
   amrex::Vector<amrex::BCRec> bcrec{m_bcrec_vof};
 
-  using BndryFunc = amrex::PhysBCFunct<
-    amrex::GpuBndryFuncFab<PeleLMCCFillExtDirVOF<ProblemSpecificFunctions>>>;
-  BndryFunc crse_bndry_func(
-    geom[lev - 1], bcrec,
-    PeleLMCCFillExtDirVOF<ProblemSpecificFunctions>{lprobparm});
-  BndryFunc fine_bndry_func(
-    geom[lev], bcrec,
-    PeleLMCCFillExtDirVOF<ProblemSpecificFunctions>{lprobparm});
+  auto crse_bndry_func = makeVOFBndryFunc(geom[lev - 1], bcrec, lprobparm);
+  auto fine_bndry_func = makeVOFBndryFunc(geom[lev], bcrec, lprobparm);
   amrex::InterpFromCoarseLevel(
     a_vof, amrex::IntVect(nGhost), a_time, m_leveldata_new[lev - 1]->vof, 0, 0,
     1, geom[lev - 1], geom[lev], crse_bndry_func, 0, fine_bndry_func, 0,

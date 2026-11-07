@@ -755,11 +755,8 @@ wall_ghost_fraction(
             // Height direction of fit_plane: wall-normal columns would read
             // ghost cells
             amrex::Real mm[3];
-#if AMREX_SPACEDIM == 2
-            myc_normal(c[0], c[1], 0, F, mm[0], mm[1], mm[2]);
-#else
-            myc_normal(c[0], c[1], c[2], F, mm[0], mm[1], mm[2]);
-#endif
+            const auto cell = c.dim3();
+            myc_normal(cell.x, cell.y, cell.z, F, mm[0], mm[1], mm[2]);
             bool normal_dominant = true;
             for (int t = 0; t < AMREX_SPACEDIM; ++t) {
               if (t != dir && std::abs(mm[t]) > std::abs(mm[dir])) {
@@ -786,11 +783,8 @@ wall_ghost_fraction(
 
   amrex::Real m[3] = {0.0_rt, 0.0_rt, 0.0_rt};
   amrex::Real alpha = 0.0_rt;
-#if AMREX_SPACEDIM == 2
-  fit_plane(ref[0], ref[1], 0, F, m[0], m[1], m[2], alpha);
-#else
-  fit_plane(ref[0], ref[1], ref[2], F, m[0], m[1], m[2], alpha);
-#endif
+  const auto cell = ref.dim3();
+  fit_plane(cell.x, cell.y, cell.z, F, m[0], m[1], m[2], alpha);
   // Plane constant in the unit-cube coordinates of g and of the wall cell.  The
   // ghost takes the change of the plane's volume from the wall cell: the same
   // as the plane's volume at g for a planar interface, and the value of the
@@ -869,32 +863,21 @@ face_segment_fraction(
 }
 
 /**
- * \brief Volume-weighted mixture density of a cell with liquid fraction F
+ * \brief Mixture property (density, viscosity) of a cell with liquid fraction
+ *        F: arithmetic or harmonic volume average of the phase values
  */
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real
-mixture_density(
-  const amrex::Real F, const amrex::Real rho_l, const amrex::Real rho_g)
-{
-  const amrex::Real f = amrex::Clamp(F, 0.0_rt, 1.0_rt);
-  return f * rho_l + (1.0_rt - f) * rho_g;
-}
-
-/**
- * \brief Mixture viscosity of a cell with liquid fraction F: arithmetic
- *        or harmonic volume average of the phase viscosities
- */
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real
-mixture_viscosity(
+mixture(
   const amrex::Real F,
-  const amrex::Real mu_l,
-  const amrex::Real mu_g,
-  const int harmonic)
+  const amrex::Real liq,
+  const amrex::Real gas,
+  const int harmonic = 0)
 {
   const amrex::Real f = amrex::Clamp(F, 0.0_rt, 1.0_rt);
   if (harmonic != 0) {
-    return mu_l * mu_g / (f * mu_g + (1.0_rt - f) * mu_l);
+    return liq * gas / (f * gas + (1.0_rt - f) * liq);
   }
-  return f * mu_l + (1.0_rt - f) * mu_g;
+  return f * liq + (1.0_rt - f) * gas;
 }
 
 //-----------------------------------------------------------------------------

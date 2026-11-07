@@ -1003,6 +1003,14 @@ public:
   void VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost);
   // Mixture density / viscosity from the volume fraction at a_time, in
   // nGhost ghost cells
+  void fillVOFMixture(
+    const int lev,
+    const amrex::Real a_time,
+    amrex::MultiFab& a_mf,
+    const int nGhost,
+    const amrex::Real a_liq,
+    const amrex::Real a_gas,
+    const int a_harmonic);
   void fillVOFDensity(
     const int lev,
     const amrex::Real a_time,
@@ -1024,6 +1032,11 @@ public:
   // adjacent cell centers (PLIC); time averaged at AmrHalfTime
   amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
   getVOFSharpFaceDensity(const int lev, const PeleLM::TimeStamp a_time);
+  // a_numerator over the sharp face density: the projection coefficient
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> getVOFFaceBeta(
+    const int lev,
+    const PeleLM::TimeStamp a_time,
+    const amrex::Real a_numerator);
   // Balanced-force velocity projection: face-based gravity and pressure
   // gradient, cell acceleration reconstructed from the face accelerations.
   // a_initPress: only compute the (hydrostatic) pressure gradient.
@@ -2733,6 +2746,16 @@ public:
     return true;
 #else
     return m_incompressible == 0;
+#endif
+  }
+
+  // The velocity is prescribed: no velocity advance
+  [[nodiscard]] bool velocityIsPrescribed() const noexcept
+  {
+#ifdef PELE_USE_VOF
+    return m_vof_advect_only != 0;
+#else
+    return false;
 #endif
   }
 
