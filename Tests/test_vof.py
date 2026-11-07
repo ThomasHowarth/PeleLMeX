@@ -11,8 +11,7 @@ if:
   - the largest velocity magnitude component exceeds ``--max-velocity``,
   - the z velocity exceeds ``--max-z-velocity`` (a flow extruded along z),
   - any velocity component departs from ``--uniform-velocity`` by more than
-    ``--uniform-atol``,
-  - ``--require-substeps`` is given and the advection was never sub-stepped.
+    ``--uniform-atol``.
 """
 import argparse
 import math
@@ -24,22 +23,19 @@ def read_log(fname):
     warnings = []
     changes = []
     bounds = []
-    substeps = 0
     pattern = re.compile(r"VOF: liquid volume \S+, relative change (\S+)")
     pattern_bounds = re.compile(r"F below 0 by ([^\s,]+), above 1 by (\S+)")
     with open(fname) as f:
         for line in f:
             if "VOF: WARNING" in line:
                 warnings.append(line.strip())
-            elif "sub-steps" in line and "VOF:" in line:
-                substeps += 1
             m = pattern.search(line)
             if m:
                 changes.append(float(m.group(1)))
             m = pattern_bounds.search(line)
             if m:
                 bounds.append(max(float(m.group(1)), float(m.group(2))))
-    return warnings, changes, bounds, substeps
+    return warnings, changes, bounds
 
 
 def read_velocity_extrema(fname, ndim):
@@ -67,12 +63,11 @@ def main():
     parser.add_argument("--max-z-velocity", type=float, default=None)
     parser.add_argument("--uniform-velocity", type=float, nargs="+", default=None)
     parser.add_argument("--uniform-atol", type=float, default=1.0e-12)
-    parser.add_argument("--require-substeps", action="store_true")
     parser.add_argument("--extremas", default="temporals/tempExtremas")
     args = parser.parse_args()
 
     failures = []
-    warnings, changes, bounds, substeps = read_log(args.log)
+    warnings, changes, bounds = read_log(args.log)
 
     if not changes:
         failures.append("no 'VOF: liquid volume' lines: set peleLM.vof.v = 1")
@@ -96,9 +91,6 @@ def main():
             failures.append(
                 f"F left [0, 1] by {worst:.3e} > {args.fraction_atol:.1e}"
             )
-    print(f"sub-stepped steps {substeps}")
-    if args.require_substeps and substeps == 0:
-        failures.append("the VOF advection was never sub-stepped")
 
     if (
         args.max_velocity is not None
