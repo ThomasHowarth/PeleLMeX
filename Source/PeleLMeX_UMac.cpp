@@ -321,7 +321,7 @@ PeleLM::macProject(
 
 #ifdef PELE_USE_VOF
   if (m_incompressible != 0) {
-    // Sharp face density: GMRES-MLMG solve (see VOFFaceProjection)
+    // Sharp face density (see VOFFaceProjection)
     VOFFaceProjection(GetVecOfArrOfPtrs(advData->umac), rho_inv);
     fillUMacGhosts(advData);
     return;

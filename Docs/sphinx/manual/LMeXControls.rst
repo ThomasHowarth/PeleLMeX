@@ -430,9 +430,12 @@ interface, so a fluid at rest stays at rest at any interface orientation. The
 cell-centered velocity is updated with the average of the face accelerations,
 and the stored pressure gradient (``gradpx``, ... in the plotfile) is the kinematic
 :math:`\nabla p / \rho`. The predictor MAC projection uses the same face
-density. Both face projections are solved by GMRES preconditioned by MLMG
-(``mac_proj.rtol`` / ``atol``), since plain MLMG stalls on the face-coefficient
-jump of a sharp, high density ratio interface.
+density. Both face projections go through the AMReX-Hydro ``MacProjector`` and
+its ``mac_proj`` options (``rtol``, ``atol``, ``bottom_solver``, ...), with GMRES
+preconditioned by MLMG as the default for the face-coefficient jump of a sharp,
+high density ratio interface (``mac_proj.use_gmres = 0`` selects plain MLMG).
+After each solve the divergence left in the face velocity is checked, and the
+solve is repeated until it reaches the target, with a warning otherwise.
 
 Momentum is advected in conservative form with the mass fluxes of the VOF sweeps,
 :math:`m_f = \rho_g u_f \Delta t + (\rho_l - \rho_g) \Phi_l`, with

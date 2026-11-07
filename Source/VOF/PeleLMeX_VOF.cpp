@@ -4,7 +4,6 @@
 #include <PeleLMeX_VOF_Unsplit_K.H>
 #include <AMReX_FillPatchUtil.H>
 #include <AMReX_MultiFabUtil.H>
-#include <AMReX_GMRES_MLMG.H>
 
 static_assert(
   PeleLM::m_nGrowVOF == pelelmex::vof::nghost,
@@ -460,6 +459,7 @@ PeleLM::VOFMomentumAdvTerm(
       amrex::ParallelFor(
         rho[lev],
         [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+          amrex::ignore_unused(k);
           const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
           const amrex::IntVect ivp = iv + e;
           const amrex::Real dil =
@@ -614,6 +614,7 @@ PeleLM::VOFMomentumAdvTermUnsplit(
       auto const& cp_ma = pflux.const_arrays();
       amrex::ParallelFor(
         rho, [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+          amrex::ignore_unused(k);
           const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
           const amrex::IntVect ivp = iv + e;
           rho_ma[box_no](iv) -= cm_ma[box_no](ivp) - cm_ma[box_no](iv);
@@ -1504,6 +1505,20 @@ PeleLM::fillPatchVOF(const TimeStamp a_time)
   }
 }
 
+// The wall ghost values read further than nGhost layers (VOFWallGhosts), so a
+// smaller fill would see zeros there and give different values for the same
+// ghost cell.  Always fill all the layers, and keep those requested.
+template <typename Fill>
+static void
+fillVOFAllLayers(amrex::MultiFab& a_vof, const int nGhost, Fill&& fill)
+{
+  amrex::MultiFab full(
+    a_vof.boxArray(), a_vof.DistributionMap(), 1, PeleLM::m_nGrowVOF,
+    amrex::MFInfo(), a_vof.Factory());
+  fill(full);
+  amrex::MultiFab::Copy(a_vof, full, 0, 0, 1, nGhost);
+}
+
 void
 PeleLM::fillpatch_vof(
   const int lev,
@@ -1511,15 +1526,10 @@ PeleLM::fillpatch_vof(
   amrex::MultiFab& a_vof,
   const int nGhost)
 {
-  // The wall ghost values read further than nGhost layers (VOFWallGhosts), so a
-  // smaller fill would see zeros there and give different values for the same
-  // ghost cell.  Always fill all the layers, and keep those requested.
   if (nGhost < m_nGrowVOF) {
-    amrex::MultiFab full(
-      a_vof.boxArray(), a_vof.DistributionMap(), 1, m_nGrowVOF, amrex::MFInfo(),
-      a_vof.Factory());
-    fillpatch_vof(lev, a_time, full, m_nGrowVOF);
-    amrex::MultiFab::Copy(a_vof, full, 0, 0, 1, nGhost);
+    fillVOFAllLayers(a_vof, nGhost, [&](amrex::MultiFab& full) {
+      fillpatch_vof(lev, a_time, full, m_nGrowVOF);
+    });
     return;
   }
   ProbParm const* lprobparm = prob_parm_d;
@@ -1565,15 +1575,10 @@ PeleLM::fillcoarsepatch_vof(
   amrex::MultiFab& a_vof,
   const int nGhost)
 {
-  // The wall ghost values read further than nGhost layers (VOFWallGhosts), so a
-  // smaller fill would see zeros there and give different values for the same
-  // ghost cell.  Always fill all the layers, and keep those requested.
   if (nGhost < m_nGrowVOF) {
-    amrex::MultiFab full(
-      a_vof.boxArray(), a_vof.DistributionMap(), 1, m_nGrowVOF, amrex::MFInfo(),
-      a_vof.Factory());
-    fillcoarsepatch_vof(lev, a_time, full, m_nGrowVOF);
-    amrex::MultiFab::Copy(a_vof, full, 0, 0, 1, nGhost);
+    fillVOFAllLayers(a_vof, nGhost, [&](amrex::MultiFab& full) {
+      fillcoarsepatch_vof(lev, a_time, full, m_nGrowVOF);
+    });
     return;
   }
   AMREX_ASSERT(lev > 0);
