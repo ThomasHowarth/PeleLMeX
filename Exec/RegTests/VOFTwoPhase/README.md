@@ -31,7 +31,7 @@ volume is conserved to round-off in all cases.
   degrees and drive currents of order 1e-2 m/s.
 - `input.2d-rt` with `prob.amplitude=0.01 amr.n_cell="64 256" amr.max_level=0`:
   the amplitude of the first Fourier mode of the interface height follows
-  the viscous linear theory, `cosh(sigma t)`, to about 1% at t = 0.4 and 3% at
+  the viscous linear theory, `cosh(sigma t)`, to 0.5% at t = 0.4 and 2.1% at
   t = 0.8 (the departure grows with the nonlinear saturation).  The
   amplitude must be measured on the mode-1 Fourier coefficient: a two-point
   difference is dominated by the PLIC height quantization at small
