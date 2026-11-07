@@ -756,30 +756,45 @@ wall_ghost_fraction(
     return f > vof_tol && f < 1.0_rt - vof_tol;
   };
 
-  bool contact = false;
-  int ref_dist = nfar;
-  amrex::IntVect ref = iv_w;
-  // Fallback reading ghost cells
-  int any_dist = nfar;
-  amrex::IntVect any_ref = iv_w;
   amrex::IntVect off_lo(-nsearch);
   amrex::IntVect off_hi(nsearch);
   off_lo[dir] = 0;
   off_hi[dir] = 0;
 #if AMREX_SPACEDIM == 2
-  for (int b = 0; b <= 0; ++b) {
+  const int b_lo = 0;
+  const int b_hi = 0;
 #else
-  for (int b = off_lo[2]; b <= off_hi[2]; ++b) {
+  const int b_lo = off_lo[2];
+  const int b_hi = off_hi[2];
 #endif
+
+  // Most ghost cells are far from any contact line: no search for those
+  bool contact = false;
+  for (int b = b_lo; b <= b_hi && !contact; ++b) {
+    for (int a1 = off_lo[1]; a1 <= off_hi[1] && !contact; ++a1) {
+      for (int a0 = off_lo[0]; a0 <= off_hi[0] && !contact; ++a0) {
+        const amrex::IntVect cw =
+          iv_w + amrex::IntVect(AMREX_D_DECL(a0, a1, b));
+        contact = limit.contains(cw) && is_mixed(cw);
+      }
+    }
+  }
+  if (!contact) {
+    return F(iv_w);
+  }
+
+  int ref_dist = nfar;
+  amrex::IntVect ref = iv_w;
+  // Fallback reading ghost cells
+  int any_dist = nfar;
+  amrex::IntVect any_ref = iv_w;
+  for (int b = b_lo; b <= b_hi; ++b) {
     for (int a1 = off_lo[1]; a1 <= off_hi[1]; ++a1) {
       for (int a0 = off_lo[0]; a0 <= off_hi[0]; ++a0) {
         const amrex::IntVect off(AMREX_D_DECL(a0, a1, b));
         const int tdist =
           AMREX_D_TERM(std::abs(a0), +std::abs(a1), +std::abs(b));
         const amrex::IntVect cw = iv_w + off;
-        if (limit.contains(cw) && is_mixed(cw)) {
-          contact = true;
-        }
         for (int layer = 0; layer <= hf_half; ++layer) {
           amrex::IntVect c = cw;
           c[dir] = iwall - layer * sgn;
@@ -823,7 +838,7 @@ wall_ghost_fraction(
     ref_dist = any_dist;
     ref = any_ref;
   }
-  if (!contact || ref_dist == nfar) {
+  if (ref_dist == nfar) {
     return F(iv_w);
   }
 

@@ -326,6 +326,10 @@ PeleLM::initData()
     //----------------------------------------------------------------
     // Read starting configuration from chk file.
     ReadCheckPointFile();
+#ifdef PELE_USE_VOF
+    // The checkpoint holds the valid cells only
+    fillPatchVOF(AmrNewTime);
+#endif
 
 #ifdef PELE_USE_SPRAY
     SprayInit();
