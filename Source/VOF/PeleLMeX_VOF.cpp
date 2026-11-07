@@ -612,41 +612,21 @@ PeleLM::VOFVelocityProjection(const int a_initPress, const amrex::Real a_dt)
   // Cell acceleration = average of the face accelerations
   for (int lev = 0; lev <= finest_level; ++lev) {
     auto* ldataNew_p = getLevelDataPtr(lev, AmrNewTime);
-#ifdef AMREX_USE_OMP
-#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
-#endif
-    for (amrex::MFIter mfi(ldataNew_p->state, amrex::TilingIfNotGPU());
-         mfi.isValid(); ++mfi) {
-      const amrex::Box& bx = mfi.tilebox();
-      auto const& vel = ldataNew_p->state.array(mfi, VELX);
-      auto const& gp = ldataNew_p->gp.array(mfi);
-      amrex::GpuArray<amrex::Array4<amrex::Real const>, AMREX_SPACEDIM> uaf{
-        AMREX_D_DECL(
-          umac[lev][0].const_array(mfi), umac[lev][1].const_array(mfi),
-          umac[lev][2].const_array(mfi))};
-      amrex::GpuArray<amrex::Array4<amrex::Real const>, AMREX_SPACEDIM> ubf{
-        AMREX_D_DECL(
-          ub[lev][0].const_array(mfi), ub[lev][1].const_array(mfi),
-          ub[lev][2].const_array(mfi))};
-      const bool update_vel = (a_initPress == 0);
-      amrex::ParallelFor(
-        bx, [=, dt = a_dt] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-          const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
-          for (int n = 0; n < AMREX_SPACEDIM; ++n) {
-            const amrex::IntVect ivp =
-              iv + amrex::IntVect::TheDimensionVector(n);
-            const amrex::Real a =
-              0.5 * ((uaf[n](iv) - ubf[n](iv)) + (uaf[n](ivp) - ubf[n](ivp))) /
-              dt;
-            if (update_vel) {
-              vel(i, j, k, n) += dt * a;
-            }
-            gp(i, j, k, n) = grav[n] - a;
-          }
-        });
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+      amrex::MultiFab::Subtract(umac[lev][idim], ub[lev][idim], 0, 0, 1, 0);
     }
+    amrex::MultiFab dvel(
+      grids[lev], dmap[lev], AMREX_SPACEDIM, 0, amrex::MFInfo(), Factory(lev));
+    amrex::average_face_to_cellcenter(dvel, 0, GetArrOfConstPtrs(umac[lev]));
+    if (a_initPress == 0) {
+      amrex::MultiFab::Add(ldataNew_p->state, dvel, 0, VELX, AMREX_SPACEDIM, 0);
+    }
+    for (int n = 0; n < AMREX_SPACEDIM; ++n) {
+      ldataNew_p->gp.setVal(grav[n], n, 1, 0);
+    }
+    amrex::MultiFab::Saxpy(
+      ldataNew_p->gp, -1.0 / a_dt, dvel, 0, 0, AMREX_SPACEDIM, 0);
   }
-  amrex::Gpu::streamSynchronize();
 
   for (int lev = finest_level; lev > 0; --lev) {
     amrex::average_down(
