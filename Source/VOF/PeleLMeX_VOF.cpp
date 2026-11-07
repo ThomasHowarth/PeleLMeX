@@ -1263,8 +1263,8 @@ PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
   // The ghost layers read: the search along the wall, the reconstruction
   // stencil of the plane it finds, and the ghost layers of a_vof themselves
   constexpr int nwall = m_nGrowVOF;
-  constexpr int nread =
-    pelelmex::vof::wall_nsearch + pelelmex::vof::hf_half + 1;
+  constexpr int wall_nsearch = pelelmex::vof::wall_nsearch;
+  constexpr int nread = wall_nsearch + pelelmex::vof::hf_half + 1;
   const amrex::Box& domain = geom[lev].Domain();
   const auto periodicity = geom[lev].periodicity();
   // The part of a box beyond a wall
@@ -1318,8 +1318,41 @@ PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
         continue;
       }
       const int iwall = (sgn < 0) ? domain.smallEnd(dir) : domain.bigEnd(dir);
-      for (int pass = 0; pass < npass; ++pass) {
-        amrex::MultiFab::Copy(snap, work, 0, 0, 1, nread);
+
+      // Mixed cells in the wall-adjacent layer that the ghost cells of each box
+      // can see.  The passes of this wall do not change that layer.  Without
+      // any, a ghost cell takes the value of the wall cell, without a search,
+      // and the passes beyond the first have nothing to refine.
+      amrex::LayoutData<int> box_contact(ext_ba, a_vof.DistributionMap());
+      int wall_contact = 0;
+      for (amrex::MFIter mfi(work); mfi.isValid(); ++mfi) {
+        box_contact[mfi] = 0;
+        amrex::Box scan = amrex::grow(mfi.validbox(), wall_nsearch);
+        scan.setRange(dir, iwall);
+        scan &= (work[mfi].box() & extent);
+        if (!beyond_wall(mfi.validbox(), dir, sgn).ok() || !scan.ok()) {
+          continue;
+        }
+        auto const& F = work.const_array(mfi);
+        amrex::ReduceOps<amrex::ReduceOpMax> reduce_op;
+        amrex::ReduceData<int> reduce_data(reduce_op);
+        reduce_op.eval(
+          scan, reduce_data,
+          [=] AMREX_GPU_DEVICE(int i, int j, int k) -> amrex::GpuTuple<int> {
+            const amrex::Real f = F(i, j, k);
+            return {static_cast<int>(
+              f > pelelmex::vof::vof_tol && f < 1.0 - pelelmex::vof::vof_tol)};
+          });
+        box_contact[mfi] = amrex::get<0>(reduce_data.value(reduce_op));
+        wall_contact = amrex::max(wall_contact, box_contact[mfi]);
+      }
+      amrex::ParallelDescriptor::ReduceIntMax(wall_contact);
+
+      const int wall_npass = (wall_contact != 0) ? npass : 1;
+      for (int pass = 0; pass < wall_npass; ++pass) {
+        if (wall_contact != 0) {
+          amrex::MultiFab::Copy(snap, work, 0, 0, 1, nread);
+        }
         const bool allow_ghost = (pass > 0);
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
@@ -1329,8 +1362,18 @@ PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
           if (!gbx.ok()) {
             continue;
           }
-          const amrex::Box limit = work[mfi].box() & extent;
           auto const& F = work.array(mfi);
+          if (box_contact[mfi] == 0) {
+            amrex::ParallelFor(
+              gbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                const amrex::IntVect g(AMREX_D_DECL(i, j, k));
+                amrex::IntVect iv_w = g;
+                iv_w[dir] = iwall;
+                F(g) = F(iv_w);
+              });
+            continue;
+          }
+          const amrex::Box limit = work[mfi].box() & extent;
           auto const& S = snap.const_array(mfi);
           amrex::ParallelFor(
             gbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
