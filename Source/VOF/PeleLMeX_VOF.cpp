@@ -211,6 +211,7 @@ PeleLM::getVOFFaceDensity(const int lev, const amrex::Real a_time)
 amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
 PeleLM::getVOFSharpFaceDensity(const int lev, const TimeStamp a_time)
 {
+  BL_PROFILE("PeleLMeX::getVOFSharpFaceDensity()");
   // Planes are fitted in the cells on either side of each face
   constexpr int nGhost = m_nGrowVOF;
   amrex::Vector<amrex::Real> times;
@@ -773,6 +774,7 @@ PeleLM::VOFFluxes(
   amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& flux,
   amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& momflux)
 {
+  BL_PROFILE("PeleLMeX::VOFFluxes()");
   const amrex::Box& domain = geom[lev].Domain();
   const auto periodicity = geom[lev].periodicity();
   const amrex::IntVect is_periodic(AMREX_D_DECL(
@@ -1144,6 +1146,7 @@ PeleLM::fillpatch_vof(
   amrex::MultiFab& a_vof,
   const int nGhost)
 {
+  BL_PROFILE("PeleLMeX::fillpatch_vof()");
   // The level data hold all their ghost cells at t_old and t_new, and this fill
   // is called many times in a step on the same F
   const auto* ldata = (a_time == m_t_new[lev])   ? m_leveldata_new[lev].get()
@@ -1234,6 +1237,7 @@ PeleLM::fillcoarsepatch_vof(
 void
 PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
 {
+  BL_PROFILE("PeleLMeX::VOFWallGhosts()");
   if (nGhost == 0) {
     return;
   }
