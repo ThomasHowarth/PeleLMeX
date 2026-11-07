@@ -407,8 +407,7 @@ advection is explicit, so the face Courant number must stay below 1. The time
 step uses the cell-centered velocity (``peleLM.vof.cfl``), while the advection
 uses the face velocity, which can be larger; a run stops if the face Courant
 number reaches 1. The flux volumes do not tile across coarse/fine
-boundaries, so the interface must stay on the finest level
-(``peleLM.vof.refine_max_level`` cannot be below ``amr.max_level``). The current
+boundaries, so the interface is always tagged up to the finest level. The current
 implementation requires ``peleLM.incompressible = 1``, uniform cubic cells (no
 ``geometry.mesh_mapping``) and no embedded boundaries.
 
@@ -458,7 +457,6 @@ fluxes per unit area, so the composite update is conservative.
 
     #-----------------------Volume of fluid -----------------------
     peleLM.vof.cfl              = 0.45  # [OPT, DEF=0.45] Courant number target, below 1
-    peleLM.vof.refine_max_level = 2     # [OPT, DEF=amr.max_level] Interface cells are tagged on levels below this; must not be below amr.max_level
     peleLM.vof.refine_band      = 2     # [OPT, DEF=2] Half-width (cells) of the tagged interface band
     peleLM.vof.advect_only      = 0     # [OPT, DEF=0] Advect with the prescribed velocity curl(A), skip the momentum update
     peleLM.vof.v                = 1     # [OPT, DEF=0] Verbose: 1 prints the liquid volume

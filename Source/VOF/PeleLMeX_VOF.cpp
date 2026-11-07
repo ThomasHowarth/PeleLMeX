@@ -27,7 +27,6 @@ PeleLM::VOFReadParameters()
   amrex::ParmParse("mac_proj").queryAdd("use_gmres", mac_use_gmres);
   amrex::ParmParse pp("peleLM.vof");
   pp.query("cfl", m_vof_cfl);
-  pp.query("refine_max_level", m_vof_refine_maxlev);
   pp.query("refine_band", m_vof_refine_band);
   pp.query("v", m_vof_verbose);
   pp.query("advect_only", m_vof_advect_only);
@@ -82,13 +81,6 @@ PeleLM::VOFCheckSetup()
     amrex::Abort(
       "The VOF solver does not support geometry.mesh_mapping: the PLIC "
       "reconstruction assumes uniform cubic cells.");
-  }
-  // The flux volumes do not tile across coarse/fine boundaries, which must
-  // stay in pure cells
-  if (m_vof_refine_maxlev >= 0 && m_vof_refine_maxlev < max_level) {
-    amrex::Abort(
-      "The VOF advection requires the interface on the finest level "
-      "(peleLM.vof.refine_max_level).");
   }
 #ifdef AMREX_USE_EB
   amrex::Abort("The VOF solver does not support embedded boundaries yet.");
@@ -1167,9 +1159,9 @@ PeleLM::estVOFDt(const TimeStamp a_time)
 void
 PeleLM::VOFTagInterface(const int lev, amrex::TagBoxArray& tags)
 {
-  const int maxlev =
-    (m_vof_refine_maxlev < 0) ? max_level : m_vof_refine_maxlev;
-  if (lev >= maxlev) {
+  // The interface stays on the finest level: the flux volumes do not tile
+  // across coarse/fine boundaries, which must stay in pure cells
+  if (lev >= max_level) {
     return;
   }
 

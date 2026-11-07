@@ -580,9 +580,9 @@ face_liquid_flux(
   amrex::Array4<amrex::Real const> const& back,
   const amrex::Box& bx) noexcept
 {
-  // Most faces are far from the interface: at a Courant number of at most 1/2
-  // the flux volume stays in the cells around the face, so that they need no
-  // geometry at all
+  // Most faces are far from the interface: at a Courant number below 1 the flux
+  // volume stays in the cells around the face, so that they need no geometry at
+  // all
   int lo[3] = {i - 1, j - 1, k - 1};
   int hi[3] = {i + 1, j + 1, k + 1};
   lo[dir] -= 1;
