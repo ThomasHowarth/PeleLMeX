@@ -679,12 +679,8 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
 
   advData->vof_lflux.resize(finest_level + 1);
   // The fluxes of the momentum advection near the interface use the same cuts
-  const bool with_mom = (m_vof_advect_only == 0);
-  if (with_mom) {
-    advData->vof_momflux.resize(finest_level + 1);
-  }
-  VOFAdvectStep(
-    umac, advData->vof_lflux, with_mom ? &advData->vof_momflux : nullptr);
+  advData->vof_momflux.resize(finest_level + 1);
+  VOFAdvectStep(umac, advData->vof_lflux, advData->vof_momflux);
 
   if (m_vof_verbose > 0) {
     const amrex::Real vol_new = VOFLiquidVolume(AmrNewTime);
@@ -724,14 +720,12 @@ PeleLM::VOFAdvectStep(
   const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
     a_umac,
   amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_flux,
-  amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>* a_momflux)
+  amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_momflux)
 {
   BL_PROFILE("PeleLMeX::VOFAdvectStep()");
 
   for (int lev = 0; lev <= finest_level; ++lev) {
-    VOFFluxes(
-      lev, a_umac[lev], a_flux[lev],
-      (a_momflux != nullptr) ? &(*a_momflux)[lev] : nullptr);
+    VOFFluxes(lev, a_umac[lev], a_flux[lev], a_momflux[lev]);
   }
   for (int lev = finest_level; lev > 0; --lev) {
     for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
@@ -777,7 +771,7 @@ PeleLM::VOFFluxes(
   const int lev,
   const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_umac,
   amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& flux,
-  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>* a_momflux)
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& momflux)
 {
   const amrex::Box& domain = geom[lev].Domain();
   const auto periodicity = geom[lev].periodicity();
@@ -897,9 +891,10 @@ PeleLM::VOFFluxes(
     });
   }
 
-  // Liquid crossing each face per unit face area.  With a_momflux, the mass and
-  // momentum near the interface come from the same cuts of the flux volumes
-  const bool with_mom = (a_momflux != nullptr);
+  // Liquid crossing each face per unit face area.  Near the interface it comes
+  // from the cuts of the flux volume, with the mass and momentum.  Away from it
+  // the flux volume, which stays in the cells around the face for a Courant
+  // number below 1, is all in one phase.
   const amrex::Real rho_l = m_vof_rho_liq;
   const amrex::Real rho_g = m_vof_rho_gas;
   auto const& state_old = getLevelDataPtr(lev, AmrOldTime)->state;
@@ -907,10 +902,7 @@ PeleLM::VOFFluxes(
     flux[dir].define(
       amrex::convert(grids[lev], amrex::IntVect::TheDimensionVector(dir)),
       dmap[lev], 1, 0);
-    if (with_mom) {
-      (*a_momflux)[dir].define(
-        flux[dir].boxArray(), dmap[lev], 1 + AMREX_SPACEDIM, 0);
-    }
+    momflux[dir].define(flux[dir].boxArray(), dmap[lev], 1 + AMREX_SPACEDIM, 0);
     const amrex::IntVect e = amrex::IntVect::TheDimensionVector(dir);
     const amrex::Real dx = geom[lev].CellSize(dir);
     const amrex::Real dtdx = m_dt / dx;
@@ -925,18 +917,16 @@ PeleLM::VOFFluxes(
       auto const& F = vof.const_array(mfi);
       auto const& pl = plane.const_array(mfi);
       auto const& bk = back.const_array(mfi);
-      auto const& mfx =
-        with_mom ? (*a_momflux)[dir].array(mfi) : amrex::Array4<amrex::Real>{};
+      auto const& mfx = momflux[dir].array(mfi);
       const amrex::Array4<amrex::Real const> vl(
         state_old.const_array(mfi), VELX);
       amrex::ParallelFor(
         fbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
           const amrex::Real courant = um(i, j, k) * dtdx;
           if (
-            with_mom &&
-            (pelelmex::vof::interface_band(i, j, k, F) ||
-             pelelmex::vof::interface_band(
-               i - e[0], j - e[1], k - AMREX_D_PICK(0, 0, e[2]), F))) {
+            pelelmex::vof::interface_band(i, j, k, F) ||
+            pelelmex::vof::interface_band(
+              i - e[0], j - e[1], k - AMREX_D_PICK(0, 0, e[2]), F)) {
             amrex::Real m = 0.0;
             amrex::Real p[AMREX_SPACEDIM];
             amrex::Real l = 0.0;
@@ -949,8 +939,7 @@ PeleLM::VOFFluxes(
               mfx(i, j, k, 1 + n) = p[n];
             }
           } else {
-            fl(i, j, k) = dx * pelelmex::vof::face_liquid_flux(
-                                 i, j, k, dir, courant, F, pl, bk, cells);
+            fl(i, j, k) = dx * ((F(i, j, k) > 0.5) ? courant : 0.0);
           }
         });
     }
