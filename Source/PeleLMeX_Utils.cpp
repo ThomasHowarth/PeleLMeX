@@ -234,10 +234,10 @@ PeleLM::extFluxDivergenceLevel(
   for (amrex::MFIter mfi(a_divergence, amrex::TilingIfNotGPU()); mfi.isValid();
        ++mfi) {
     const amrex::Box& bx = mfi.tilebox();
-    AMREX_D_TERM(
-      auto const& fluxX = a_fluxes[0]->const_array(mfi, flux_comp);
-      , auto const& fluxY = a_fluxes[1]->const_array(mfi, flux_comp);
-      , auto const& fluxZ = a_fluxes[2]->const_array(mfi, flux_comp););
+    AMREX_D_TERM(auto const& fluxX = a_fluxes[0]->const_array(mfi, flux_comp);
+                 , auto const& fluxY = a_fluxes[1]->const_array(mfi, flux_comp);
+                 ,
+                 auto const& fluxZ = a_fluxes[2]->const_array(mfi, flux_comp););
     auto const& divergence = a_divergence.array(mfi, div_comp);
     auto const& vol = volume.const_array(mfi);
 #ifdef AMREX_USE_EB
@@ -341,10 +341,10 @@ PeleLM::intFluxDivergenceLevel(
   for (amrex::MFIter mfi(a_divergence, amrex::TilingIfNotGPU()); mfi.isValid();
        ++mfi) {
     const amrex::Box& bx = mfi.tilebox();
-    AMREX_D_TERM(
-      auto const& fluxX = a_fluxes[0]->const_array(mfi, flux_comp);
-      , auto const& fluxY = a_fluxes[1]->const_array(mfi, flux_comp);
-      , auto const& fluxZ = a_fluxes[2]->const_array(mfi, flux_comp););
+    AMREX_D_TERM(auto const& fluxX = a_fluxes[0]->const_array(mfi, flux_comp);
+                 , auto const& fluxY = a_fluxes[1]->const_array(mfi, flux_comp);
+                 ,
+                 auto const& fluxZ = a_fluxes[2]->const_array(mfi, flux_comp););
     auto const& divergence = a_divergence.array(mfi, div_comp);
     auto const& vol = volume.const_array(mfi);
 
@@ -362,10 +362,9 @@ PeleLM::intFluxDivergenceLevel(
                                                                  // containing
                                                                  // boxes
       auto vfrac = ebfact.getVolFrac().const_array(mfi);
-      AMREX_D_TERM(
-        const auto& afrac_x = areafrac[0]->array(mfi);
-        , const auto& afrac_y = areafrac[1]->array(mfi);
-        , const auto& afrac_z = areafrac[2]->array(mfi););
+      AMREX_D_TERM(const auto& afrac_x = areafrac[0]->array(mfi);
+                   , const auto& afrac_y = areafrac[1]->array(mfi);
+                   , const auto& afrac_z = areafrac[2]->array(mfi););
       amrex::ParallelFor(
         bx, [flag, divergence, ncomp, vol, scale, vfrac, fluxX, areax, afrac_x,
              fluxY, areay, afrac_y
@@ -472,10 +471,10 @@ PeleLM::intFluxDivergenceLevelEB(
   for (amrex::MFIter mfi(a_divergence, amrex::TilingIfNotGPU()); mfi.isValid();
        ++mfi) {
     const amrex::Box& bx = mfi.tilebox();
-    AMREX_D_TERM(
-      auto const& fluxX = a_fluxes[0]->const_array(mfi, flux_comp);
-      , auto const& fluxY = a_fluxes[1]->const_array(mfi, flux_comp);
-      , auto const& fluxZ = a_fluxes[2]->const_array(mfi, flux_comp););
+    AMREX_D_TERM(auto const& fluxX = a_fluxes[0]->const_array(mfi, flux_comp);
+                 , auto const& fluxY = a_fluxes[1]->const_array(mfi, flux_comp);
+                 ,
+                 auto const& fluxZ = a_fluxes[2]->const_array(mfi, flux_comp););
     auto const& divergence = a_divergence.array(mfi, div_comp);
     auto const& vol = volume.const_array(mfi);
 
@@ -494,10 +493,9 @@ PeleLM::intFluxDivergenceLevelEB(
                                                                  // containing
                                                                  // boxes
       auto vfrac = ebfact.getVolFrac().const_array(mfi);
-      AMREX_D_TERM(
-        const auto& afrac_x = areafrac[0]->array(mfi);
-        , const auto& afrac_y = areafrac[1]->array(mfi);
-        , const auto& afrac_z = areafrac[2]->array(mfi););
+      AMREX_D_TERM(const auto& afrac_x = areafrac[0]->array(mfi);
+                   , const auto& afrac_y = areafrac[1]->array(mfi);
+                   , const auto& afrac_z = areafrac[2]->array(mfi););
       const auto& ebarea = eb_area->array(mfi);
       amrex::ParallelFor(
         bx, [flag, divergence, vol, scale, ncomp, ebflux, ebarea, dx, vfrac,
@@ -591,10 +589,9 @@ PeleLM::advFluxDivergence(
 
     // Get the divergence
     auto const& div_arr = a_divergence.array(mfi, div_comp);
-    AMREX_D_TERM(
-      auto const& fx = a_fluxes[0]->const_array(mfi, flux_comp);
-      , auto const& fy = a_fluxes[1]->const_array(mfi, flux_comp);
-      , auto const& fz = a_fluxes[2]->const_array(mfi, flux_comp);)
+    AMREX_D_TERM(auto const& fx = a_fluxes[0]->const_array(mfi, flux_comp);
+                 , auto const& fy = a_fluxes[1]->const_array(mfi, flux_comp);
+                 , auto const& fz = a_fluxes[2]->const_array(mfi, flux_comp);)
 
 #ifdef AMREX_USE_EB
     auto const& flagfab = ebfact.getMultiEBCellFlagFab()[mfi];
@@ -743,10 +740,9 @@ PeleLM::advFluxDivergence(
 
     // Get the divergence
     auto const& div_arr = a_divergence.array(mfi, div_comp);
-    AMREX_D_TERM(
-      auto const& fx = a_fluxes[0]->const_array(mfi, flux_comp);
-      , auto const& fy = a_fluxes[1]->const_array(mfi, flux_comp);
-      , auto const& fz = a_fluxes[2]->const_array(mfi, flux_comp);)
+    AMREX_D_TERM(auto const& fx = a_fluxes[0]->const_array(mfi, flux_comp);
+                 , auto const& fy = a_fluxes[1]->const_array(mfi, flux_comp);
+                 , auto const& fz = a_fluxes[2]->const_array(mfi, flux_comp);)
 
     auto const& flagfab = ebfact.getMultiEBCellFlagFab()[mfi];
     auto const& vfrac_arr = ebfact.getVolFrac().const_array(mfi);
@@ -1104,6 +1100,12 @@ PeleLM::derive(
       Factory(lev));
     std::unique_ptr<amrex::MultiFab> statemf =
       fillPatchState(lev, a_time, m_nGrowState);
+#ifdef PELE_USE_VOF
+    // Velocity plus the mixture density (DENSITY component)
+    if (m_incompressible != 0) {
+      statemf = VOFDeriveState(lev, a_time, *statemf);
+    }
+#endif
     // Get pressure: TODO no fillpatch for pressure just yet, simply get new
     // state
     auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
@@ -1132,6 +1134,11 @@ PeleLM::derive(
         this, bx, derfab, 0, rec->numDerive(), statefab, reactfab, pressfab,
         geom[lev], a_time, stateBCs, lev);
     }
+#ifdef PELE_USE_VOF
+    if (m_incompressible != 0 && a_name == "viscosity") {
+      fillVOFViscosity(lev, a_time, *mf, nGrow);
+    }
+#endif
   } else if (isStateVariable(a_name)) { // This is a state variable
     mf = std::make_unique<amrex::MultiFab>(
       grids[lev], dmap[lev], 1, nGrow, amrex::MFInfo(), Factory(lev));
@@ -1178,6 +1185,12 @@ PeleLM::deriveComp(
       grids[lev], dmap[lev], 1, nGrow, amrex::MFInfo(), Factory(lev));
     std::unique_ptr<amrex::MultiFab> statemf =
       fillPatchState(lev, a_time, m_nGrowState);
+#ifdef PELE_USE_VOF
+    // Velocity plus the mixture density (DENSITY component)
+    if (m_incompressible != 0) {
+      statemf = VOFDeriveState(lev, a_time, *statemf);
+    }
+#endif
     // Get pressure: TODO no fillpatch for pressure just yet, simply get new
     // state
     auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
@@ -1217,6 +1230,11 @@ PeleLM::deriveComp(
         rec->variableName(1000));
     }
     amrex::MultiFab::Copy(*mf, derTemp, derComp, 0, 1, nGrow);
+#ifdef PELE_USE_VOF
+    if (m_incompressible != 0 && a_name == "viscosity") {
+      fillVOFViscosity(lev, a_time, *mf, nGrow);
+    }
+#endif
   } else if (isStateVariable(a_name)) { // This is a state variable
     mf = std::make_unique<amrex::MultiFab>(
       grids[lev], dmap[lev], 1, nGrow, amrex::MFInfo(), Factory(lev));
@@ -1597,7 +1615,7 @@ PeleLM::domainFaceFlux(
         amrex::TypeList<amrex::ReduceOpSum>{}, amrex::TypeList<amrex::Real>{},
         *a_umac[lev][idim], amrex::IntVect(0),
         [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept
-          -> amrex::GpuTuple<amrex::Real> {
+        -> amrex::GpuTuple<amrex::Real> {
           const int idx = (idim == 0) ? i : ((idim == 1) ? j : k);
           amrex::Real sgn = 0.0; // outward normal is -e_idim at lo
           amrex::IntVect cell(AMREX_D_DECL(i, j, k));
@@ -1730,7 +1748,7 @@ PeleLM::checkProjectionCompatibility(
       amrex::TypeList<amrex::Real, amrex::Real>{}, *a_rhs[lev],
       amrex::IntVect(0),
       [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept
-        -> amrex::GpuTuple<amrex::Real, amrex::Real> {
+      -> amrex::GpuTuple<amrex::Real, amrex::Real> {
         amrex::Real v = rma[box_no](i, j, k) * vma[box_no](i, j, k);
         if (has_mask) {
           v *= static_cast<amrex::Real>(mma[box_no](i, j, k));
@@ -2009,9 +2027,8 @@ PeleLM::setTypicalValues(const TimeStamp a_time, const int is_init)
         spec_names, &(eos_parms.host_parm()));
       for (int n = 0; n < NUM_SPECIES; ++n) {
         amrex::Print() << "\tY_" << spec_names[n]
-                       << std::setw(
-                            amrex::max<int>(
-                              0, static_cast<int>(8 - spec_names[n].length())))
+                       << std::setw(amrex::max<int>(
+                            0, static_cast<int>(8 - spec_names[n].length())))
                        << std::left << ":" << typical_values[FIRSTSPEC + n]
                        << '\n';
       }
@@ -2021,10 +2038,8 @@ PeleLM::setTypicalValues(const TimeStamp a_time, const int is_init)
 #if NUM_ODE > 0
       for (int n = 0; n < NUM_ODE; ++n) {
         amrex::Print() << "\t" << m_ode_names[n]
-                       << std::setw(
-                            amrex::max<int>(
-                              0,
-                              static_cast<int>(10 - m_ode_names[n].length())))
+                       << std::setw(amrex::max<int>(
+                            0, static_cast<int>(10 - m_ode_names[n].length())))
                        << std::left << ":" << typical_values[FIRSTODE + n]
                        << '\n';
       }
@@ -2367,9 +2382,8 @@ PeleLM::initMixtureFraction()
           found = true;
           spec_Bilger_fact[n] = 1.0;
         } else {
-          amrex::Abort(
-            "initMixtureFraction: requested manifold parameter "
-            "found multiple times");
+          amrex::Abort("initMixtureFraction: requested manifold parameter "
+                       "found multiple times");
         }
       } else {
         spec_Bilger_fact[n] = 0.0;

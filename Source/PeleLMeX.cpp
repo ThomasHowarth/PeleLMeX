@@ -64,6 +64,9 @@ PeleLM::getLevelDataPtr(
   if (m_nAux > 0) {
     fillpatch_aux(lev, time, m_leveldata_floating->auxiliaries, m_nGrowState);
   }
+#ifdef PELE_USE_VOF
+  fillpatch_vof(lev, time, m_leveldata_floating->vof, m_nGrowVOF);
+#endif
   return m_leveldata_floating.get();
 }
 
@@ -163,9 +166,21 @@ PeleLM::getSpeciesVect(const TimeStamp a_time)
 amrex::Vector<std::unique_ptr<amrex::MultiFab>>
 PeleLM::getDensityVect(const TimeStamp a_time)
 {
-  AMREX_ASSERT(m_incompressible == 0);
+  AMREX_ASSERT(densityIsField());
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> r;
   r.reserve(finest_level + 1);
+#ifdef PELE_USE_VOF
+  if (m_incompressible != 0) {
+    // Two-phase mixture density from the volume fraction (a copy, not an
+    // alias of the state)
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      r.push_back(std::make_unique<amrex::MultiFab>(
+        grids[lev], dmap[lev], 1, m_nGrowState, amrex::MFInfo(), Factory(lev)));
+      fillVOFDensity(lev, getTime(lev, a_time), *(r[lev]), m_nGrowState);
+    }
+    return r;
+  }
+#endif
   if (a_time == AmrOldTime) {
     for (int lev = 0; lev <= finest_level; ++lev) {
       r.push_back(

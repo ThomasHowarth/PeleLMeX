@@ -180,11 +180,25 @@ PeleLM::Advance(const int is_initIter)
       MACStart = amrex::ParallelDescriptor::second();
     }
 
-    // Still need to get face velocities ...
-    predictVelocity(advData);
+#ifdef PELE_USE_VOF
+    if (m_vof_advect_only != 0) {
+      // Verification mode: prescribed, discretely divergence-free umac
+      VOFPrescribedVelocity(
+        advData, m_cur_time + 0.5 * m_dt, m_cur_time + m_dt);
+    } else
+#endif
+    {
+      // Still need to get face velocities ...
+      predictVelocity(advData);
 
-    // ... and MAC-project face velocities, but no divu
-    macProject(AmrOldTime, advData, {});
+      // ... and MAC-project face velocities, but no divu
+      macProject(AmrOldTime, advData, {});
+    }
+
+#ifdef PELE_USE_VOF
+    // Advect the liquid volume fraction with the projected face velocities
+    advanceVOF(advData);
+#endif
 
     if (m_verbose > 1) {
       amrex::Real MACEnd = amrex::ParallelDescriptor::second() - MACStart;
@@ -231,38 +245,46 @@ PeleLM::Advance(const int is_initIter)
 
   //----------------------------------------------------------------
   BL_PROFILE_VAR("PeleLMeX::advance::velocity", PLM_VEL);
-  // Velocity advance
-  amrex::Real VelAdvStart = 0.0;
-  if (m_verbose > 1) {
-    VelAdvStart = amrex::ParallelDescriptor::second();
+#ifdef PELE_USE_VOF
+  // Prescribed velocity already set at t^{n+1}
+  const bool skip_velocity_advance = (m_vof_advect_only != 0);
+#else
+  constexpr bool skip_velocity_advance = false;
+#endif
+  if (!skip_velocity_advance) {
+    // Velocity advance
+    amrex::Real VelAdvStart = 0.0;
+    if (m_verbose > 1) {
+      VelAdvStart = amrex::ParallelDescriptor::second();
+    }
+    // Re-evaluate viscosity only if scalar updated
+    if (densityIsField()) {
+      calcViscosity(AmrNewTime);
+    }
+
+    // Compute t^{n+1/2} velocity advection term
+    computeVelocityAdvTerm(advData);
+
+    // Compute provisional new velocity for diffusion solve RHS
+    // U^{np1**} = U^{n} - dt*AofS^{n+1/2} - dt/rho^{n+1/2} \nabla \pi^{n-1/2} +
+    // dt/rho^{n+1/2} * F^{n+1/2}
+    updateVelocity(advData);
+
+    // Semi-implicit CN diffusion solve to get U^{np1*}
+    diffuseVelocity();
+
+    // Nodal projection to get constrained U^{np1} and new pressure \pi^{n+1/2}
+    const TimeStamp rhoTime = AmrHalfTime;
+    velocityProjection(is_initIter, rhoTime, m_dt);
+    if (m_verbose > 1) {
+      amrex::Real VelAdvEnd = amrex::ParallelDescriptor::second() - VelAdvStart;
+      amrex::ParallelDescriptor::ReduceRealMax(
+        VelAdvEnd, amrex::ParallelDescriptor::IOProcessorNumber());
+      amrex::Print() << "   - Advance()::VelocityAdvance  --> Time: "
+                     << VelAdvEnd << "\n";
+    }
+    checkMemory("Nodal-Proj");
   }
-  // Re-evaluate viscosity only if scalar updated
-  if (m_incompressible == 0) {
-    calcViscosity(AmrNewTime);
-  }
-
-  // Compute t^{n+1/2} velocity advection term
-  computeVelocityAdvTerm(advData);
-
-  // Compute provisional new velocity for diffusion solve RHS
-  // U^{np1**} = U^{n} - dt*AofS^{n+1/2} - dt/rho^{n+1/2} \nabla \pi^{n-1/2} +
-  // dt/rho^{n+1/2} * F^{n+1/2}
-  updateVelocity(advData);
-
-  // Semi-implicit CN diffusion solve to get U^{np1*}
-  diffuseVelocity();
-
-  // Nodal projection to get constrained U^{np1} and new pressure \pi^{n+1/2}
-  const TimeStamp rhoTime = AmrHalfTime;
-  velocityProjection(is_initIter, rhoTime, m_dt);
-  if (m_verbose > 1) {
-    amrex::Real VelAdvEnd = amrex::ParallelDescriptor::second() - VelAdvStart;
-    amrex::ParallelDescriptor::ReduceRealMax(
-      VelAdvEnd, amrex::ParallelDescriptor::IOProcessorNumber());
-    amrex::Print() << "   - Advance()::VelocityAdvance  --> Time: " << VelAdvEnd
-                   << "\n";
-  }
-  checkMemory("Nodal-Proj");
   BL_PROFILE_VAR_STOP(PLM_VEL);
   //----------------------------------------------------------------
 

@@ -24,7 +24,11 @@ PeleLM::initialProjection()
   // without mesh mapping, AMREX_SPACEDIM-component when mesh mapping is on.
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> sigma(finest_level + 1);
   const int sigma_ncomp = m_mesh_mapping ? AMREX_SPACEDIM : 1;
-  if ((m_incompressible == 0) || m_mesh_mapping) {
+  if (densityIsField() || m_mesh_mapping) {
+    amrex::Vector<std::unique_ptr<amrex::MultiFab>> rhoNew;
+    if (densityIsField()) {
+      rhoNew = getDensityVect(AmrNewTime);
+    }
     for (int lev = 0; lev <= finest_level; ++lev) {
       sigma[lev] = std::make_unique<amrex::MultiFab>(
         grids[lev], dmap[lev], sigma_ncomp, nGhost, amrex::MFInfo(),
@@ -34,11 +38,11 @@ PeleLM::initialProjection()
       auto const& state_ma = ldata_p->state.const_arrays();
       auto const& sigma_ma = sigma[lev]->arrays();
       if (!m_mesh_mapping) {
+        auto const& rho_ma = rhoNew[lev]->const_arrays();
         amrex::ParallelFor(
-          ldata_p->state, [state_ma, sigma_ma] AMREX_GPU_DEVICE(
-                            int box_no, int i, int j, int k) noexcept {
-            amrex::Array4<amrex::Real const> rho(state_ma[box_no], DENSITY);
-            sigma_ma[box_no](i, j, k) = dummy_dt / rho(i, j, k);
+          *sigma[lev], [rho_ma, sigma_ma] AMREX_GPU_DEVICE(
+                         int box_no, int i, int j, int k) noexcept {
+            sigma_ma[box_no](i, j, k) = dummy_dt / rho_ma[box_no](i, j, k);
           });
       } else {
         auto const& fac_ma = m_mesh_map->fac_cc(lev).const_arrays();
@@ -243,6 +247,14 @@ PeleLM::initialPressProjection()
     amrex::Print() << " Initial pressure projection \n";
   }
 
+#ifdef PELE_USE_VOF
+  if (m_incompressible != 0) {
+    constexpr int initPress = 1;
+    VOFVelocityProjection(initPress, 1.0);
+    return;
+  }
+#endif
+
   constexpr amrex::Real dummy_dt = 1.0;
   constexpr int incremental = 0;
   constexpr int nGhost = 1;
@@ -250,7 +262,11 @@ PeleLM::initialPressProjection()
   // Get sigma (see comment on the equivalent block in initialProjection).
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> sigma;
   const int sigma_ncomp = m_mesh_mapping ? AMREX_SPACEDIM : 1;
-  if ((m_incompressible == 0) || m_mesh_mapping) {
+  if (densityIsField() || m_mesh_mapping) {
+    amrex::Vector<std::unique_ptr<amrex::MultiFab>> rhoNew;
+    if (densityIsField()) {
+      rhoNew = getDensityVect(AmrNewTime);
+    }
     sigma.resize(finest_level + 1);
     for (int lev = 0; lev <= finest_level; ++lev) {
 
@@ -262,11 +278,11 @@ PeleLM::initialPressProjection()
       auto const& state_ma = ldata_p->state.const_arrays();
       auto const& sigma_ma = sigma[lev]->arrays();
       if (!m_mesh_mapping) {
+        auto const& rho_ma = rhoNew[lev]->const_arrays();
         amrex::ParallelFor(
-          ldata_p->state, [state_ma, sigma_ma] AMREX_GPU_DEVICE(
-                            int box_no, int i, int j, int k) noexcept {
-            amrex::Array4<amrex::Real const> rho(state_ma[box_no], DENSITY);
-            sigma_ma[box_no](i, j, k) = dummy_dt / rho(i, j, k);
+          *sigma[lev], [rho_ma, sigma_ma] AMREX_GPU_DEVICE(
+                         int box_no, int i, int j, int k) noexcept {
+            sigma_ma[box_no](i, j, k) = dummy_dt / rho_ma[box_no](i, j, k);
           });
       } else {
         auto const& fac_ma = m_mesh_map->fac_cc(lev).const_arrays();
@@ -358,6 +374,17 @@ PeleLM::velocityProjection(
 {
   BL_PROFILE("PeleLMeX::velocityProjection()");
 
+#ifdef PELE_USE_VOF
+  if (m_incompressible != 0) {
+    // Balanced-force projection; non-incremental, so it also serves the
+    // initial pressure iterations
+    amrex::ignore_unused(is_initIter, a_rhoTime);
+    constexpr int initPress = 0;
+    VOFVelocityProjection(initPress, a_dt);
+    return;
+  }
+#endif
+
   constexpr int nGhost = 0;
   const int incremental = (is_initIter) != 0 ? 1 : 0;
 
@@ -371,10 +398,10 @@ PeleLM::velocityProjection(
   //                       code path is exercised uniformly.
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> sigma(finest_level + 1);
   const int sigma_ncomp = m_mesh_mapping ? AMREX_SPACEDIM : 1;
-  if ((m_incompressible == 0) || m_mesh_mapping) {
-    // rhoHalf only needed for the low-Mach path
+  if (densityIsField() || m_mesh_mapping) {
+    // rhoHalf only needed for the variable-density path
     amrex::Vector<std::unique_ptr<amrex::MultiFab>> rhoHalf;
-    if (m_incompressible == 0) {
+    if (densityIsField()) {
       rhoHalf = getDensityVect(a_rhoTime);
     }
     for (int lev = 0; lev <= finest_level; ++lev) {
@@ -437,7 +464,7 @@ PeleLM::velocityProjection(
   // factor per component because grad_phys p = (T^T / J) grad_Xi p, and
   // only the diagonal 1/fac_i part survives the face-aligned mapping.
   if (incremental == 0) {
-    if (m_incompressible == 0) {
+    if (densityIsField()) {
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> rhoHalf =
         getDensityVect(a_rhoTime);
       for (int lev = 0; lev <= finest_level; ++lev) {
@@ -788,7 +815,7 @@ PeleLM::doNodalProject(
   // Setup NodalProjector
   std::unique_ptr<Hydro::NodalProjector> nodal_projector;
 
-  if ((m_incompressible != 0) && !m_mesh_mapping) {
+  if (!densityIsField() && !m_mesh_mapping) {
     const amrex::Real constant_sigma = scaling_factor / m_rho;
     nodal_projector = std::make_unique<Hydro::NodalProjector>(
       a_vel, constant_sigma, Geom(0, finest_level), info);

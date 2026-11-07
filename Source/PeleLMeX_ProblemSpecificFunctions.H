@@ -66,6 +66,102 @@ call_initdata(
   }
 }
 
+#ifdef PELE_USE_VOF
+// Volume of fluid hooks, detected at compile time like initdata_mapped:
+//  - `initvof(i, j, k, vof, geomdata, prob_parm)` fills the liquid volume
+//    fraction at initialization (required in a VOF build);
+//  - `bcnormal_vof(x, vof_ext, idir, sgn, time, geomdata, prob_parm)` sets
+//    the inflow volume fraction (optional, defaults to pure gas).
+template <typename T, typename = void>
+struct has_initvof : std::false_type
+{
+};
+
+template <typename T>
+struct has_initvof<T, std::void_t<decltype(&T::initvof)>> : std::true_type
+{
+};
+
+template <typename T, typename = void>
+struct has_bcnormal_vof : std::false_type
+{
+};
+
+template <typename T>
+struct has_bcnormal_vof<T, std::void_t<decltype(&T::bcnormal_vof)>>
+  : std::true_type
+{
+};
+
+// Verification mode (peleLM.vof.advect_only = 1):
+//  - `vof_vector_potential(x, time, A, prob_parm)` returns the vector
+//    potential A (A[2] is the stream function in 2D) of a prescribed
+//    velocity u = curl A.
+template <typename T, typename = void>
+struct has_vof_vector_potential : std::false_type
+{
+};
+
+template <typename T>
+struct has_vof_vector_potential<
+  T,
+  std::void_t<decltype(&T::vof_vector_potential)>> : std::true_type
+{
+};
+
+template <typename PSF, typename ProbParm>
+AMREX_GPU_DEVICE AMREX_FORCE_INLINE void
+call_vof_vector_potential(
+  const amrex::Real x[AMREX_SPACEDIM],
+  const amrex::Real time,
+  amrex::Real A[3],
+  ProbParm const& prob_parm) noexcept
+{
+  if constexpr (has_vof_vector_potential<PSF>::value) {
+    PSF::vof_vector_potential(x, time, A, prob_parm);
+  } else {
+    amrex::ignore_unused(x, time, prob_parm);
+    A[0] = A[1] = A[2] = 0.0;
+  }
+}
+
+template <typename PSF, typename ProbParm>
+AMREX_GPU_DEVICE AMREX_FORCE_INLINE void
+call_initvof(
+  int i,
+  int j,
+  int k,
+  amrex::Array4<amrex::Real> const& vof,
+  amrex::GeometryData const& geomdata,
+  ProbParm const& prob_parm) noexcept
+{
+  static_assert(
+    has_initvof<PSF>::value,
+    "A VOF build requires ProblemSpecificFunctions::initvof in "
+    "pelelmex_prob.H");
+  PSF::initvof(i, j, k, vof, geomdata, prob_parm);
+}
+
+template <typename PSF, typename ProbParm>
+AMREX_GPU_DEVICE AMREX_FORCE_INLINE void
+call_bcnormal_vof(
+  const amrex::Real x[AMREX_SPACEDIM],
+  amrex::Real& vof_ext,
+  const int idir,
+  const int sgn,
+  const amrex::Real time,
+  amrex::GeometryData const& geomdata,
+  ProbParm const& prob_parm) noexcept
+{
+  if constexpr (has_bcnormal_vof<PSF>::value) {
+    PSF::bcnormal_vof(x, vof_ext, idir, sgn, time, geomdata, prob_parm);
+  } else {
+    amrex::ignore_unused(x, idir, sgn, time, geomdata, prob_parm);
+    vof_ext = 0.0;
+  }
+}
+#endif
+
 struct ProbParmDefault
 {
   /**

@@ -251,6 +251,9 @@ PeleLM::WritePlotFile()
   if (m_nAux > 0) {
     averageDownAux(AmrNewTime);
   }
+#ifdef PELE_USE_VOF
+  averageDownVOF(AmrNewTime);
+#endif
   // Get consistent reaction data across level
   if ((m_do_react != 0) && (m_skipInstantRR == 0) && (m_plot_react != 0)) {
     averageDownReaction();
@@ -281,6 +284,11 @@ PeleLM::WritePlotFile()
   }
 
   ncomp += m_nAux;
+
+#ifdef PELE_USE_VOF
+  // Volume fraction and mixture density
+  ncomp += 2;
+#endif
 
   // Reactions
   if ((m_do_react != 0) && (m_skipInstantRR == 0) && (m_plot_react != 0)) {
@@ -397,6 +405,11 @@ PeleLM::WritePlotFile()
   for (int n = 0; n < m_nAux; ++n) {
     plt_VarsName.push_back(m_aux_names[n]);
   }
+
+#ifdef PELE_USE_VOF
+  plt_VarsName.push_back("vof");
+  plt_VarsName.push_back("density");
+#endif
 
   if ((m_do_react != 0) && (m_skipInstantRR == 0) && (m_plot_react != 0)) {
     for (int n = 0; n < NUM_SPECIES; ++n) {
@@ -538,6 +551,18 @@ PeleLM::WritePlotFile()
       cnt += m_nAux;
     }
 
+#ifdef PELE_USE_VOF
+    amrex::MultiFab::Copy(mf_plt[lev], m_leveldata_new[lev]->vof, 0, cnt, 1, 0);
+    cnt += 1;
+    {
+      amrex::MultiFab rho(
+        grids[lev], dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
+      fillVOFDensity(lev, getTime(lev, AmrNewTime), rho, 0);
+      amrex::MultiFab::Copy(mf_plt[lev], rho, 0, cnt, 1, 0);
+    }
+    cnt += 1;
+#endif
+
     if ((m_do_react != 0) && (m_skipInstantRR == 0) && (m_plot_react != 0)) {
       amrex::MultiFab::Copy(
         mf_plt[lev], m_leveldatareact[lev]->I_R, 0, cnt, nCompIR(), 0);
@@ -612,13 +637,12 @@ PeleLM::WritePlotFile()
       constexpr amrex::Real fact =
         0.5 / static_cast<amrex::Real>(AMREX_SPACEDIM);
       auto const& plot_arr = mf_plt[lev].arrays();
-      AMREX_D_TERM(
-        auto const& mut_arr_x =
-          m_leveldata_new[lev]->visc_turb_fc[0].const_arrays();
-        , auto const& mut_arr_y =
-            m_leveldata_new[lev]->visc_turb_fc[1].const_arrays();
-        , auto const& mut_arr_z =
-            m_leveldata_new[lev]->visc_turb_fc[2].const_arrays();)
+      AMREX_D_TERM(auto const& mut_arr_x =
+                     m_leveldata_new[lev]->visc_turb_fc[0].const_arrays();
+                   , auto const& mut_arr_y =
+                       m_leveldata_new[lev]->visc_turb_fc[1].const_arrays();
+                   , auto const& mut_arr_z =
+                       m_leveldata_new[lev]->visc_turb_fc[2].const_arrays();)
       // interpolate turbulent viscosity from faces to centers
       amrex::ParallelFor(
         mf_plt[lev], [plot_arr, cnt, mut_arr_x, mut_arr_y
@@ -873,6 +897,12 @@ PeleLM::WriteCheckPointFile()
           lev, checkpointname, level_prefix, "aux"));
     }
 
+#ifdef PELE_USE_VOF
+    amrex::VisMF::Write(
+      m_leveldata_new[lev]->vof,
+      amrex::MultiFabFileFullPrefix(lev, checkpointname, level_prefix, "vof"));
+#endif
+
     if (m_incompressible == 0) {
       if (m_has_divu != 0) {
         amrex::VisMF::Write(
@@ -1115,6 +1145,13 @@ PeleLM::ReadCheckPointFile()
           lev, m_restart_chkfile, level_prefix, "aux"));
     }
 
+#ifdef PELE_USE_VOF
+    amrex::VisMF::Read(
+      m_leveldata_new[lev]->vof,
+      amrex::MultiFabFileFullPrefix(
+        lev, m_restart_chkfile, level_prefix, "vof"));
+#endif
+
     if (m_incompressible == 0) {
       if (m_has_divu != 0) {
         amrex::VisMF::Read(
@@ -1229,9 +1266,8 @@ PeleLM::initLevelDataFromPlt(int a_lev, const std::string& a_dataPltFile)
       "simulations");
   }
   if (m_nAux > 0) {
-    amrex::Warning(
-      " restarting from plotfile with auxiliaries not currently "
-      "implemented, and will not be captured");
+    amrex::Warning(" restarting from plotfile with auxiliaries not currently "
+                   "implemented, and will not be captured");
   }
   if (m_verbose > 0) {
     amrex::Print() << " initData on level " << a_lev << " from pltfile "
@@ -1615,22 +1651,20 @@ PeleLM::coarsenLevelFromPlt(
 
   if (m_verbose > 0) {
     amrex::Print() << "  Coarsening level " << a_lev
-                   << " from plotfile level 0 "
-                   << "with ratio " << coarsen_ratio << "\n";
+                   << " from plotfile level 0 " << "with ratio "
+                   << coarsen_ratio << "\n";
   }
 
 #ifdef AMREX_USE_EB
   if (!EBFactory(a_lev).isAllRegular()) {
-    amrex::Abort(
-      "peleLM.initDataPlt_coarsen: EB geometry not supported. "
-      "This feature currently only works for non-EB cases.");
+    amrex::Abort("peleLM.initDataPlt_coarsen: EB geometry not supported. "
+                 "This feature currently only works for non-EB cases.");
   }
 #endif
 
   if (m_mesh_mapping) {
-    amrex::Abort(
-      "peleLM.initDataPlt_coarsen: Mesh mapping not supported. "
-      "This feature currently only works without mesh mapping.");
+    amrex::Abort("peleLM.initDataPlt_coarsen: Mesh mapping not supported. "
+                 "This feature currently only works without mesh mapping.");
   }
 
   // Create temporary fine MultiFab matching plotfile level 0 resolution

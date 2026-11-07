@@ -1,0 +1,47 @@
+# Circle carried diagonally through a periodic box by a uniform flow, one
+# domain crossing, with AMR.  Runs through the Navier-Stokes path (MAC
+# projection of the Godunov-predicted face velocities).
+
+#----------------------DOMAIN DEFINITION------------------------
+geometry.is_periodic = 1 1
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0 0.0
+geometry.prob_hi     = 1.0 1.0
+
+peleLM.lo_bc = Interior Interior
+peleLM.hi_bc = Interior Interior
+
+#-------------------------AMR CONTROL----------------------------
+amr.n_cell          = 64 64
+amr.v               = 1
+amr.max_level       = 1
+amr.ref_ratio       = 2 2
+amr.regrid_int      = 4
+amr.n_error_buf     = 2 2
+amr.grid_eff        = 0.7
+amr.blocking_factor = 8
+amr.max_grid_size   = 64
+
+#--------------------------- Problem ----------------------------
+prob.type     = translate
+prob.center   = 0.5 0.5
+prob.radius   = 0.2
+prob.velocity = 1.0 1.0
+
+#-------------------------PeleLM CONTROL-------------------------
+peleLM.v              = 1
+peleLM.incompressible = 1
+peleLM.vof.rho_liquid = 1.0
+peleLM.vof.rho_gas    = 1.0
+peleLM.vof.mu_liquid  = 1.0e-3
+peleLM.vof.mu_gas     = 1.0e-3
+
+peleLM.vof.v   = 1
+
+amr.cfl       = 0.45
+amr.dt_shrink = 1.0
+amr.stop_time = 1.0
+amr.max_step  = 100000
+amr.plot_per  = 0.5
+amr.plot_file = plt_translate_
+amr.check_int = -1

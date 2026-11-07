@@ -290,6 +290,15 @@ PeleLM::macProject(
   amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> rho_inv(
     finest_level + 1);
   for (int lev = 0; lev <= finest_level; ++lev) {
+#ifdef PELE_USE_VOF
+    if (m_incompressible != 0) {
+      rho_inv[lev] = getVOFSharpFaceDensity(lev, a_time);
+      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+        rho_inv[lev][idim].invert(m_dt / 2.0, 0);
+      }
+      continue;
+    }
+#endif
     if (m_incompressible != 0) {
       amrex::Real rhoInv = m_dt / (2.0 * m_rho);
       for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
@@ -309,6 +318,15 @@ PeleLM::macProject(
       }
     }
   }
+
+#ifdef PELE_USE_VOF
+  if (m_incompressible != 0) {
+    // Sharp face density (see VOFFaceProjection)
+    VOFFaceProjection(GetVecOfArrOfPtrs(advData->umac), rho_inv);
+    fillUMacGhosts(advData);
+    return;
+  }
+#endif
 
   // For closed chamber, compute change in chamber pressure and turn
   // a_divu (= advData->mac_divu) into S - theta dp0/dt, which it keeps.
@@ -372,23 +390,7 @@ PeleLM::macProject(
     }
   }
 
-  if (macproj->needInitialization()) {
-    amrex::LPInfo lpInfo;
-    lpInfo.setMaxCoarseningLevel(m_mac_mg_max_coarsening_level);
-    macproj->initProjector(lpInfo, GetVecOfArrOfConstPtrs(rho_inv));
-    macproj->setDomainBC(
-      getMACProjectionBC(amrex::Orientation::low),
-      getMACProjectionBC(amrex::Orientation::high));
-#ifdef AMREX_USE_HYPRE
-    if (
-      macproj->getMLMG().getBottomSolver() ==
-      amrex::MLMG::BottomSolver::hypre) {
-      macproj->getMLMG().setHypreOptionsNamespace(m_hypre_namespace_mac);
-    }
-#endif
-  } else {
-    macproj->updateBeta(GetVecOfArrOfConstPtrs(rho_inv));
-  }
+  setupMacProjector(rho_inv);
 
   // Closed chamber: the MacProjector forms div(umac) - rhs; check that the
   // RHS balances the boundary flux of the (Xi-space) face velocity.
@@ -403,7 +405,6 @@ PeleLM::macProject(
   }
 
   // set MAC velocity and projection RHS
-  macproj->getLinOp().setMaxOrder(m_mac_max_order);
   macproj->setUMAC(GetVecOfArrOfPtrs(advData->umac));
   if (has_divu != 0) {
     if (m_mesh_mapping) {
@@ -422,7 +423,42 @@ PeleLM::macProject(
   }
 #endif
 
-  // Project
+  solveMacProjection();
+
+  // Intentionally no post-project umac / a_divu unscaling.  umac remains
+  // in uniform (Xi) space -- downstream advection consumers must apply
+  // their own mesh-mapping adjustments.
+
+  fillUMacGhosts(advData);
+}
+
+void
+PeleLM::setupMacProjector(
+  const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_beta)
+{
+  if (macproj->needInitialization()) {
+    amrex::LPInfo lpInfo;
+    lpInfo.setMaxCoarseningLevel(m_mac_mg_max_coarsening_level);
+    macproj->initProjector(lpInfo, GetVecOfArrOfConstPtrs(a_beta));
+    macproj->setDomainBC(
+      getMACProjectionBC(amrex::Orientation::low),
+      getMACProjectionBC(amrex::Orientation::high));
+#ifdef AMREX_USE_HYPRE
+    if (
+      macproj->getMLMG().getBottomSolver() ==
+      amrex::MLMG::BottomSolver::hypre) {
+      macproj->getMLMG().setHypreOptionsNamespace(m_hypre_namespace_mac);
+    }
+#endif
+  } else {
+    macproj->updateBeta(GetVecOfArrOfConstPtrs(a_beta));
+  }
+  macproj->getLinOp().setMaxOrder(m_mac_max_order);
+}
+
+void
+PeleLM::solveMacProjection()
+{
   if (m_macproj_verbose > 0) {
     amrex::Print() << "MLMG: MAC Projection\n";
   }
@@ -463,11 +499,11 @@ PeleLM::macProject(
       amrex::Abort("MLMG solve for mac_projection failed");
     }
   }
+}
 
-  // Intentionally no post-project umac / a_divu unscaling.  umac remains
-  // in uniform (Xi) space -- downstream advection consumers must apply
-  // their own mesh-mapping adjustments.
-
+void
+PeleLM::fillUMacGhosts(const std::unique_ptr<AdvanceAdvData>& advData)
+{
   // FillBoundary umac
   // Do coarse first
   AMREX_D_TERM(advData->umac[0][0].FillBoundary(geom[0].periodicity());

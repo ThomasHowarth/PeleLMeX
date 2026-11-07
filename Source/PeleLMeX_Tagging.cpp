@@ -31,6 +31,12 @@ PeleLM::ErrorEst(
       geom[lev]);
   }
 
+#ifdef PELE_USE_VOF
+  // Keep the interface on the finest VOF level so that coarse/fine faces
+  // only carry pure-phase fluxes
+  VOFTagInterface(lev, tags);
+#endif
+
 #ifdef AMREX_USE_EB
   // Untag covered cells
 #ifdef AMREX_USE_OMP

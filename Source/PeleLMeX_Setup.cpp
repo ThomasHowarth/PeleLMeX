@@ -299,14 +299,12 @@ PeleLM::readParameters()
         "Rebuild without USE_EB or omit geometry.mesh_mapping.");
 #endif
 #ifdef PELE_USE_PLASMA
-      amrex::Abort(
-        "mesh_mapping is not supported with the plasma solver "
-        "(PELE_USE_PLASMA).");
+      amrex::Abort("mesh_mapping is not supported with the plasma solver "
+                   "(PELE_USE_PLASMA).");
 #endif
       if (geom[0].IsRZ()) {
-        amrex::Abort(
-          "mesh_mapping is not supported with RZ geometry "
-          "(geometry.coord_sys = 1).");
+        amrex::Abort("mesh_mapping is not supported with RZ geometry "
+                     "(geometry.coord_sys = 1).");
       }
       if (max_level > 0) {
         amrex::Print()
@@ -519,12 +517,22 @@ PeleLM::readParameters()
   if (m_incompressible != 0) {
     m_has_divu = 0;
     m_do_react = 0;
+#ifdef PELE_USE_VOF
+    // Two-phase: the phase properties are peleLM.vof.{rho,mu}_{liquid,gas};
+    // a single-phase density / viscosity would be ambiguous
+    if (pp.contains("rho") || pp.contains("mu")) {
+      amrex::Abort(
+        "peleLM.rho and peleLM.mu are not used with the VOF solver: set "
+        "peleLM.vof.rho_liquid, rho_gas, mu_liquid and mu_gas instead");
+    }
+#else
     pp.query("rho", m_rho);
     pp.query("mu", m_mu);
     AMREX_ASSERT_WITH_MESSAGE(
       m_rho > 0.0, "peleLM.rho is needed when running incompressible");
     AMREX_ASSERT_WITH_MESSAGE(
       m_mu > 0.0, "peleLM.mu is needed when running incompressible");
+#endif
   }
   amrex::Vector<amrex::Real> grav(AMREX_SPACEDIM, 0);
   pp.queryarr("gravity", grav, 0, AMREX_SPACEDIM);
@@ -768,15 +776,15 @@ PeleLM::readParameters()
     if (mgsc_size == 1) {
       int mgsc;
       pp.query("max_grid_size_chem", mgsc);
-      AMREX_D_TERM(
-        m_max_grid_size_chem[0] = mgsc;, m_max_grid_size_chem[1] = mgsc;
-        , m_max_grid_size_chem[2] = mgsc);
+      AMREX_D_TERM(m_max_grid_size_chem[0] = mgsc;
+                   , m_max_grid_size_chem[1] = mgsc;
+                   , m_max_grid_size_chem[2] = mgsc);
     } else if (mgsc_size == AMREX_SPACEDIM) {
       amrex::Vector<int> mgsc;
       pp.getarr("max_grid_size_chem", mgsc, 0, AMREX_SPACEDIM);
-      AMREX_D_TERM(
-        m_max_grid_size_chem[0] = mgsc[0];, m_max_grid_size_chem[1] = mgsc[1];
-        , m_max_grid_size_chem[2] = mgsc[2]);
+      AMREX_D_TERM(m_max_grid_size_chem[0] = mgsc[0];
+                   , m_max_grid_size_chem[1] = mgsc[1];
+                   , m_max_grid_size_chem[2] = mgsc[2]);
     } else {
       amrex::Abort(
         "peleLM.max_grid_size_chem should have 1 or AMREX_SPACEDIM values");
@@ -1003,6 +1011,11 @@ PeleLM::readParameters()
   }
 #endif
 
+#ifdef PELE_USE_VOF
+  VOFReadParameters();
+  VOFCheckSetup();
+#endif
+
 #ifdef PELE_USE_SPRAY
   SprayReadParameters();
   if (do_spray_particles && m_mesh_mapping) {
@@ -1080,10 +1093,9 @@ PeleLM::checkSetupParams()
       std::abs(
         (0.1 * eos_parms.host_parm().Pnom_cgs - prob_parm->P_mean) /
         prob_parm->P_mean) > 1e-6) {
-      amrex::Abort(
-        "For Manifold EOS, pressure in manifold model "
-        "(manifold.nominal_pressure_cgs) and pressure in PeleLMeX "
-        "(prob.Pmean) must match");
+      amrex::Abort("For Manifold EOS, pressure in manifold model "
+                   "(manifold.nominal_pressure_cgs) and pressure in PeleLMeX "
+                   "(prob.Pmean) must match");
     }
 #endif
   }
@@ -1442,15 +1454,13 @@ PeleLM::variablesSetup()
     amrex::Print() << " First ODE: " << FIRSTODE << "\n";
     ProblemSpecificFunctions::set_ode_names(m_ode_names);
     if (m_ode_names.size() != NUM_ODE) {
-      amrex::Abort(
-        "ODEQty names improperly set. Adjust set_ode_names in "
-        "ProblemSpecificFunctions or NUM_ODE in GNUMakefile");
+      amrex::Abort("ODEQty names improperly set. Adjust set_ode_names in "
+                   "ProblemSpecificFunctions or NUM_ODE in GNUMakefile");
     }
     for (int n = 0; n < NUM_ODE; ++n) {
       if (m_ode_names[n].empty()) {
-        amrex::Abort(
-          "ODEQty names improperly set. Adjust set_ode_names in "
-          "ProblemSpecificFunctions or NUM_ODE in GNUMakefile");
+        amrex::Abort("ODEQty names improperly set. Adjust set_ode_names in "
+                     "ProblemSpecificFunctions or NUM_ODE in GNUMakefile");
       }
       stateComponents.emplace_back(FIRSTODE + n, m_ode_names[n]);
     }
@@ -1885,9 +1895,8 @@ PeleLM::evaluateSetup()
   {
     amrex::Vector<std::string> var_names(
       NVAR - 2); // Skip temperature and RhoRT, unused
-    AMREX_D_TERM(
-      var_names[VELX] = "A(VELX)";, var_names[VELY] = "A(VELY)";
-      , var_names[VELZ] = "A(VELZ)");
+    AMREX_D_TERM(var_names[VELX] = "A(VELX)";, var_names[VELY] = "A(VELY)";
+                 , var_names[VELZ] = "A(VELZ)");
     var_names[DENSITY] = "A(Rho)";
     for (int n = 0; n < NUM_SPECIES; ++n) {
       var_names[FIRSTSPEC + n] = "A(" + spec_names[n] + ")";

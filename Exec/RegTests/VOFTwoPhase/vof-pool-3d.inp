@@ -1,0 +1,52 @@
+# CI: water layer tilted by 38 degrees, gravity normal to the surface, 2
+# levels.  The pool must stay at rest (free contact line at the walls)
+#----------------------- Geometry ------------------------------
+geometry.is_periodic = 0 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0 0.0 0.0
+geometry.prob_hi     = 1.0 1.0 0.5
+peleLM.lo_bc = SlipWallAdiab SlipWallAdiab SlipWallAdiab
+peleLM.hi_bc = SlipWallAdiab SlipWallAdiab SlipWallAdiab
+
+#----------------------- AMR -----------------------------------
+amr.n_cell          = 16 16 8
+amr.v               = 1
+amr.max_level       = 1
+amr.ref_ratio       = 2
+amr.regrid_int      = 4
+amr.n_error_buf     = 2
+amr.grid_eff        = 0.7
+amr.blocking_factor = 8
+amr.max_grid_size   = 16
+
+#----------------------- Problem -------------------------------
+prob.type  = pool
+prob.depth = 0.53
+prob.tilt  = 38.0
+
+#----------------------- PeleLMeX ------------------------------
+peleLM.v              = 1
+peleLM.incompressible = 1
+peleLM.vof.rho_liquid = 1000.0
+peleLM.vof.rho_gas    = 1.2
+peleLM.vof.mu_liquid  = 1.0e-3
+peleLM.vof.mu_gas     = 1.8e-5
+peleLM.gravity        = -6.03963907 -7.73038549 0.0
+peleLM.vof.v          = 1
+nodal_proj.rtol = 1.0e-10
+mac_proj.rtol   = 1.0e-10
+
+#----------------------- Time stepping -------------------------
+amr.cfl       = 0.45
+amr.dt_shrink = 1.0
+amr.init_dt   = 1.0e-3
+amr.max_dt    = 1.0e-3
+amr.max_step  = 5
+amr.stop_time = 1.0
+amr.plot_file = plt
+amr.check_int = -1
+
+#----------------------- Temporals (read by Tests/test_vof.py) -
+peleLM.do_temporals = 1
+peleLM.temporal_int = 1
+peleLM.do_extremas  = 1
