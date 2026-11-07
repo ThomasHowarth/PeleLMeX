@@ -1180,11 +1180,14 @@ public:
 
   /**
    * \brief For the closed chamber algorithm, compute averaged
-   * mac_divU and theta, update divU and the spatially averaged
-   * thermodynamic pressure. Return the mean divU.
+   * mac_divU and theta, advance the spatially averaged thermodynamic
+   * pressure, and turn mac_divu into S - theta dp0/dt (ghost cells too),
+   * which the MAC projection and the scalar prediction then both use.
    * \param advData container including mac_divu
    */
-  amrex::Real adjustPandDivU(const std::unique_ptr<AdvanceAdvData>& advData);
+  void adjustPandDivU(
+    const std::unique_ptr<AdvanceAdvData>& advData,
+    const PeleLM::TimeStamp a_time);
   //-----------------------------------------------------------------------------
 
   //-----------------------------------------------------------------------------
@@ -1339,6 +1342,10 @@ public:
     const amrex::Real a_time,
     amrex::Vector<amrex::MultiFab*> const& a_force,
     const int nGrowForce);
+  //! Ghost cells only of a divergence-like vector of MultiFabs: periodic
+  //! and coarse/fine fill from the vector itself, divu BCs at domain faces.
+  void fillpatch_divu_ghosts(
+    amrex::Vector<amrex::MultiFab*> const& a_divu, const int nGhost);
   void fillpatch_chemFunctCall(
     const int lev,
     const amrex::Real a_time,
@@ -1661,6 +1668,14 @@ public:
     const amrex::Real a_bdry_flux,
     const amrex::Real a_rhs_sign,
     const bool a_rhs_is_rz_scaled);
+  //! Diagnostic (peleLM.debug_divu_mismatch): min and max of
+  //! (a_divu - div(a_umac)) over regular, uncovered cells of level a_lev.
+  //! Skipped under mesh mapping and RZ.  No effect on the solution.
+  void checkMACDivuMismatch(
+    const int a_lev,
+    const std::string& a_who,
+    const amrex::MultiFab& a_divu,
+    const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_umac);
   //! The nodal-projection form of the check (sealed domains only).
   void checkNodalCompatibility(
     const std::string& a_who,
@@ -1678,6 +1693,11 @@ public:
   amrex::Real domainFaceFlux(
     const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
       a_umac);
+  //! Composite net outward volume flux through the embedded boundary from
+  //! the EB inflow velocity at \p a_time (zero without peleLM.EBinflow).
+  //! Same cut-cell formula as AMReX's EB divergence, so it balances the
+  //! projector's own EB term exactly.
+  amrex::Real ebInflowFlux(const PeleLM::TimeStamp a_time);
   //! (Re)build m_cellVol on level \p lev (after its metrics are defined).
   void defineCellVolume(
     const int lev,
@@ -2522,7 +2542,7 @@ public:
   int m_doLoadBalance{0};
   int m_loadBalanceCost{LoadBalanceCost::Ncell};
   int m_loadBalanceMethod{LoadBalanceMethod::SFC};
-  int m_loadBalanceCostChem{LoadBalanceCost::ChemFunctCallMax};
+  int m_loadBalanceCostChem{LoadBalanceCost::ChemFunctCallSum};
   int m_loadBalanceMethodChem{LoadBalanceMethod::Knapsack};
   amrex::Real m_loadBalanceKSfactor{1.2};
   amrex::Real m_loadBalanceEffRatioThreshold{1.1};
@@ -2552,6 +2572,8 @@ public:
   // Projection compatibility diagnostic (closed chamber only)
   int m_debug_check_compatibility = 0;
   amrex::Real m_debug_compatibility_tol = 1.0e-8;
+  // divu seen by the Godunov prediction vs div(umac), diagnostic only
+  int m_debug_divu_mismatch = 0;
 
   // Godunov is default
   std::string m_predict_advection_key = "Godunov_PLM";

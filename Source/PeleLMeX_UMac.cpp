@@ -328,10 +328,10 @@ PeleLM::macProject(
   }
 #endif
 
-  // For closed chamber, compute change in chamber pressure
-  amrex::Real Sbar = 0.0;
+  // For closed chamber, compute change in chamber pressure and turn
+  // a_divu (= advData->mac_divu) into S - theta dp0/dt, which it keeps.
   if ((m_closed_chamber != 0) && (m_incompressible == 0)) {
-    Sbar = adjustPandDivU(advData);
+    adjustPandDivU(advData, a_time);
   }
 
   //-------------------------------------------------------------------
@@ -415,7 +415,9 @@ PeleLM::macProject(
     checkProjectionCompatibility(
       "MAC projection",
       m_mesh_mapping ? divu_for_proj : GetVecOfConstPtrs(a_divu),
-      domainFaceFlux(GetVecOfArrOfConstPtrs(advData->umac)), -1.0, false);
+      domainFaceFlux(GetVecOfArrOfConstPtrs(advData->umac)) +
+        ebInflowFlux(a_time),
+      -1.0, false);
   }
 
   // set MAC velocity and projection RHS
@@ -445,7 +447,7 @@ PeleLM::macProject(
   if (!m_mlmg_fail_plt_residuals) {
     macproj->project(m_mac_mg_rtol, m_mac_mg_atol);
   } else {
-    macproj->getMLMG().setThrowException(true);
+    macproj->setThrowException(true);
     macproj->getMLMG().setConvergenceNormType(amrex::MLMGNormType::bnorm);
 
     // Maximum MLMG iterations may change for debugging purposes
@@ -477,13 +479,6 @@ PeleLM::macProject(
       WriteMLMGResidual(mlmg, phi_ptrs, rhs_ptrs, "mac_projection", m_nstep);
 
       amrex::Abort("MLMG solve for mac_projection failed");
-    }
-  }
-
-  // Restore mac_divu
-  if ((m_closed_chamber != 0) && (m_incompressible == 0)) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      a_divu[lev]->plus(Sbar, 0, 1);
     }
   }
 
