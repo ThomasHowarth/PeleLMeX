@@ -1,7 +1,6 @@
 #include <PeleLMeX.H>
 #include <PeleLMeX_BCfill.H>
 #include <PeleLMeX_VOF_K.H>
-#include <PeleLMeX_VOF_Unsplit_K.H>
 #include <AMReX_FillPatchUtil.H>
 #include <AMReX_MultiFabUtil.H>
 
@@ -312,7 +311,7 @@ PeleLM::getVOFSharpFaceDensity(const int lev, const TimeStamp a_time)
 // is the integral over the flux volume, each piece carrying the velocity at t^n
 // of the cell it lies in: a flux volume reaches beyond the upwind cell, and a
 // single upwind velocity would hand its momentum to the wrong mass.  Those
-// fluxes come from the cuts of the VOF step (see VOFUnsplitFluxes).  Away from
+// fluxes come from the cuts of the VOF step (see VOFFluxes).  Away from
 // the interface u_f is the Godunov face state.  Coarse faces under fine faces
 // take the average of the fine fluxes per unit area, so the composite update is
 // conservative.
@@ -692,7 +691,7 @@ PeleLM::VOFVelocityProjection(const int a_initPress, const amrex::Real a_dt)
 }
 
 //-----------------------------------------------------------------------------
-// Advection: unsplit geometric fluxes (Owkes & Desjardins, JCP 270, 2014) with
+// Advection: geometric unsplit fluxes (Owkes & Desjardins, JCP 270, 2014) with
 // PLIC reconstruction.  All levels advance with the same dt; fine face fluxes
 // are averaged onto the coarse faces before the update, so the composite update
 // conserves volume across coarse/fine boundaries.
@@ -746,7 +745,7 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
   if (with_mom) {
     advData->vof_momflux.resize(finest_level + 1);
   }
-  VOFUnsplitStep(
+  VOFAdvectStep(
     umac, advData->vof_lflux, with_mom ? &advData->vof_momflux : nullptr);
 
   if (m_vof_verbose > 0) {
@@ -774,25 +773,25 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
 }
 
 //-----------------------------------------------------------------------------
-// One unsplit geometric step of the volume fraction in the new state: each face
+// One geometric step of the volume fraction in the new state: each face
 // carries the liquid inside its flux volume, built from the mesh nodes traced
-// back along the flow (see PeleLMeX_VOF_Unsplit_K.H).  a_flux is the liquid
+// back along the flow (see PeleLMeX_VOF_K.H).  a_flux is the liquid
 // crossing each face per unit face area: fine faces are averaged onto the
 // coarse faces below them, which conserves the volume across coarse/fine
 // boundaries. The flux volumes do not tile across those boundaries, which the
 // tagging keeps in pure cells.
 //-----------------------------------------------------------------------------
 void
-PeleLM::VOFUnsplitStep(
+PeleLM::VOFAdvectStep(
   const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
     a_umac,
   amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_flux,
   amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>* a_momflux)
 {
-  BL_PROFILE("PeleLMeX::VOFUnsplitStep()");
+  BL_PROFILE("PeleLMeX::VOFAdvectStep()");
 
   for (int lev = 0; lev <= finest_level; ++lev) {
-    VOFUnsplitFluxes(
+    VOFFluxes(
       lev, a_umac[lev], a_flux[lev],
       (a_momflux != nullptr) ? &(*a_momflux)[lev] : nullptr);
   }
@@ -835,7 +834,7 @@ PeleLM::VOFUnsplitStep(
 }
 
 void
-PeleLM::VOFUnsplitFluxes(
+PeleLM::VOFFluxes(
   const int lev,
   const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_umac,
   amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& flux,
@@ -928,7 +927,7 @@ PeleLM::VOFUnsplitFluxes(
         xm[d] -= 0.5 * vel(i, j, k, d);
       }
       amrex::Real um[3] = {0.0, 0.0, 0.0};
-      pelelmex::vof::unsplit::interp_node_velocity(xm, vel, lim, um);
+      pelelmex::vof::interp_node_velocity(xm, vel, lim, um);
       for (int d = 0; d < 3; ++d) {
         bk(i, j, k, d) = x[d] - um[d];
       }
@@ -1002,7 +1001,7 @@ PeleLM::VOFUnsplitFluxes(
             amrex::Real m = 0.0;
             amrex::Real p[AMREX_SPACEDIM];
             amrex::Real l = 0.0;
-            pelelmex::vof::unsplit::face_mass_momentum_flux(
+            pelelmex::vof::face_mass_momentum_flux(
               i, j, k, dir, courant, F, pl, bk, vl, cells, rho_l, rho_g, m, p,
               l);
             fl(i, j, k) = dx * l;
@@ -1011,7 +1010,7 @@ PeleLM::VOFUnsplitFluxes(
               mfx(i, j, k, 1 + n) = p[n];
             }
           } else {
-            fl(i, j, k) = dx * pelelmex::vof::unsplit::face_liquid_flux(
+            fl(i, j, k) = dx * pelelmex::vof::face_liquid_flux(
                                  i, j, k, dir, courant, F, pl, bk, cells);
           }
         });

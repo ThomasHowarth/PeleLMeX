@@ -961,14 +961,14 @@ public:
   void setVOFBoundaryConditions();
   void initLevelVOF(const int lev);
   void advanceVOF(std::unique_ptr<AdvanceAdvData>& advData);
-  // One unsplit geometric advection step (Owkes & Desjardins, JCP 270, 2014)
-  void VOFUnsplitStep(
+  // One geometric advection step (Owkes & Desjardins, JCP 270, 2014)
+  void VOFAdvectStep(
     const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
       a_umac,
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_flux,
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>* a_momflux);
-  // Liquid crossing the faces of one level in an unsplit step
-  void VOFUnsplitFluxes(
+  // Liquid crossing the faces of one level in a step
+  void VOFFluxes(
     const int lev,
     const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_umac,
     amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& flux,

@@ -28,8 +28,7 @@ step, and how far the volume fraction leaves [0, 1].
 
 ## Expected results
 
-Results are for the default unsplit advection.  Liquid volume is conserved to
-round-off (relative change per step of order 1e-15 or below) in all cases, with
+Liquid volume is conserved to round-off (relative change per step of order 1e-15 or below) in all cases, with
 and without AMR, and the volume fraction leaves [0, 1] by round-off only.  A
 restarted Zalesak run with 3 levels reproduces the composite solution of a
 continuous run exactly, although the plotfiles can differ in their box layout;
