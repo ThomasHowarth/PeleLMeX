@@ -409,7 +409,9 @@ uses the face velocity, which can be larger; a run stops if the face Courant
 number reaches 1. The flux volumes do not tile across coarse/fine
 boundaries, so the interface is always tagged up to the finest level. The current
 implementation requires ``peleLM.incompressible = 1``, uniform cubic cells (no
-``geometry.mesh_mapping``) and no embedded boundaries.
+``geometry.mesh_mapping``) and no embedded boundaries: building with both
+``USE_VOF`` and ``USE_EB`` is a compile error, because the contact angle at an
+embedded boundary is not defined yet.
 
 The density and viscosity are fields derived from the volume fraction,
 :math:`\rho = F \rho_l + (1 - F) \rho_g` and either the arithmetic
