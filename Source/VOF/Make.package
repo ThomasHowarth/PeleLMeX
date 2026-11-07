@@ -5,7 +5,6 @@
 
 ## Header
 CEXE_headers += PeleLMeX_VOF_K.H
-CEXE_headers += PeleLMeX_VOF_Unsplit_K.H
 
 ## Sources
 CEXE_sources += PeleLMeX_VOF.cpp
