@@ -309,13 +309,6 @@ public:
       uDrift; // ions drift face velocity
 #endif
 #ifdef PELE_USE_VOF
-    // VOF split sweeps, replayed by the momentum advection: face mass
-    // crossing in each sweep per unit area [sweep][lev] (on the faces normal
-    // to vof_sweep_dir[sweep]), and the frozen c = H(F - 1/2) of each
-    // sub-step [substep][lev]
-    amrex::Vector<amrex::Vector<amrex::MultiFab>> vof_mflux;
-    amrex::Vector<int> vof_sweep_dir;
-    amrex::Vector<amrex::Vector<amrex::MultiFab>> vof_cmask;
     amrex::Real vof_dt_sub = 0.0;
     // VOF unsplit steps, for the momentum advection: liquid crossing each face
     // per unit area [substep][lev][dir], and at the start of each sub-step
@@ -974,13 +967,6 @@ public:
   void setVOFBoundaryConditions();
   void initLevelVOF(const int lev);
   void advanceVOF(std::unique_ptr<AdvanceAdvData>& advData);
-  void VOFSplitSweep(
-    const int dir,
-    const amrex::Real a_dt,
-    const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
-      a_umac,
-    const amrex::Vector<amrex::MultiFab>& a_cmask,
-    amrex::Vector<amrex::MultiFab>& a_mflux);
   // One unsplit geometric advection step (Owkes & Desjardins, JCP 270, 2014)
   void VOFUnsplitStep(
     const amrex::Real a_dt,
@@ -999,14 +985,9 @@ public:
     amrex::MultiFab& plane,
     amrex::MultiFab& back,
     amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>* a_momflux);
-  // Conservative momentum advection term: the VOF split sweeps replayed on
-  // the momentum with the sweep face mass fluxes and the face velocity states
+  // Conservative momentum advection term, with the mass the VOF flux volumes
+  // carry
   void VOFMomentumAdvTerm(
-    const std::unique_ptr<AdvanceAdvData>& advData,
-    const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>&
-      a_faces);
-  // The same with the fluxes of the unsplit steps
-  void VOFMomentumAdvTermUnsplit(
     const std::unique_ptr<AdvanceAdvData>& advData,
     const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>&
       a_faces);
@@ -1086,7 +1067,6 @@ public:
   // skip the momentum update
   int m_vof_advect_only = 0;
   // Advection scheme: unsplit geometric fluxes (1) or split sweeps (0)
-  int m_vof_unsplit = 0;
   //-----------------------------------------------------------------------------
 #endif
 #ifdef PELE_USE_SOOT

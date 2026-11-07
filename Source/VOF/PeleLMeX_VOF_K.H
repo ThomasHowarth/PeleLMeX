@@ -8,9 +8,6 @@
 // the liquid).  Normals come from the Mixed Youngs-Centered scheme
 // (Aulisa et al., JCP 225, 2007) and the volume <-> plane-constant
 // relations are the analytic ones of Scardovelli & Zaleski (JCP 164, 2000).
-// Advection is the directionally split Eulerian-implicit scheme of
-// Weymouth & Yue (JCP 229, 2010), which conserves volume to round-off for a
-// discretely divergence-free face velocity.
 //
 // Ported from Kynema-SGF (formerly AMR-Wind), src/equation_systems/vof,
 // BSD 3-Clause License, Copyright (c) 2020, Alliance for Energy Innovation
@@ -554,57 +551,6 @@ fit_plane(
   // Back from the reflected (all positive) frame to the cell frame
   alpha +=
     amrex::min(0.0_rt, mx) + amrex::min(0.0_rt, my) + amrex::min(0.0_rt, mz);
-}
-
-/**
- * \brief Liquid fraction of the volume swept through the low face of cell
- *        (i,j,k) in direction dir during one split sweep, given the face
- *        Courant number a = u_face * dt / dx.  The swept region lies in the
- *        upwind cell.
- */
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real
-swept_fraction(
-  const int i,
-  const int j,
-  const int k,
-  const int dir,
-  const amrex::Real a,
-  amrex::Array4<amrex::Real const> const& F)
-{
-  amrex::ignore_unused(k);
-  if (a == 0.0_rt) {
-    return 0.0_rt;
-  }
-  const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
-  const amrex::IntVect up =
-    (a > 0.0_rt) ? iv - amrex::IntVect::TheDimensionVector(dir) : iv;
-#if AMREX_SPACEDIM == 2
-  const int iu = up[0], ju = up[1], ku = 0;
-#else
-  const int iu = up[0], ju = up[1], ku = up[2];
-#endif
-  const amrex::Real Fu = F(iu, ju, ku);
-  if (Fu <= vof_tol) {
-    return 0.0_rt;
-  }
-  if (Fu >= 1.0_rt - vof_tol) {
-    return 1.0_rt;
-  }
-
-  amrex::Real mx, my, mz, alpha;
-  fit_plane(iu, ju, ku, F, mx, my, mz, alpha);
-
-  // Positive velocity sweeps the high end [1-a, 1] of the upwind cell,
-  // negative velocity the low end [0, -a]
-  const amrex::Real r0 = (a > 0.0_rt) ? 1.0_rt - a : 0.0_rt;
-  const amrex::Real dr0 = std::abs(a);
-  if (dir == 0) {
-    return cut_volume(mx, my, mz, alpha, r0, dr0);
-  }
-  if (dir == 1) {
-    return cut_volume(my, mz, mx, alpha, r0, dr0);
-  }
-  return cut_volume(mz, mx, my, alpha, r0, dr0);
 }
 
 /**

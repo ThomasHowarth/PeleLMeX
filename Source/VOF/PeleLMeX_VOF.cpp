@@ -31,15 +31,6 @@ PeleLM::VOFReadParameters()
   pp.query("refine_band", m_vof_refine_band);
   pp.query("v", m_vof_verbose);
   pp.query("advect_only", m_vof_advect_only);
-  std::string advection = "unsplit";
-  pp.query("advection", advection);
-  if (advection == "unsplit") {
-    m_vof_unsplit = 1;
-  } else if (advection == "split") {
-    m_vof_unsplit = 0;
-  } else {
-    amrex::Abort("peleLM.vof.advection must be 'split' or 'unsplit'");
-  }
 
   // Required: peleLM.rho / peleLM.mu are rejected with the VOF solver
   pp.get("rho_liquid", m_vof_rho_liq);
@@ -75,15 +66,8 @@ PeleLM::VOFReadParameters()
       "peleLM.vof.refine_band cannot exceed the number of state ghost cells (" +
       std::to_string(m_nGrowState) + ")");
   }
-  if (m_vof_unsplit != 0) {
-    if (m_vof_cfl <= 0.0 || m_vof_cfl >= 1.0) {
-      amrex::Abort(
-        "peleLM.vof.cfl must be in (0, 1): the unsplit advection is explicit");
-    }
-  } else if (m_vof_cfl <= 0.0 || m_vof_cfl > 0.5) {
-    amrex::Abort(
-      "peleLM.vof.cfl must be in (0, 0.5]: the split PLIC advection is "
-      "only bounded and conservative for a per-sweep Courant number <= 0.5");
+  if (m_vof_cfl <= 0.0 || m_vof_cfl >= 1.0) {
+    amrex::Abort("peleLM.vof.cfl must be in (0, 1): the advection is explicit");
   }
 }
 
@@ -99,14 +83,12 @@ PeleLM::VOFCheckSetup()
       "The VOF solver does not support geometry.mesh_mapping: the PLIC "
       "reconstruction assumes uniform cubic cells.");
   }
-  if (m_vof_unsplit != 0) {
-    // The flux volumes do not tile across coarse/fine boundaries, which must
-    // stay in pure cells
-    if (m_vof_refine_maxlev >= 0 && m_vof_refine_maxlev < max_level) {
-      amrex::Abort(
-        "peleLM.vof.advection = unsplit requires the interface on "
-        "the finest level (peleLM.vof.refine_max_level).");
-    }
+  // The flux volumes do not tile across coarse/fine boundaries, which must
+  // stay in pure cells
+  if (m_vof_refine_maxlev >= 0 && m_vof_refine_maxlev < max_level) {
+    amrex::Abort(
+      "The VOF advection requires the interface on the finest level "
+      "(peleLM.vof.refine_max_level).");
   }
 #ifdef AMREX_USE_EB
   amrex::Abort("The VOF solver does not support embedded boundaries yet.");
@@ -328,194 +310,9 @@ PeleLM::getVOFSharpFaceDensity(const int lev, const TimeStamp a_time)
 }
 
 //-----------------------------------------------------------------------------
-// Momentum advection consistent with the VOF mass transport (Rudman 1998; in
-// the split form of Arrufat et al., JCP 2021): the VOF split sweeps are
-// replayed on the mixture density and the momentum with the sweep face mass
-// fluxes m_f,
-//   rho'     = rho     - (m_hi - m_lo) / dx           + rho_c (a_hi - a_lo),
-//   (rho u)' = (rho u) - (m_hi u_hi - m_lo u_lo) / dx + rho_c u_c (a_hi -
-//   a_lo),
-// with a = u dt / dx the face Courant number, rho_c the phase density of
-// c = H(F - 1/2) and u_c the velocity, both frozen over each (sub-)step.
-// rho' is then the mixture density of the swept F, the dilatation terms
-// vanish over the sweeps of a (sub-)step for a divergence-free umac, and a
-// uniform velocity stays uniform across the interface.
-// Within one cell of the interface u_f is the upwind *intermediate* cell
-// velocity (the upwind Favre flux of Kynema-SGF), bounded by the cell values
-// where a higher-order state, multiplied by the liquid mass flux, could
-// overshoot.  Liquid that crosses a gas cell within a step (in through one
-// face in one sweep, out through another in the next) leaves with the
-// velocity it came in with; upwinding with the t^n velocities instead charges
-// it with the gas velocity, an error amplified by rho_l / rho_g.  Elsewhere
-// u_f is the Godunov face velocity.
-// Intermediate velocities are exchanged between fine-fine and periodic ghost
-// cells after each sweep; coarse/fine and physical ghost cells keep t^n (the
-// interface band is refined away from coarse/fine boundaries, and the wall
-// mass fluxes vanish).  Coarse faces under fine faces take the average of the
-// fine momentum fluxes, so the composite update is conservative.
-// The result is returned as the advection term
-// AofS = (u** - u^n) / dt (updateVelocity adds dt AofS).
-//-----------------------------------------------------------------------------
-void
-PeleLM::VOFMomentumAdvTerm(
-  const std::unique_ptr<AdvanceAdvData>& advData,
-  const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_faces)
-{
-  BL_PROFILE("PeleLMeX::VOFMomentumAdvTerm()");
-
-  if (m_vof_unsplit != 0) {
-    VOFMomentumAdvTermUnsplit(advData, a_faces);
-    return;
-  }
-
-  const amrex::Real rho_l = m_vof_rho_liq;
-  const amrex::Real rho_g = m_vof_rho_gas;
-  const amrex::Real dt_sub = advData->vof_dt_sub;
-  const int nsweep = static_cast<int>(advData->vof_sweep_dir.size());
-  AMREX_ALWAYS_ASSERT(
-    nsweep == static_cast<int>(advData->vof_cmask.size()) * AMREX_SPACEDIM);
-
-  // Working mixture density and momentum, and the velocity with the upwind
-  // ghost layer; u_c is the velocity at the start of each (sub-)step
-  amrex::Vector<amrex::MultiFab> vof(finest_level + 1);
-  amrex::Vector<amrex::MultiFab> rho(finest_level + 1);
-  amrex::Vector<amrex::MultiFab> mom(finest_level + 1);
-  amrex::Vector<amrex::MultiFab> vel(finest_level + 1);
-  amrex::Vector<amrex::MultiFab> velc(finest_level + 1);
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    vof[lev].define(grids[lev], dmap[lev], 1, 2);
-    fillpatch_vof(lev, getTime(lev, AmrOldTime), vof[lev], 2);
-    rho[lev].define(grids[lev], dmap[lev], 1, 0);
-    mom[lev].define(grids[lev], dmap[lev], AMREX_SPACEDIM, 0);
-    vel[lev].define(grids[lev], dmap[lev], AMREX_SPACEDIM, 1);
-    velc[lev].define(grids[lev], dmap[lev], AMREX_SPACEDIM, 0);
-    amrex::MultiFab::Copy(
-      vel[lev], getLevelDataPtr(lev, AmrOldTime)->state, VELX, 0,
-      AMREX_SPACEDIM, 1);
-    auto const& vof_ma = vof[lev].const_arrays();
-    auto const& rho_ma = rho[lev].arrays();
-    auto const& mom_ma = mom[lev].arrays();
-    auto const& vel_ma = vel[lev].const_arrays();
-    amrex::ParallelFor(
-      rho[lev], [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
-        const amrex::Real r =
-          pelelmex::vof::mixture_density(vof_ma[box_no](i, j, k), rho_l, rho_g);
-        rho_ma[box_no](i, j, k) = r;
-        for (int n = 0; n < AMREX_SPACEDIM; ++n) {
-          mom_ma[box_no](i, j, k, n) = r * vel_ma[box_no](i, j, k, n);
-        }
-      });
-  }
-  amrex::Gpu::streamSynchronize();
-
-  for (int isweep = 0; isweep < nsweep; ++isweep) {
-    const int dir = advData->vof_sweep_dir[isweep];
-    const int isub = isweep / AMREX_SPACEDIM;
-    const amrex::IntVect e = amrex::IntVect::TheDimensionVector(dir);
-    if (isweep % AMREX_SPACEDIM == 0) {
-      for (int lev = 0; lev <= finest_level; ++lev) {
-        amrex::MultiFab::Copy(velc[lev], vel[lev], 0, 0, AMREX_SPACEDIM, 0);
-      }
-    }
-
-    // Momentum fluxes m_f u_f of this sweep
-    amrex::Vector<amrex::MultiFab> momflux(finest_level + 1);
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      const auto& mflux = advData->vof_mflux[isweep][lev];
-      momflux[lev].define(
-        mflux.boxArray(), dmap[lev], AMREX_SPACEDIM, 0, amrex::MFInfo(),
-        Factory(lev));
-      auto const& p_ma = momflux[lev].arrays();
-      auto const& m_ma = mflux.const_arrays();
-      auto const& face_ma = a_faces[lev][dir].const_arrays();
-      auto const& umac_ma = advData->umac[lev][dir].const_arrays();
-      auto const& vof_ma = vof[lev].const_arrays();
-      auto const& vel_ma = vel[lev].const_arrays();
-      amrex::ParallelFor(
-        momflux[lev], amrex::IntVect(0), AMREX_SPACEDIM,
-        [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
-          const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
-          const amrex::IntVect ivm = iv - e;
-          amrex::Real uf = face_ma[box_no](iv, n);
-          if (
-            pelelmex::vof::interface_band(i, j, k, vof_ma[box_no]) ||
-            pelelmex::vof::interface_band(
-              i - e[0], j - e[1], k - AMREX_D_PICK(0, 0, e[2]),
-              vof_ma[box_no])) {
-            uf = (umac_ma[box_no](iv) >= 0.0) ? vel_ma[box_no](ivm, n)
-                                              : vel_ma[box_no](iv, n);
-          }
-          p_ma[box_no](iv, n) = m_ma[box_no](iv) * uf;
-        });
-    }
-    amrex::Gpu::streamSynchronize();
-    for (int lev = finest_level; lev > 0; --lev) {
-      amrex::average_down_faces(
-        momflux[lev], momflux[lev - 1], refRatio(lev - 1), geom[lev - 1]);
-    }
-
-    // Sweep update
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      const amrex::Real dxinv = geom[lev].InvCellSize(dir);
-      const amrex::Real dtdx = dt_sub * dxinv;
-      auto const& m_ma = advData->vof_mflux[isweep][lev].const_arrays();
-      auto const& p_ma = momflux[lev].const_arrays();
-      auto const& umac_ma = advData->umac[lev][dir].const_arrays();
-      auto const& c_ma = advData->vof_cmask[isub][lev].const_arrays();
-      auto const& rho_ma = rho[lev].arrays();
-      auto const& mom_ma = mom[lev].arrays();
-      auto const& vel_ma = vel[lev].arrays();
-      auto const& velc_ma = velc[lev].const_arrays();
-      amrex::ParallelFor(
-        rho[lev],
-        [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
-          amrex::ignore_unused(k);
-          const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
-          const amrex::IntVect ivp = iv + e;
-          const amrex::Real dil =
-            (umac_ma[box_no](ivp) - umac_ma[box_no](iv)) * dtdx;
-          const amrex::Real rho_c = (c_ma[box_no](iv) > 0.5) ? rho_l : rho_g;
-          const amrex::Real r = rho_ma[box_no](iv) -
-                                (m_ma[box_no](ivp) - m_ma[box_no](iv)) * dxinv +
-                                rho_c * dil;
-          rho_ma[box_no](iv) = r;
-          for (int n = 0; n < AMREX_SPACEDIM; ++n) {
-            const amrex::Real mn =
-              mom_ma[box_no](iv, n) -
-              (p_ma[box_no](ivp, n) - p_ma[box_no](iv, n)) * dxinv +
-              rho_c * velc_ma[box_no](iv, n) * dil;
-            mom_ma[box_no](iv, n) = mn;
-            vel_ma[box_no](iv, n) = mn / r;
-          }
-        });
-    }
-    amrex::Gpu::streamSynchronize();
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      vel[lev].FillBoundary(
-        0, AMREX_SPACEDIM, amrex::IntVect(1), geom[lev].periodicity());
-    }
-  }
-
-  const amrex::Real dt = m_dt;
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    auto const& aofs_ma = advData->AofS[lev].arrays();
-    auto const& vel_ma = vel[lev].const_arrays();
-    auto const& velo_ma =
-      getLevelDataPtr(lev, AmrOldTime)->state.const_arrays();
-    amrex::ParallelFor(
-      vel[lev], amrex::IntVect(0), AMREX_SPACEDIM,
-      [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
-        aofs_ma[box_no](i, j, k, VELX + n) =
-          (vel_ma[box_no](i, j, k, n) - velo_ma[box_no](i, j, k, VELX + n)) /
-          dt;
-      });
-  }
-  amrex::Gpu::streamSynchronize();
-}
-
-//-----------------------------------------------------------------------------
-// Momentum advection with the fluxes of the unsplit VOF steps.  Each sub-step
-// carries the mass that the flux volumes carry,
+// Momentum advection consistent with the VOF mass transport (Rudman 1998), with
+// the fluxes of the VOF steps.  Each sub-step carries the mass that the flux
+// volumes carry,
 //   m_f = rho_g C_f + (rho_l - rho_g) L_f   (per cell volume)
 // with C_f the face Courant number and L_f the liquid crossing the face, so
 //   rho' = rho - sum (m_hi - m_lo),  (rho u)' = (rho u) - sum (m_hi u_hi - m_lo
@@ -528,12 +325,16 @@ PeleLM::VOFMomentumAdvTerm(
 // the fine fluxes per unit area, so the composite update is conservative.  With
 // AMR there is one sub-step, whose fluxes use the velocity at t^n with its
 // coarse/fine ghost cells (see advanceVOF).
+// The result is returned as the advection term
+// AofS = (u** - u^n) / dt (updateVelocity adds dt AofS).
 //-----------------------------------------------------------------------------
 void
-PeleLM::VOFMomentumAdvTermUnsplit(
+PeleLM::VOFMomentumAdvTerm(
   const std::unique_ptr<AdvanceAdvData>& advData,
   const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_faces)
 {
+  BL_PROFILE("PeleLMeX::VOFMomentumAdvTerm()");
+
   const amrex::Real rho_l = m_vof_rho_liq;
   const amrex::Real rho_g = m_vof_rho_gas;
   const amrex::Real dt_sub = advData->vof_dt_sub;
@@ -944,19 +745,10 @@ PeleLM::VOFVelocityProjection(const int a_initPress, const amrex::Real a_dt)
 }
 
 //-----------------------------------------------------------------------------
-// Advection: Weymouth & Yue (2010) Eulerian-implicit split sweeps with PLIC
-// fluxes.  Each sweep i updates
-//   F <- F + (flux_lo - flux_hi) / dx + c * (a_hi - a_lo)
-// where flux = u dt * (liquid fraction of the swept volume) is the liquid
-// volume crossing the face per unit face area, a = u dt / dx is the face
-// Courant number and c = H(F^n - 1/2) is frozen over the step.  Storing the
-// flux per unit area (a length) makes it level independent, so the fine
-// fluxes can be averaged onto the coarse faces.
-// The dilatation terms c * d(a)/dx sum to c * div(u) dt = 0 over the sweeps,
-// so the update is conservative for a discretely divergence-free umac.
-// All levels advance with the same dt; fine face fluxes are averaged onto
-// the coarse faces before each update, so the composite update conserves
-// volume across coarse/fine boundaries.
+// Advection: unsplit geometric fluxes (Owkes & Desjardins, JCP 270, 2014) with
+// PLIC reconstruction.  All levels advance with the same dt; fine face fluxes
+// are averaged onto the coarse faces before the update, so the composite update
+// conserves volume across coarse/fine boundaries.
 //-----------------------------------------------------------------------------
 void
 PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
@@ -970,7 +762,7 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
   fillPatchVOF(AmrNewTime);
 
   // Largest face velocity / dx.  The step is estimated from the
-  // cell-centered velocity at t^n, while the sweeps use the face velocity at
+  // cell-centered velocity at t^n, while the advection uses the face velocity at
   // t^{n+1/2}, which can be larger
   amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>> umac(
     finest_level + 1);
@@ -985,18 +777,16 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
   }
   amrex::ParallelDescriptor::ReduceRealMax(umac_rate);
 
-  // The split sweeps keep F in [0,1] for a per-sweep Courant number of at
-  // most 1/2: sub-step the advection when the face velocity exceeds it.
-  // TODO: remove the sub-stepping with the split scheme.  The unsplit scheme
-  // stays bounded and conservative without it for a Courant number below 1, but
-  // would then need a guard against a Courant number of 1 or more
+  // Sub-step the advection on one level above a Courant number of 1/2.
+  // TODO: remove the sub-stepping: without it the advection stays bounded and
+  // conservative for a Courant number below 1
   const amrex::Real courant_max = umac_rate * m_dt;
-  // The unsplit scheme on AMR already takes a single step
-  const bool single_step = (m_vof_unsplit != 0) && (max_level > 0);
+  // AMR already takes a single step
+  const bool single_step = (max_level > 0);
   if (single_step && courant_max >= 1.0) {
     amrex::Abort(
-      "VOF: peleLM.vof.advection = unsplit with AMR requires a face Courant "
-      "number below 1: reduce the time step.");
+      "VOF: the advection requires a face Courant number below 1: reduce the "
+      "time step.");
   }
   const int nsub =
     single_step ? 1
@@ -1007,79 +797,38 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
   }
   const amrex::Real dt_sub = m_dt / static_cast<amrex::Real>(nsub);
 
-  // Sweep mass fluxes and c masks are kept for the momentum advection, which
-  // replays the sweeps (VOFMomentumAdvTerm)
   advData->vof_dt_sub = dt_sub;
-  advData->vof_mflux.clear();
-  advData->vof_sweep_dir.clear();
-  advData->vof_cmask.clear();
   advData->vof_lflux.clear();
   advData->vof_fstart.clear();
   advData->vof_plane.clear();
   advData->vof_back.clear();
   advData->vof_momflux.clear();
-  if (m_vof_unsplit == 0) {
-    advData->vof_cmask.resize(nsub);
-  } else {
-    advData->vof_lflux.resize(nsub);
-    advData->vof_fstart.resize(nsub);
-    advData->vof_plane.resize(nsub);
-    advData->vof_back.resize(nsub);
-  }
+  advData->vof_lflux.resize(nsub);
+  advData->vof_fstart.resize(nsub);
+  advData->vof_plane.resize(nsub);
+  advData->vof_back.resize(nsub);
   for (int isub = 0; isub < nsub; ++isub) {
-    if (m_vof_unsplit != 0) {
-      // F with the two ghost layers of the interface band of the momentum
-      // advection, at the start of this sub-step
-      auto& fstart = advData->vof_fstart[isub];
-      fstart.resize(finest_level + 1);
-      for (int lev = 0; lev <= finest_level; ++lev) {
-        fstart[lev].define(grids[lev], dmap[lev], 1, 2);
-        amrex::MultiFab::Copy(
-          fstart[lev], m_leveldata_new[lev]->vof, 0, 0, 1, 2);
-      }
-      advData->vof_lflux[isub].resize(finest_level + 1);
-      advData->vof_plane[isub].resize(finest_level + 1);
-      advData->vof_back[isub].resize(finest_level + 1);
-      // With one sub-step the momentum advection starts from the velocity known
-      // here, and its fluxes near the interface can reuse these cuts
-      const bool with_mom = (nsub == 1) && (m_vof_advect_only == 0);
-      if (with_mom) {
-        advData->vof_momflux.resize(finest_level + 1);
-      }
-      VOFUnsplitStep(
-        dt_sub, umac, advData->vof_lflux[isub], advData->vof_plane[isub],
-        advData->vof_back[isub], with_mom ? &advData->vof_momflux : nullptr);
-      continue;
-    }
-
-    // c = H(F - 1/2) frozen over the (sub-)step
-    auto& cmask = advData->vof_cmask[isub];
-    cmask.resize(finest_level + 1);
+    // F with the two ghost layers of the interface band of the momentum
+    // advection, at the start of this sub-step
+    auto& fstart = advData->vof_fstart[isub];
+    fstart.resize(finest_level + 1);
     for (int lev = 0; lev <= finest_level; ++lev) {
-      cmask[lev].define(grids[lev], dmap[lev], 1, 0);
-      auto const& c_ma = cmask[lev].arrays();
-      auto const& vof_ma = m_leveldata_new[lev]->vof.const_arrays();
-      amrex::ParallelFor(
-        cmask[lev], [c_ma, vof_ma] AMREX_GPU_DEVICE(
-                      int box_no, int i, int j, int k) noexcept {
-          c_ma[box_no](i, j, k) = (vof_ma[box_no](i, j, k) > 0.5) ? 1.0 : 0.0;
-        });
+      fstart[lev].define(grids[lev], dmap[lev], 1, 2);
+      amrex::MultiFab::Copy(
+        fstart[lev], m_leveldata_new[lev]->vof, 0, 0, 1, 2);
     }
-    amrex::Gpu::streamSynchronize();
-
-    // Cycle the sweep ordering from one step to the next to avoid a
-    // directional bias; tied to the step number so that restarts reproduce
-    // it (m_nstep is -1 during the initial iterations)
-    const int step = amrex::max(m_nstep, 0) + isub;
-    for (int s = 0; s < AMREX_SPACEDIM; ++s) {
-      const int dir = (step + s) % AMREX_SPACEDIM;
-      auto& mflux = advData->vof_mflux.emplace_back(finest_level + 1);
-      advData->vof_sweep_dir.push_back(dir);
-      for (int lev = 0; lev <= finest_level; ++lev) {
-        mflux[lev].define(advData->umac[lev][dir].boxArray(), dmap[lev], 1, 0);
-      }
-      VOFSplitSweep(dir, dt_sub, umac, cmask, mflux);
+    advData->vof_lflux[isub].resize(finest_level + 1);
+    advData->vof_plane[isub].resize(finest_level + 1);
+    advData->vof_back[isub].resize(finest_level + 1);
+    // With one sub-step the momentum advection starts from the velocity known
+    // here, and its fluxes near the interface can reuse these cuts
+    const bool with_mom = (nsub == 1) && (m_vof_advect_only == 0);
+    if (with_mom) {
+      advData->vof_momflux.resize(finest_level + 1);
     }
+    VOFUnsplitStep(
+      dt_sub, umac, advData->vof_lflux[isub], advData->vof_plane[isub],
+      advData->vof_back[isub], with_mom ? &advData->vof_momflux : nullptr);
   }
 
   if (m_vof_verbose > 0) {
@@ -1360,120 +1109,6 @@ PeleLM::VOFUnsplitFluxes(
     flux[dir].OverrideSync(periodicity);
   }
   amrex::Gpu::streamSynchronize();
-}
-
-void
-PeleLM::VOFSplitSweep(
-  const int dir,
-  const amrex::Real a_dt,
-  const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
-    a_umac,
-  const amrex::Vector<amrex::MultiFab>& a_cmask,
-  amrex::Vector<amrex::MultiFab>& a_mflux)
-{
-  BL_PROFILE("PeleLMeX::VOFSplitSweep()");
-
-  const amrex::Real dt = a_dt;
-
-  // Liquid volume crossing each face per unit face area
-  amrex::Vector<amrex::MultiFab> flux(finest_level + 1);
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    const amrex::Real dtdx = dt * geom[lev].InvCellSize(dir);
-    flux[lev].define(
-      amrex::convert(grids[lev], amrex::IntVect::TheDimensionVector(dir)),
-      dmap[lev], 1, 0);
-    auto const& flux_ma = flux[lev].arrays();
-    auto const& umac_ma = a_umac[lev][dir]->const_arrays();
-    auto const& vof_ma = m_leveldata_new[lev]->vof.const_arrays();
-    amrex::ParallelFor(
-      flux[lev], [flux_ma, umac_ma, vof_ma, dt, dtdx, dir] AMREX_GPU_DEVICE(
-                   int box_no, int i, int j, int k) noexcept {
-        const amrex::Real u = umac_ma[box_no](i, j, k);
-        flux_ma[box_no](i, j, k) =
-          u * dt *
-          pelelmex::vof::swept_fraction(i, j, k, dir, u * dtdx, vof_ma[box_no]);
-      });
-  }
-  amrex::Gpu::streamSynchronize();
-
-  // Coarse faces under fine faces take the fine-face average
-  for (int lev = finest_level; lev > 0; --lev) {
-    amrex::average_down_faces(
-      flux[lev], flux[lev - 1], refRatio(lev - 1), geom[lev - 1]);
-  }
-
-  // Mass crossing each face in this sweep: the gas fills the swept volume
-  // not occupied by liquid.  With the dilatation term rho_c (a_hi - a_lo),
-  // rho_c = rho_l c + rho_g (1 - c), the sweep mass fluxes reproduce the
-  // mixture density of the swept F
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    auto const& m_ma = a_mflux[lev].arrays();
-    auto const& flux_ma = flux[lev].const_arrays();
-    auto const& umac_ma = a_umac[lev][dir]->const_arrays();
-    amrex::ParallelFor(
-      a_mflux[lev],
-      [m_ma, flux_ma, umac_ma, dt, rho_g = m_vof_rho_gas,
-       drho =
-         m_vof_rho_liq -
-         m_vof_rho_gas] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
-        m_ma[box_no](i, j, k) = rho_g * umac_ma[box_no](i, j, k) * dt +
-                                drho * flux_ma[box_no](i, j, k);
-      });
-  }
-
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    const amrex::Real dxinv = geom[lev].InvCellSize(dir);
-    const amrex::Real dtdx = dt * dxinv;
-    const amrex::IntVect e = amrex::IntVect::TheDimensionVector(dir);
-    auto const& flux_ma = flux[lev].const_arrays();
-    auto const& umac_ma = a_umac[lev][dir]->const_arrays();
-    auto const& c_ma = a_cmask[lev].const_arrays();
-    auto const& vof_ma = m_leveldata_new[lev]->vof.arrays();
-    // Volume removed by clipping to [0,1], kept for diagnostics
-    amrex::MultiFab clipped(grids[lev], dmap[lev], 1, 0);
-    auto const& clip_ma = clipped.arrays();
-    amrex::ParallelFor(
-      a_cmask[lev],
-      [flux_ma, umac_ma, c_ma, vof_ma, clip_ma, dxinv, dtdx,
-       e] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
-        amrex::ignore_unused(k);
-        const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
-        const amrex::IntVect ivp = iv + e;
-        const amrex::Real a_lo = umac_ma[box_no](iv) * dtdx;
-        const amrex::Real a_hi = umac_ma[box_no](ivp) * dtdx;
-        amrex::Real& F = vof_ma[box_no](iv);
-        F += (flux_ma[box_no](iv) - flux_ma[box_no](ivp)) * dxinv +
-             c_ma[box_no](iv) * (a_hi - a_lo);
-        const amrex::Real Fc =
-          amrex::Clamp(F, amrex::Real(0.0), amrex::Real(1.0));
-        clip_ma[box_no](iv) = F - Fc;
-        F = Fc;
-      });
-    // Clipping only compensates round-off when the sweeps are bounded
-    // (per-sweep Courant number <= 1/2, divergence-free umac): report
-    // anything larger.  Covered cells are overwritten by the average down.
-    if (lev < finest_level) {
-      auto const& mask_ma = m_coveredMask[lev]->const_arrays();
-      amrex::ParallelFor(
-        clipped, [clip_ma, mask_ma] AMREX_GPU_DEVICE(
-                   int box_no, int i, int j, int k) noexcept {
-          clip_ma[box_no](i, j, k) *=
-            static_cast<amrex::Real>(mask_ma[box_no](i, j, k));
-        });
-    }
-    const amrex::Real clip_max = clipped.norm0();
-    if (clip_max > 1.0e-12) {
-      const amrex::Real cellvol = AMREX_D_TERM(
-        geom[lev].CellSize(0), *geom[lev].CellSize(1), *geom[lev].CellSize(2));
-      amrex::Print() << "   VOF: WARNING sweep " << dir << " level " << lev
-                     << " clipped volume " << clipped.sum() * cellvol
-                     << " (max cell " << clip_max << ")\n";
-    }
-  }
-  amrex::Gpu::streamSynchronize();
-
-  averageDownVOF(AmrNewTime);
-  fillPatchVOF(AmrNewTime);
 }
 
 //-----------------------------------------------------------------------------
