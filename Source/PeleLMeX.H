@@ -309,17 +309,11 @@ public:
       uDrift; // ions drift face velocity
 #endif
 #ifdef PELE_USE_VOF
-    amrex::Real vof_dt_sub = 0.0;
-    // VOF unsplit steps, for the momentum advection: liquid crossing each face
-    // per unit area [substep][lev][dir], and at the start of each sub-step
-    // [substep][lev] F, the PLIC planes and the traced mesh nodes
-    amrex::Vector<
-      amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>>
-      vof_lflux;
-    amrex::Vector<amrex::Vector<amrex::MultiFab>> vof_fstart;
-    amrex::Vector<amrex::Vector<amrex::MultiFab>> vof_plane;
-    amrex::Vector<amrex::Vector<amrex::MultiFab>> vof_back;
-    // With one sub-step: mass and momentum crossing the faces near the
+    // VOF step, for the momentum advection: liquid crossing each face per unit
+    // area [lev][dir] and F at the start of the step [lev]
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> vof_lflux;
+    amrex::Vector<amrex::MultiFab> vof_fstart;
+    // Mass and momentum crossing the faces near the
     // interface, per cell volume, from the cuts of the VOF step [lev][dir]
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> vof_momflux;
 #endif
@@ -969,21 +963,15 @@ public:
   void advanceVOF(std::unique_ptr<AdvanceAdvData>& advData);
   // One unsplit geometric advection step (Owkes & Desjardins, JCP 270, 2014)
   void VOFUnsplitStep(
-    const amrex::Real a_dt,
     const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
       a_umac,
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_flux,
-    amrex::Vector<amrex::MultiFab>& a_plane,
-    amrex::Vector<amrex::MultiFab>& a_back,
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>* a_momflux);
   // Liquid crossing the faces of one level in an unsplit step
   void VOFUnsplitFluxes(
     const int lev,
-    const amrex::Real a_dt,
     const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_umac,
     amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& flux,
-    amrex::MultiFab& plane,
-    amrex::MultiFab& back,
     amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>* a_momflux);
   // Conservative momentum advection term, with the mass the VOF flux volumes
   // carry

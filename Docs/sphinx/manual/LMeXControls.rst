@@ -405,8 +405,8 @@ velocity, including across coarse/fine boundaries, and the volume fraction is no
 clipped or limited: it leaves [0, 1] only by the round-off of the fluxes. The
 advection is explicit, so the face Courant number must stay below 1. The time
 step uses the cell-centered velocity (``peleLM.vof.cfl``), while the advection
-uses the face velocity, which can be larger; with AMR, a run stops if the face
-Courant number reaches 1. The flux volumes do not tile across coarse/fine
+uses the face velocity, which can be larger; a run stops if the face Courant
+number reaches 1. The flux volumes do not tile across coarse/fine
 boundaries, so the interface must stay on the finest level
 (``peleLM.vof.refine_max_level`` cannot be below ``amr.max_level``). The current
 implementation requires ``peleLM.incompressible = 1``, uniform cubic cells (no
