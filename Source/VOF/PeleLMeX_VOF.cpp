@@ -343,7 +343,6 @@ PeleLM::VOFMomentumAdvTerm(
       const auto& lflux = advData->vof_lflux[lev][dir];
       mflux[lev].define(lflux.boxArray(), dmap[lev], 1, 0);
       pflux[lev].define(lflux.boxArray(), dmap[lev], AMREX_SPACEDIM, 0);
-      auto const& F_mf = m_leveldata_old[lev]->vof;
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
 #endif
@@ -354,15 +353,12 @@ PeleLM::VOFMomentumAdvTerm(
         auto const& lf = lflux.const_array(mfi);
         auto const& um = advData->umac[lev][dir].const_array(mfi);
         auto const& face = a_faces[lev][dir].const_array(mfi);
-        auto const& F = F_mf.const_array(mfi);
+        auto const& bd = advData->vof_band[lev].const_array(mfi);
         auto const& mfx = advData->vof_momflux[lev][dir].const_array(mfi);
         amrex::ParallelFor(
           fbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
             const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
-            if (
-              pelelmex::vof::interface_band(i, j, k, F) ||
-              pelelmex::vof::interface_band(
-                i - e[0], j - e[1], k - AMREX_D_PICK(0, 0, e[2]), F)) {
+            if (bd(iv) != 0 || bd(iv - e) != 0) {
               mf(iv) = dx * mfx(iv, 0);
               for (int n = 0; n < AMREX_SPACEDIM; ++n) {
                 pf(iv, n) = dx * mfx(iv, 1 + n);
@@ -684,7 +680,9 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
   advData->vof_lflux.resize(finest_level + 1);
   // The fluxes of the momentum advection near the interface use the same cuts
   advData->vof_momflux.resize(finest_level + 1);
-  VOFAdvectStep(umac, advData->vof_lflux, advData->vof_momflux);
+  advData->vof_band.resize(finest_level + 1);
+  VOFAdvectStep(
+    umac, advData->vof_lflux, advData->vof_momflux, advData->vof_band);
 
   if (m_vof_verbose > 0) {
     const amrex::Real vol_new = VOFLiquidVolume(AmrNewTime);
@@ -724,12 +722,13 @@ PeleLM::VOFAdvectStep(
   const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
     a_umac,
   amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_flux,
-  amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_momflux)
+  amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_momflux,
+  amrex::Vector<amrex::iMultiFab>& a_band)
 {
   BL_PROFILE("PeleLMeX::VOFAdvectStep()");
 
   for (int lev = 0; lev <= finest_level; ++lev) {
-    VOFFluxes(lev, a_umac[lev], a_flux[lev], a_momflux[lev]);
+    VOFFluxes(lev, a_umac[lev], a_flux[lev], a_momflux[lev], a_band[lev]);
   }
   for (int lev = finest_level; lev > 0; --lev) {
     for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
@@ -775,7 +774,8 @@ PeleLM::VOFFluxes(
   const int lev,
   const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_umac,
   amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& flux,
-  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& momflux)
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& momflux,
+  amrex::iMultiFab& band)
 {
   BL_PROFILE("PeleLMeX::VOFFluxes()");
   const amrex::Box& domain = geom[lev].Domain();
@@ -896,6 +896,20 @@ PeleLM::VOFFluxes(
     });
   }
 
+  // Cells near the interface, shared with the momentum advection
+  band.define(grids[lev], dmap[lev], 1, 1);
+  {
+    auto const& band_ma = band.arrays();
+    auto const& vof_ma = vof.const_arrays();
+    amrex::ParallelFor(
+      band, amrex::IntVect(1),
+      [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+        band_ma[box_no](i, j, k) = static_cast<int>(
+          pelelmex::vof::interface_band(i, j, k, vof_ma[box_no]));
+      });
+    amrex::Gpu::streamSynchronize();
+  }
+
   // Liquid crossing each face per unit face area.  Near the interface it comes
   // from the cuts of the flux volume, with the mass and momentum.  Away from it
   // the flux volume, which stays in the cells around the face for a Courant
@@ -923,15 +937,15 @@ PeleLM::VOFFluxes(
       auto const& pl = plane.const_array(mfi);
       auto const& bk = back.const_array(mfi);
       auto const& mfx = momflux[dir].array(mfi);
+      auto const& bd = band.const_array(mfi);
       const amrex::Array4<amrex::Real const> vl(
         state_old.const_array(mfi), VELX);
       amrex::ParallelFor(
         fbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
           const amrex::Real courant = um(i, j, k) * dtdx;
           if (
-            pelelmex::vof::interface_band(i, j, k, F) ||
-            pelelmex::vof::interface_band(
-              i - e[0], j - e[1], k - AMREX_D_PICK(0, 0, e[2]), F)) {
+            bd(i, j, k) != 0 ||
+            bd(i - e[0], j - e[1], k - AMREX_D_PICK(0, 0, e[2])) != 0) {
             amrex::Real m = 0.0;
             amrex::Real p[AMREX_SPACEDIM];
             amrex::Real l = 0.0;

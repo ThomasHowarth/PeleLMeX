@@ -312,6 +312,8 @@ public:
     // VOF step, for the momentum advection: liquid crossing each face per unit
     // area [lev][dir]
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> vof_lflux;
+    // Cells near the interface at the start of the step, with a ghost layer
+    amrex::Vector<amrex::iMultiFab> vof_band;
     // Mass and momentum crossing the faces near the
     // interface, per cell volume, from the cuts of the VOF step [lev][dir]
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> vof_momflux;
@@ -966,13 +968,15 @@ public:
     const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
       a_umac,
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_flux,
-    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_momflux);
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_momflux,
+    amrex::Vector<amrex::iMultiFab>& a_band);
   // Liquid crossing the faces of one level in a step
   void VOFFluxes(
     const int lev,
     const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_umac,
     amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& flux,
-    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& momflux);
+    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& momflux,
+    amrex::iMultiFab& band);
   // Conservative momentum advection term, with the mass the VOF flux volumes
   // carry
   void VOFMomentumAdvTerm(
