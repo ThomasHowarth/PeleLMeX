@@ -958,7 +958,10 @@ PeleLM::advanceVOF(std::unique_ptr<AdvanceAdvData>& advData)
   amrex::ParallelDescriptor::ReduceRealMax(umac_rate);
 
   // The split sweeps keep F in [0,1] for a per-sweep Courant number of at
-  // most 1/2: sub-step the advection when the face velocity exceeds it
+  // most 1/2: sub-step the advection when the face velocity exceeds it.
+  // TODO: remove the sub-stepping with the split scheme.  The unsplit scheme
+  // stays bounded and conservative without it for a Courant number below 1, but
+  // would then need a guard against a Courant number of 1 or more
   const amrex::Real courant_max = umac_rate * m_dt;
   const int nsub =
     amrex::max(1, static_cast<int>(std::ceil(courant_max / 0.5)));
