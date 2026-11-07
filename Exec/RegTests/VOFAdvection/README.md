@@ -24,26 +24,25 @@ mpirun -np 4 ./PeleLMeX2d.gnu.MPI.ex input.2d-zalesak
 ```
 
 `peleLM.vof.v = 1` prints the liquid volume and its relative change every
-step.  The sweeps keep the volume fraction in [0, 1] up to round-off; any
-volume removed by clipping it on uncovered cells is reported as a warning
-whatever the verbosity.
+step, and how far the volume fraction leaves [0, 1].
 
 ## Expected results
 
-Liquid volume is conserved to round-off (relative change per step of order
-1e-16) in all cases, with and without AMR, and no volume is clipped.
-Checkpoint restarts of the prescribed-velocity cases reproduce continuous
-runs bit for bit; with a projected velocity they agree to the linear solver
-tolerance.
+Results are for the default unsplit advection.  Liquid volume is conserved to
+round-off (relative change per step of order 1e-15 or below) in all cases, with
+and without AMR, and the volume fraction leaves [0, 1] by round-off only.  A
+restarted Zalesak run with 3 levels reproduces the composite solution of a
+continuous run exactly, although the plotfiles can differ in their box layout;
+with a projected velocity restarts agree to the linear solver tolerance.
 
 L1 shape error `sum |F(T) - F(0)| dV` on uniform grids (`amr.max_level = 0`;
 single vortex with `amr.fixed_dt = 0.5/n`):
 
 | n     | Zalesak  | order | single vortex | order |
 |-------|----------|-------|---------------|-------|
-| 64²   | 3.13e-3  |       | 1.93e-3       |       |
-| 128²  | 1.06e-3  | 1.56  | 4.87e-4       | 1.99  |
-| 256²  | 4.83e-4  | 1.14  | 1.43e-4       | 1.77  |
+| 64²   | 2.96e-3  |       | 1.87e-3       |       |
+| 128²  | 1.03e-3  | 1.52  | 4.68e-4       | 2.00  |
+| 256²  | 4.68e-4  | 1.14  | 1.39e-4       | 1.75  |
 
 The single vortex converges at close to second order; Zalesak's disk is
 limited to about first order by the unresolved slot corners, as expected
@@ -53,7 +52,7 @@ for PLIC schemes.
 
 The `vof-*.inp` inputs are short versions of these cases registered with
 CTest when configuring with `-DPELE_ENABLE_VOF=ON` (`ctest -L vof`).
-`Tests/test_vof.py` checks physical invariants rather than gold files: no
-clipping, liquid volume conserved to 1e-13 per step, and for
-`vof-translate-2d`, a velocity that stays exactly uniform while the
-advection is sub-stepped.
+`Tests/test_vof.py` checks physical invariants rather than gold files: liquid
+volume conserved to 1e-13 per step, the volume fraction within 1e-9 of [0, 1],
+and for `vof-translate-2d`, a velocity that stays exactly uniform.
+`vof-translate-split-2d` covers the split scheme and its sub-stepping.
