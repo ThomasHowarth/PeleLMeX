@@ -1,3 +1,9 @@
+// How the interface meets complex geometry (the contact angle at an embedded
+// boundary) is not defined yet
+#ifdef AMREX_USE_EB
+#error "The VOF solver does not support embedded boundaries"
+#endif
+
 #include <PeleLMeX.H>
 #include <PeleLMeX_BCfill.H>
 #include <PeleLMeX_K.H>
@@ -83,9 +89,6 @@ PeleLM::VOFCheckSetup()
       "The VOF solver does not support geometry.mesh_mapping: the PLIC "
       "reconstruction assumes uniform cubic cells.");
   }
-#ifdef AMREX_USE_EB
-  amrex::Abort("The VOF solver does not support embedded boundaries yet.");
-#endif
 }
 
 void
