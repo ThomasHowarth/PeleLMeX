@@ -476,6 +476,90 @@ flux_volume_tets(
 }
 
 /**
+ * \brief Whether the cells [lo, hi], limited to bx, are all gas or all liquid.
+ *
+ * \return true if they are pure, with a_liquid set to 1 or 0 accordingly
+ */
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE bool
+pure_cells(
+  const int* lo,
+  const int* hi,
+  amrex::Array4<amrex::Real const> const& F,
+  const amrex::Box& bx,
+  bool& a_liquid) noexcept
+{
+  const auto blo = amrex::lbound(bx);
+  const auto bhi = amrex::ubound(bx);
+  bool all_gas = true;
+  bool all_liq = true;
+#if AMREX_SPACEDIM == 2
+  const int klo = 0;
+  const int khi = 0;
+#else
+  const int klo = amrex::Clamp(lo[2], blo.z, bhi.z);
+  const int khi = amrex::Clamp(hi[2], blo.z, bhi.z);
+#endif
+  const int ilo = amrex::Clamp(lo[0], blo.x, bhi.x);
+  const int ihi = amrex::Clamp(hi[0], blo.x, bhi.x);
+  const int jlo = amrex::Clamp(lo[1], blo.y, bhi.y);
+  const int jhi = amrex::Clamp(hi[1], blo.y, bhi.y);
+  for (int kk = klo; kk <= khi; ++kk) {
+    for (int jj = jlo; jj <= jhi; ++jj) {
+      for (int ii = ilo; ii <= ihi; ++ii) {
+        const amrex::Real f = F(ii, jj, kk);
+        all_gas = all_gas && (f <= vof_tol);
+        all_liq = all_liq && (f >= 1.0_rt - vof_tol);
+      }
+      if (!all_gas && !all_liq) {
+        return false;
+      }
+    }
+  }
+  a_liquid = all_liq;
+  return true;
+}
+
+/**
+ * \brief Whether a flux volume lies in pure cells only, from its bounding box:
+ *        it then needs no cutting.
+ *
+ * \param liquid its signed liquid volume, if so
+ */
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE bool
+pure_flux_volume(
+  const Tet* tets,
+  const int ntet,
+  const amrex::Real courant,
+  amrex::Array4<amrex::Real const> const& F,
+  const amrex::Box& bx,
+  amrex::Real& liquid) noexcept
+{
+  amrex::Real pmin[3] = {
+    tets[0].v[0].x[0], tets[0].v[0].x[1], tets[0].v[0].x[2]};
+  amrex::Real pmax[3] = {pmin[0], pmin[1], pmin[2]};
+  for (int n = 0; n < ntet; ++n) {
+    for (const auto& vert : tets[n].v) {
+      for (int d = 0; d < 3; ++d) {
+        pmin[d] = amrex::min(pmin[d], vert.x[d]);
+        pmax[d] = amrex::max(pmax[d], vert.x[d]);
+      }
+    }
+  }
+  int lo[3];
+  int hi[3];
+  for (int d = 0; d < 3; ++d) {
+    lo[d] = static_cast<int>(std::floor(pmin[d]));
+    hi[d] = static_cast<int>(std::floor(pmax[d]));
+  }
+  bool is_liquid = false;
+  if (!pure_cells(lo, hi, F, bx, is_liquid)) {
+    return false;
+  }
+  liquid = is_liquid ? courant : 0.0_rt;
+  return true;
+}
+
+/**
  * \brief Signed liquid volume, in cell volumes, crossing the low face of cell
  *        (i,j,k) in direction dir, positive along +dir.
  *
@@ -496,61 +580,27 @@ face_liquid_flux(
   amrex::Array4<amrex::Real const> const& back,
   const amrex::Box& bx) noexcept
 {
+  // Most faces are far from the interface: at a Courant number of at most 1/2
+  // the flux volume stays in the cells around the face, so that they need no
+  // geometry at all
+  int lo[3] = {i - 1, j - 1, k - 1};
+  int hi[3] = {i + 1, j + 1, k + 1};
+  lo[dir] -= 1;
+  bool is_liquid = false;
+  if (pure_cells(lo, hi, F, bx, is_liquid)) {
+    return is_liquid ? courant : 0.0_rt;
+  }
+
   Tet tets[max_flux_tets];
   const int ntet = flux_volume_tets(i, j, k, dir, courant, back, tets);
 
   // Signed liquid volume: each tetrahedron carries the sign of its volume,
   // and its pieces are unsigned (Sec. 3.2.3).  A flux volume entirely within
   // pure cells needs no cutting.
-  amrex::Real pmin[3] = {
-    tets[0].v[0].x[0], tets[0].v[0].x[1], tets[0].v[0].x[2]};
-  amrex::Real pmax[3] = {pmin[0], pmin[1], pmin[2]};
-  for (int n = 0; n < ntet; ++n) {
-    for (const auto& vert : tets[n].v) {
-      for (int d = 0; d < 3; ++d) {
-        pmin[d] = amrex::min(pmin[d], vert.x[d]);
-        pmax[d] = amrex::max(pmax[d], vert.x[d]);
-      }
-    }
-  }
-  const auto blo = amrex::lbound(bx);
-  const auto bhi = amrex::ubound(bx);
-  const int ilo =
-    amrex::Clamp(static_cast<int>(std::floor(pmin[0])), blo.x, bhi.x);
-  const int ihi =
-    amrex::Clamp(static_cast<int>(std::floor(pmax[0])), blo.x, bhi.x);
-  const int jlo =
-    amrex::Clamp(static_cast<int>(std::floor(pmin[1])), blo.y, bhi.y);
-  const int jhi =
-    amrex::Clamp(static_cast<int>(std::floor(pmax[1])), blo.y, bhi.y);
-#if AMREX_SPACEDIM == 2
-  const int klo = 0;
-  const int khi = 0;
-#else
-  const int klo =
-    amrex::Clamp(static_cast<int>(std::floor(pmin[2])), blo.z, bhi.z);
-  const int khi =
-    amrex::Clamp(static_cast<int>(std::floor(pmax[2])), blo.z, bhi.z);
-#endif
-  bool all_gas = true;
-  bool all_liq = true;
-  for (int kk = klo; kk <= khi; ++kk) {
-    for (int jj = jlo; jj <= jhi; ++jj) {
-      for (int ii = ilo; ii <= ihi; ++ii) {
-        const amrex::Real f = F(ii, jj, kk);
-        all_gas = all_gas && (f <= vof_tol);
-        all_liq = all_liq && (f >= 1.0_rt - vof_tol);
-      }
-    }
-  }
-  if (all_gas) {
-    return 0.0_rt;
-  }
-  if (all_liq) {
-    return courant;
-  }
-
   amrex::Real liquid = 0.0_rt;
+  if (pure_flux_volume(tets, ntet, courant, F, bx, liquid)) {
+    return liquid;
+  }
   for (int n = 0; n < ntet; ++n) {
     const Tet& t = tets[n];
     const amrex::Real v = signed_volume(t.v[0], t.v[1], t.v[2], t.v[3]);
@@ -573,6 +623,7 @@ face_liquid_flux(
  * \param bx   cells where F, plane and vel are valid
  * \param mass signed mass crossing the face
  * \param mom  signed momentum crossing the face
+ * \param liquid signed liquid volume crossing the face, as in face_liquid_flux
  */
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void
 face_mass_momentum_flux(
@@ -589,10 +640,14 @@ face_mass_momentum_flux(
   const amrex::Real rho_l,
   const amrex::Real rho_g,
   amrex::Real& mass,
-  amrex::Real* mom) noexcept
+  amrex::Real* mom,
+  amrex::Real& liquid) noexcept
 {
   Tet tets[max_flux_tets];
   const int ntet = flux_volume_tets(i, j, k, dir, courant, back, tets);
+  amrex::Real pure_liquid = 0.0_rt;
+  const bool pure = pure_flux_volume(tets, ntet, courant, F, bx, pure_liquid);
+  liquid = 0.0_rt;
   mass = 0.0_rt;
   for (int n = 0; n < AMREX_SPACEDIM; ++n) {
     mom[n] = 0.0_rt;
@@ -604,17 +659,23 @@ face_mass_momentum_flux(
       continue;
     }
     const amrex::Real s = (v > 0.0_rt) ? 1.0_rt : -1.0_rt;
+    amrex::Real tet_liquid = 0.0_rt;
     for_each_cell_piece(
       tet, bx,
       [&](
         const Tet& t, const amrex::Real vol, int ci, int cj, int ck) noexcept {
         const amrex::Real l = piece_liquid(t, vol, ci, cj, ck, F, plane);
+        tet_liquid += l;
         const amrex::Real m = s * (rho_l * l + rho_g * (vol - l));
         mass += m;
         for (int d = 0; d < AMREX_SPACEDIM; ++d) {
           mom[d] += m * vel(ci, cj, ck, d);
         }
       });
+    liquid += s * tet_liquid;
+  }
+  if (pure) {
+    liquid = pure_liquid;
   }
 }
 
