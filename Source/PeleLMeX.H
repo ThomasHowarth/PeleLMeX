@@ -326,6 +326,9 @@ public:
     amrex::Vector<amrex::Vector<amrex::MultiFab>> vof_fstart;
     amrex::Vector<amrex::Vector<amrex::MultiFab>> vof_plane;
     amrex::Vector<amrex::Vector<amrex::MultiFab>> vof_back;
+    // With one sub-step: mass and momentum crossing the faces near the
+    // interface, per cell volume, from the cuts of the VOF step [lev][dir]
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> vof_momflux;
 #endif
   };
   //-----------------------------------------------------------------------------
@@ -985,7 +988,8 @@ public:
       a_umac,
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_flux,
     amrex::Vector<amrex::MultiFab>& a_plane,
-    amrex::Vector<amrex::MultiFab>& a_back);
+    amrex::Vector<amrex::MultiFab>& a_back,
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>* a_momflux);
   // Liquid crossing the faces of one level in an unsplit step
   void VOFUnsplitFluxes(
     const int lev,
@@ -993,7 +997,8 @@ public:
     const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_umac,
     amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& flux,
     amrex::MultiFab& plane,
-    amrex::MultiFab& back);
+    amrex::MultiFab& back,
+    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>* a_momflux);
   // Conservative momentum advection term: the VOF split sweeps replayed on
   // the momentum with the sweep face mass fluxes and the face velocity states
   void VOFMomentumAdvTerm(
