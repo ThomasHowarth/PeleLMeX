@@ -310,9 +310,8 @@ public:
 #endif
 #ifdef PELE_USE_VOF
     // VOF step, for the momentum advection: liquid crossing each face per unit
-    // area [lev][dir] and F at the start of the step [lev]
+    // area [lev][dir]
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> vof_lflux;
-    amrex::Vector<amrex::MultiFab> vof_fstart;
     // Mass and momentum crossing the faces near the
     // interface, per cell volume, from the cuts of the VOF step [lev][dir]
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> vof_momflux;
