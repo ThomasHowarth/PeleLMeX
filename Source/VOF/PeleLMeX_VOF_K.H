@@ -659,39 +659,41 @@ plane_fraction(
 }
 
 /**
- * \brief Volume fraction of the ghost cell g beyond a wall normal to dir, by
- *        extending the PLIC plane of the interior interface: a free contact
- *        line, exact for a planar interface and for one uniform normal to the
- *        wall.  Used when the interface meets
- *        the wall within nsearch cells (tangentially) of g.  The plane is
- *        that of the nearest interface cell, 1 to hf_half layers inside the
- *        wall, whose reconstruction does not read ghost cells: height
- *        columns normal to the wall reach hf_half cells, the other stencils
- *        one.  With nsearch = 8 such a plane exists for contact angles
- *        down to about 20 degrees from the wall.  Below, if allow_ghost, the
- *        nearest interface cell of layers 0 to hf_half is used although its
- *        reconstruction reads the current ghost values: iterating the fill
- *        converges to the extended plane, which is a fixed point.
- *        Otherwise the wall-adjacent value is copied (90 degrees).
+ * \brief The PLIC plane that the ghost cells beyond the wall cell iv_w extend,
+ *        when the interface meets the wall within wall_nsearch cells
+ *        (tangentially) of iv_w: a free contact line, exact for a planar
+ *        interface and for one uniform normal to the wall.  The plane is that
+ * of the nearest interface cell, 1 to hf_half layers inside the wall, whose
+ *        reconstruction does not read ghost cells: height columns normal to the
+ *        wall reach hf_half cells, the other stencils one.  With nsearch = 8
+ * such a plane exists for contact angles down to about 20 degrees from the
+ *        wall.  Below, if allow_ghost, the nearest interface cell of layers 0
+ * to hf_half is used although its reconstruction reads the current ghost
+ *        values: iterating the fill converges to the extended plane, which is a
+ *        fixed point.
+ *
  * \param iwall index along dir of the wall-adjacent interior cell
  * \param sgn   -1 for a low wall, +1 for a high wall
  * \param limit cells of F that hold data and may be searched
+ * \param ref   the cell the plane belongs to
+ * \return false if there is no such plane
  */
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real
-wall_ghost_fraction(
-  const amrex::IntVect& g,
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE bool
+wall_contact_plane(
+  const amrex::IntVect& iv_w,
   const int dir,
   const int iwall,
   const int sgn,
   const amrex::Box& limit,
   amrex::Array4<amrex::Real const> const& F,
-  const bool allow_ghost)
+  const bool allow_ghost,
+  amrex::IntVect& ref,
+  amrex::Real* m,
+  amrex::Real& alpha)
 {
   constexpr int nsearch = wall_nsearch;
   constexpr int nfar = 1000;
   const amrex::Box rbox = amrex::grow(limit, -hf_half);
-  amrex::IntVect iv_w = g;
-  iv_w[dir] = iwall;
 
   const auto is_mixed = [&F](const amrex::IntVect& c) {
     const amrex::Real f = F(c);
@@ -710,23 +712,8 @@ wall_ghost_fraction(
   const int b_hi = off_hi[2];
 #endif
 
-  // Most ghost cells are far from any contact line: no search for those
-  bool contact = false;
-  for (int b = b_lo; b <= b_hi && !contact; ++b) {
-    for (int a1 = off_lo[1]; a1 <= off_hi[1] && !contact; ++a1) {
-      for (int a0 = off_lo[0]; a0 <= off_hi[0] && !contact; ++a0) {
-        const amrex::IntVect cw =
-          iv_w + amrex::IntVect(AMREX_D_DECL(a0, a1, b));
-        contact = limit.contains(cw) && is_mixed(cw);
-      }
-    }
-  }
-  if (!contact) {
-    return F(iv_w);
-  }
-
   int ref_dist = nfar;
-  amrex::IntVect ref = iv_w;
+  ref = iv_w;
   // Fallback reading ghost cells
   int any_dist = nfar;
   amrex::IntVect any_ref = iv_w;
@@ -778,18 +765,39 @@ wall_ghost_fraction(
     ref = any_ref;
   }
   if (ref_dist == nfar) {
-    return F(iv_w);
+    return false;
   }
 
-  amrex::Real m[3] = {0.0_rt, 0.0_rt, 0.0_rt};
-  amrex::Real alpha = 0.0_rt;
+  m[0] = 0.0_rt;
+  m[1] = 0.0_rt;
+  m[2] = 0.0_rt;
+  alpha = 0.0_rt;
   const auto cell = ref.dim3();
   fit_plane(cell.x, cell.y, cell.z, F, m[0], m[1], m[2], alpha);
-  // Plane constant in the unit-cube coordinates of g and of the wall cell.  The
-  // ghost takes the change of the plane's volume from the wall cell: the same
-  // as the plane's volume at g for a planar interface, and the value of the
-  // wall cell where the plane does not vary across the wall, whichever cell the
-  // plane comes from, so that a flow uniform normal to the wall stays uniform.
+  return true;
+}
+
+/**
+ * \brief Volume fraction of the ghost cell g beyond the wall cell iv_w, from
+ * the plane (m, alpha) of cell ref (see wall_contact_plane).  The ghost takes
+ *        the change of the plane's volume from the wall cell: the same as the
+ *        plane's volume at g for a planar interface, and the value of the wall
+ *        cell where the plane does not vary across the wall, whichever cell the
+ *        plane comes from, so that a flow uniform normal to the wall stays
+ *        uniform.
+ *
+ * \param F_w volume fraction of the wall cell
+ */
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real
+wall_ghost_fraction(
+  const amrex::IntVect& g,
+  const amrex::IntVect& iv_w,
+  const amrex::IntVect& ref,
+  const amrex::Real* m,
+  const amrex::Real alpha,
+  const amrex::Real F_w)
+{
+  // Plane constant in the unit-cube coordinates of g and of the wall cell
   amrex::Real alpha_g = alpha;
   amrex::Real alpha_w = alpha;
   for (int d = 0; d < AMREX_SPACEDIM; ++d) {
@@ -798,7 +806,7 @@ wall_ghost_fraction(
   }
   const amrex::Real V_g = cut_volume(m[0], m[1], m[2], alpha_g, 0.0_rt, 1.0_rt);
   const amrex::Real V_w = cut_volume(m[0], m[1], m[2], alpha_w, 0.0_rt, 1.0_rt);
-  return amrex::Clamp(F(iv_w) + V_g - V_w, 0.0_rt, 1.0_rt);
+  return amrex::Clamp(F_w + V_g - V_w, 0.0_rt, 1.0_rt);
 }
 
 /**

@@ -1387,15 +1387,15 @@ PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
       amrex::Gpu::streamSynchronize();
       amrex::ParallelDescriptor::ReduceIntMax(wall_contact);
 
+      // Passes beyond the first can read ghost values, the same way each time:
+      // once one changes nothing, neither would the next.
       const int wall_npass = (wall_contact != 0) ? npass : 1;
       for (int pass = 0; pass < wall_npass; ++pass) {
         if (wall_contact != 0) {
           amrex::MultiFab::Copy(snap, work, 0, 0, 1, nread);
         }
         const bool allow_ghost = (pass > 0);
-#ifdef AMREX_USE_OMP
-#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
-#endif
+        int changed = 0;
         for (amrex::MFIter mfi(work); mfi.isValid(); ++mfi) {
           const amrex::Box gbx = beyond_wall(mfi.validbox(), dir, sgn);
           if (!gbx.ok()) {
@@ -1405,19 +1405,67 @@ PeleLM::VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost)
           auto const& F = work.array(mfi);
           auto const& S = snap.const_array(mfi);
           auto const& N = near[mfi].const_array();
-          const bool any_near = (wall_contact != 0);
-          amrex::ParallelFor(
-            gbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+
+          // One plane for each wall cell, shared by the ghost cells beyond it
+          amrex::Box wbx = mfi.validbox();
+          wbx.setRange(dir, iwall);
+          amrex::FArrayBox plane(wbx, 8, amrex::The_Async_Arena());
+          auto const& PL = plane.array();
+          if (wall_contact != 0) {
+            amrex::ParallelFor(
+              wbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                const amrex::IntVect iv_w(AMREX_D_DECL(i, j, k));
+                amrex::IntVect ref = iv_w;
+                amrex::Real m[3] = {0.0, 0.0, 0.0};
+                amrex::Real alpha = 0.0;
+                const bool found =
+                  (N(iv_w) != 0) && pelelmex::vof::wall_contact_plane(
+                                      iv_w, dir, iwall, sgn, limit, S,
+                                      allow_ghost, ref, m, alpha);
+                PL(i, j, k, 0) = found ? 1.0 : 0.0;
+                for (int n = 0; n < 3; ++n) {
+                  PL(i, j, k, 1 + n) = m[n];
+                }
+                PL(i, j, k, 4) = alpha;
+                for (int n = 0; n < AMREX_SPACEDIM; ++n) {
+                  PL(i, j, k, 5 + n) = static_cast<amrex::Real>(ref[n]);
+                }
+              });
+          } else {
+            plane.setVal<amrex::RunOn::Device>(0.0);
+          }
+
+          amrex::ReduceOps<amrex::ReduceOpMax> reduce_op;
+          amrex::ReduceData<int> reduce_data(reduce_op);
+          reduce_op.eval(
+            gbx, reduce_data,
+            [=] AMREX_GPU_DEVICE(int i, int j, int k) -> amrex::GpuTuple<int> {
               const amrex::IntVect g(AMREX_D_DECL(i, j, k));
               amrex::IntVect iv_w = g;
               iv_w[dir] = iwall;
-              F(g) = (any_near && N(iv_w) != 0)
-                       ? pelelmex::vof::wall_ghost_fraction(
-                           g, dir, iwall, sgn, limit, S, allow_ghost)
-                       : F(iv_w);
+              amrex::Real val = F(iv_w);
+              if (PL(iv_w, 0) > 0.5) {
+                const amrex::Real m[3] = {
+                  PL(iv_w, 1), PL(iv_w, 2), PL(iv_w, 3)};
+                amrex::IntVect ref;
+                for (int n = 0; n < AMREX_SPACEDIM; ++n) {
+                  ref[n] = static_cast<int>(PL(iv_w, 5 + n));
+                }
+                val = pelelmex::vof::wall_ghost_fraction(
+                  g, iv_w, ref, m, PL(iv_w, 4), F(iv_w));
+              }
+              const int differs = (val != F(g)) ? 1 : 0;
+              F(g) = val;
+              return {differs};
             });
+          changed =
+            amrex::max(changed, amrex::get<0>(reduce_data.value(reduce_op)));
         }
         amrex::Gpu::streamSynchronize();
+        amrex::ParallelDescriptor::ReduceIntMax(changed);
+        if (pass > 0 && changed == 0) {
+          break;
+        }
         work.FillBoundary(periodicity);
       }
     }
