@@ -277,6 +277,49 @@ struct PeleLMCCFillExtDirAux
   }
 };
 
+#ifdef PELE_USE_VOF
+template <typename T>
+struct PeleLMCCFillExtDirVOF
+{
+
+  ProbParm const* lprobparm;
+
+  AMREX_GPU_DEVICE
+  void operator()(
+    const amrex::IntVect& iv,
+    amrex::Array4<amrex::Real> const& vof,
+    const int dcomp,
+    const int /*numcomp*/,
+    amrex::GeometryData const& geom,
+    const amrex::Real time,
+    const amrex::BCRec* bcr,
+    const int /*bcomp*/,
+    const int /*orig_comp*/) const
+  {
+    const int* domlo = geom.Domain().loVect();
+    const int* domhi = geom.Domain().hiVect();
+    const int* bc = bcr[0].data();
+
+    for (int idir = 0; idir < AMREX_SPACEDIM; ++idir) {
+      if ((bc[idir] == amrex::BCType::ext_dir) and (iv[idir] < domlo[idir])) {
+        amrex::Real x[AMREX_SPACEDIM];
+        pelelm_bc_face_x(iv, idir, 1, geom, MeshMapEvaluator{}, x);
+        call_bcnormal_vof<T>(
+          x, vof(iv, dcomp), idir, 1, time, geom, *lprobparm);
+      }
+      if (
+        (bc[idir + AMREX_SPACEDIM] == amrex::BCType::ext_dir) and
+        (iv[idir] > domhi[idir])) {
+        amrex::Real x[AMREX_SPACEDIM];
+        pelelm_bc_face_x(iv, idir, -1, geom, MeshMapEvaluator{}, x);
+        call_bcnormal_vof<T>(
+          x, vof(iv, dcomp), idir, -1, time, geom, *lprobparm);
+      }
+    }
+  }
+};
+#endif
+
 template <typename T>
 struct PeleLMCCFillExtDirSpec
 {

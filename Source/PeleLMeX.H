@@ -201,6 +201,9 @@ public:
                                  // others) (dim:m_nAux)
     amrex::MultiFab gp;          // pressure gradient (dim:AMREX_SPACEDIM)
     amrex::MultiFab divu;        // Velocity divergence constraint
+#ifdef PELE_USE_VOF
+    amrex::MultiFab vof; // Liquid volume fraction (dim:1)
+#endif
 
     // node-centered state multifabs
     amrex::MultiFab press; // nodal pressure (dim:1)
@@ -304,6 +307,16 @@ public:
 #ifdef PELE_USE_PLASMA
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>
       uDrift; // ions drift face velocity
+#endif
+#ifdef PELE_USE_VOF
+    // VOF step, for the momentum advection: liquid crossing each face per unit
+    // area [lev][dir]
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> vof_lflux;
+    // Cells near the interface at the start of the step, with a ghost layer
+    amrex::Vector<amrex::iMultiFab> vof_band;
+    // Mass and momentum crossing the faces near the
+    // interface, per cell volume, from the cuts of the VOF step [lev][dir]
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> vof_momflux;
 #endif
   };
   //-----------------------------------------------------------------------------
@@ -514,6 +527,18 @@ public:
     const std::unique_ptr<AdvanceAdvData>& advData);
 
   /**
+   * \brief Initialize the MAC projector, or update its coefficients
+   * \param a_beta face coefficients of the projection on all levels
+   */
+  void setupMacProjector(
+    const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_beta);
+
+  /**
+   * \brief Run the MAC projector, dumping the residuals on failure if asked to
+   */
+  void solveMacProjection();
+
+  /**
    * \brief Perform MAC projection to obtained divergence constrained
    * face-centered (MAC) velocities
    * \param a_time time stamp to access the density used in the projection
@@ -524,6 +549,9 @@ public:
     const PeleLM::TimeStamp a_time,
     const std::unique_ptr<AdvanceAdvData>& advData,
     const amrex::Vector<amrex::MultiFab*>& a_divu);
+
+  // Fill the umac ghost faces (periodic and coarse/fine) after a projection
+  void fillUMacGhosts(const std::unique_ptr<AdvanceAdvData>& advData);
 
   /**
    * \brief Fill the projected face velocities ghost faces, ensuring
@@ -925,6 +953,120 @@ public:
   // State used for spray interpolation
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_spraysource;
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_spraystate;
+  //-----------------------------------------------------------------------------
+#endif
+#ifdef PELE_USE_VOF
+  //-----------------------------------------------------------------------------
+  // Volume of fluid
+  void VOFReadParameters();
+  void VOFCheckSetup();
+  void setVOFBoundaryConditions();
+  void initLevelVOF(const int lev);
+  void advanceVOF(std::unique_ptr<AdvanceAdvData>& advData);
+  // One geometric advection step (Owkes & Desjardins, JCP 270, 2014)
+  void VOFAdvectStep(
+    const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
+      a_umac,
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_flux,
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_momflux,
+    amrex::Vector<amrex::iMultiFab>& a_band);
+  // Liquid crossing the faces of one level in a step
+  void VOFFluxes(
+    const int lev,
+    const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_umac,
+    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& flux,
+    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& momflux,
+    amrex::iMultiFab& band);
+  // Conservative momentum advection term, with the mass the VOF flux volumes
+  // carry
+  void VOFMomentumAdvTerm(
+    const std::unique_ptr<AdvanceAdvData>& advData,
+    const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>&
+      a_faces);
+  amrex::Real estVOFDt(const PeleLM::TimeStamp a_time);
+  void VOFPrescribedVelocity(
+    std::unique_ptr<AdvanceAdvData>& advData,
+    const amrex::Real a_umac_time,
+    const amrex::Real a_cc_time);
+  void VOFTagInterface(const int lev, amrex::TagBoxArray& tags);
+  amrex::Real VOFLiquidVolume(const PeleLM::TimeStamp a_time);
+  void fillPatchVOF(const PeleLM::TimeStamp a_time);
+  void fillpatch_vof(
+    const int lev,
+    const amrex::Real a_time,
+    amrex::MultiFab& a_vof,
+    const int nGhost);
+  void fillcoarsepatch_vof(
+    const int lev,
+    const amrex::Real a_time,
+    amrex::MultiFab& a_vof,
+    const int nGhost);
+  void averageDownVOF(const PeleLM::TimeStamp a_time);
+  // Free-contact-line wall ghost cells, after a fill
+  void VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost);
+  // Mixture density / viscosity from the volume fraction at a_time, in
+  // nGhost ghost cells
+  void fillVOFMixture(
+    const int lev,
+    const amrex::Real a_time,
+    amrex::MultiFab& a_mf,
+    const int nGhost,
+    const amrex::Real a_liq,
+    const amrex::Real a_gas,
+    const int a_harmonic);
+  void fillVOFDensity(
+    const int lev,
+    const amrex::Real a_time,
+    amrex::MultiFab& a_rho,
+    const int nGhost);
+  void fillVOFViscosity(
+    const int lev,
+    const amrex::Real a_time,
+    amrex::MultiFab& a_mu,
+    const int nGhost);
+  // Velocity state plus the mixture density in the DENSITY component, for
+  // the derived quantities
+  std::unique_ptr<amrex::MultiFab> VOFDeriveState(
+    const int lev, const amrex::Real a_time, const amrex::MultiFab& a_state);
+  // Face-centered mixture density (arithmetic average of the cell values)
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
+  getVOFFaceDensity(const int lev, const amrex::Real a_time);
+  // Sharp face density from the liquid fraction of the segment joining the
+  // adjacent cell centers (PLIC); time averaged at AmrHalfTime
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
+  getVOFSharpFaceDensity(const int lev, const PeleLM::TimeStamp a_time);
+  // a_numerator over the sharp face density: the projection coefficient
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> getVOFFaceBeta(
+    const int lev,
+    const PeleLM::TimeStamp a_time,
+    const amrex::Real a_numerator);
+  // Balanced-force velocity projection: face-based gravity and pressure
+  // gradient, cell acceleration reconstructed from the face accelerations.
+  // a_initPress: only compute the (hydrostatic) pressure gradient.
+  void VOFVelocityProjection(const int a_initPress, const amrex::Real a_dt);
+  // umac -= beta grad phi, div(beta grad phi) = div(umac), GMRES-MLMG solve
+  void VOFFaceProjection(
+    const amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>>& a_umac,
+    const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_beta);
+
+  amrex::BCRec m_bcrec_vof;
+  // Phase properties (required; peleLM.rho / peleLM.mu are rejected)
+  amrex::Real m_vof_rho_liq = -1.0;
+  amrex::Real m_vof_rho_gas = -1.0;
+  amrex::Real m_vof_mu_liq = -1.0;
+  amrex::Real m_vof_mu_gas = -1.0;
+  // Cell viscosity: 0 arithmetic, 1 harmonic average of the phase values
+  int m_vof_mu_harmonic = 0;
+  // Well below the limit of 1 to leave room for face velocities exceeding the
+  // cell-centered ones used in the estimate
+  amrex::Real m_vof_cfl = 0.45;
+  // Interface band half-width (in cells) tagged for refinement
+  int m_vof_refine_band = 2;
+  int m_vof_verbose = 0;
+  // Verification mode: advect the VOF with the prescribed velocity
+  // u = curl(A) from ProblemSpecificFunctions::vof_vector_potential and
+  // skip the momentum update
+  int m_vof_advect_only = 0;
   //-----------------------------------------------------------------------------
 #endif
 #ifdef PELE_USE_SOOT
@@ -2482,6 +2624,11 @@ public:
 #else
   static constexpr int m_nGrowState = 3;
 #endif
+#ifdef PELE_USE_VOF
+  // Volume fraction ghost cells: 7-cell height-function columns evaluated
+  // up to the first ghost layer (pelelmex::vof::nghost)
+  static constexpr int m_nGrowVOF = 4;
+#endif
   static constexpr int m_nGrowAdv = 1;
   static constexpr int m_nGrowdivu = 1;
   static constexpr int m_nGrowMAC = 1;
@@ -2593,6 +2740,27 @@ public:
     return m_mesh_map.get();
   }
   [[nodiscard]] bool hasMeshMapping() const noexcept { return m_mesh_mapping; }
+
+  //! True when the density varies in space: low Mach, or incompressible
+  //! two-phase flow with the density derived from the VOF field.
+  [[nodiscard]] bool densityIsField() const noexcept
+  {
+#ifdef PELE_USE_VOF
+    return true;
+#else
+    return m_incompressible == 0;
+#endif
+  }
+
+  // The velocity is prescribed: no velocity advance
+  [[nodiscard]] bool velocityIsPrescribed() const noexcept
+  {
+#ifdef PELE_USE_VOF
+    return m_vof_advect_only != 0;
+#else
+    return false;
+#endif
+  }
 
   //! Cached device-callable physical-coordinate evaluator (Identity
   //! when no mesh mapping is active).

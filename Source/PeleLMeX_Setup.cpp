@@ -519,12 +519,22 @@ PeleLM::readParameters()
   if (m_incompressible != 0) {
     m_has_divu = 0;
     m_do_react = 0;
+#ifdef PELE_USE_VOF
+    // Two-phase: the phase properties are peleLM.vof.{rho,mu}_{liquid,gas};
+    // a single-phase density / viscosity would be ambiguous
+    if (pp.contains("rho") || pp.contains("mu")) {
+      amrex::Abort(
+        "peleLM.rho and peleLM.mu are not used with the VOF solver: set "
+        "peleLM.vof.rho_liquid, rho_gas, mu_liquid and mu_gas instead");
+    }
+#else
     pp.query("rho", m_rho);
     pp.query("mu", m_mu);
     AMREX_ASSERT_WITH_MESSAGE(
       m_rho > 0.0, "peleLM.rho is needed when running incompressible");
     AMREX_ASSERT_WITH_MESSAGE(
       m_mu > 0.0, "peleLM.mu is needed when running incompressible");
+#endif
   }
   amrex::Vector<amrex::Real> grav(AMREX_SPACEDIM, 0);
   pp.queryarr("gravity", grav, 0, AMREX_SPACEDIM);
@@ -1001,6 +1011,11 @@ PeleLM::readParameters()
       m_do_speciesBalance = 1;
     }
   }
+#endif
+
+#ifdef PELE_USE_VOF
+  VOFReadParameters();
+  VOFCheckSetup();
 #endif
 
 #ifdef PELE_USE_SPRAY

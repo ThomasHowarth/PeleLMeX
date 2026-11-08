@@ -256,6 +256,11 @@ PeleLM::initData()
       fillPatchAux(AmrNewTime);
     }
 
+#ifdef PELE_USE_VOF
+    averageDownVOF(AmrNewTime);
+    fillPatchVOF(AmrNewTime);
+#endif
+
     //----------------------------------------------------------------
     // Initialize turbulent viscosity for LES
     if (m_do_les) {
@@ -321,6 +326,10 @@ PeleLM::initData()
     //----------------------------------------------------------------
     // Read starting configuration from chk file.
     ReadCheckPointFile();
+#ifdef PELE_USE_VOF
+    // The checkpoint holds the valid cells only
+    fillPatchVOF(AmrNewTime);
+#endif
 
 #ifdef PELE_USE_SPRAY
     SprayInit();
@@ -444,6 +453,10 @@ PeleLM::initLevelData(const int lev)
         *lprobparm, lpmfdata);
     });
   amrex::Gpu::streamSynchronize();
+
+#ifdef PELE_USE_VOF
+  initLevelVOF(lev);
+#endif
 
   if (m_incompressible == 0) {
     // Initialize thermodynamic pressure

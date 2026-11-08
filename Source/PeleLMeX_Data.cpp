@@ -54,6 +54,9 @@ PeleLM::LevelData::LevelData(
     auxiliaries.define(ba, dm, a_nAux, a_nGrowState, amrex::MFInfo(), factory);
     diff_aux_cc.define(ba, dm, a_nAux, 1, amrex::MFInfo(), factory);
   }
+#ifdef PELE_USE_VOF
+  vof.define(ba, dm, 1, m_nGrowVOF, amrex::MFInfo(), factory);
+#endif
 }
 
 PeleLM::LevelDataReact::LevelDataReact(
@@ -272,6 +275,11 @@ PeleLM::copyStateNewToOld(int nGhost)
         m_leveldata_old[lev]->auxiliaries, m_leveldata_new[lev]->auxiliaries, 0,
         0, m_nAux, nGhost);
     }
+#ifdef PELE_USE_VOF
+    amrex::MultiFab::Copy(
+      m_leveldata_old[lev]->vof, m_leveldata_new[lev]->vof, 0, 0, 1,
+      m_nGrowVOF);
+#endif
   }
 }
 
@@ -311,6 +319,11 @@ PeleLM::copyStateOldToNew(int nGhost)
         m_leveldata_new[lev]->auxiliaries, m_leveldata_old[lev]->auxiliaries, 0,
         0, m_nAux, nGhost);
     }
+#ifdef PELE_USE_VOF
+    amrex::MultiFab::Copy(
+      m_leveldata_new[lev]->vof, m_leveldata_old[lev]->vof, 0, 0, 1,
+      m_nGrowVOF);
+#endif
   }
 }
 

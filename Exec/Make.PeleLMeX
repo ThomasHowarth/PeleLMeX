@@ -45,6 +45,12 @@ endif
 # PeleLM sources
 #---------------
 LMdirs := Source Source/Mesh
+ifeq ($(USE_VOF),TRUE)
+   DEFINES += -DPELE_USE_VOF
+   LMdirs += Source/VOF
+   # GMRES-MLMG (header only) for the balanced-force projection
+   INCLUDE_LOCATIONS += $(AMREX_HOME)/Src/LinearSolvers
+endif
 ifeq ($(USE_PLASMA),TRUE)
    DEFINES += -DPELE_USE_PLASMA
    LMdirs += Source/Plasma Source/Plasma/GMRES Source/Plasma/LinOps

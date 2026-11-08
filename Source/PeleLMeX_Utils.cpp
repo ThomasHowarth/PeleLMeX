@@ -1104,6 +1104,12 @@ PeleLM::derive(
       Factory(lev));
     std::unique_ptr<amrex::MultiFab> statemf =
       fillPatchState(lev, a_time, m_nGrowState);
+#ifdef PELE_USE_VOF
+    // Velocity plus the mixture density (DENSITY component)
+    if (m_incompressible != 0) {
+      statemf = VOFDeriveState(lev, a_time, *statemf);
+    }
+#endif
     // Get pressure: TODO no fillpatch for pressure just yet, simply get new
     // state
     auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
@@ -1132,6 +1138,11 @@ PeleLM::derive(
         this, bx, derfab, 0, rec->numDerive(), statefab, reactfab, pressfab,
         geom[lev], a_time, stateBCs, lev);
     }
+#ifdef PELE_USE_VOF
+    if (m_incompressible != 0 && a_name == "viscosity") {
+      fillVOFViscosity(lev, a_time, *mf, nGrow);
+    }
+#endif
   } else if (isStateVariable(a_name)) { // This is a state variable
     mf = std::make_unique<amrex::MultiFab>(
       grids[lev], dmap[lev], 1, nGrow, amrex::MFInfo(), Factory(lev));
@@ -1178,6 +1189,12 @@ PeleLM::deriveComp(
       grids[lev], dmap[lev], 1, nGrow, amrex::MFInfo(), Factory(lev));
     std::unique_ptr<amrex::MultiFab> statemf =
       fillPatchState(lev, a_time, m_nGrowState);
+#ifdef PELE_USE_VOF
+    // Velocity plus the mixture density (DENSITY component)
+    if (m_incompressible != 0) {
+      statemf = VOFDeriveState(lev, a_time, *statemf);
+    }
+#endif
     // Get pressure: TODO no fillpatch for pressure just yet, simply get new
     // state
     auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
@@ -1217,6 +1234,11 @@ PeleLM::deriveComp(
         rec->variableName(1000));
     }
     amrex::MultiFab::Copy(*mf, derTemp, derComp, 0, 1, nGrow);
+#ifdef PELE_USE_VOF
+    if (m_incompressible != 0 && a_name == "viscosity") {
+      fillVOFViscosity(lev, a_time, *mf, nGrow);
+    }
+#endif
   } else if (isStateVariable(a_name)) { // This is a state variable
     mf = std::make_unique<amrex::MultiFab>(
       grids[lev], dmap[lev], 1, nGrow, amrex::MFInfo(), Factory(lev));

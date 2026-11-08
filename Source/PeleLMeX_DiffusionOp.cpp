@@ -1844,8 +1844,8 @@ DiffusionTensorOp::diffuse_velocity(
   const int have_density = (a_density.empty()) ? 0 : 1;
 
   AMREX_ASSERT(
-    (!m_pelelm->m_incompressible && have_density) ||
-    (m_pelelm->m_incompressible && !have_density));
+    (m_pelelm->densityIsField() && have_density) ||
+    (!m_pelelm->densityIsField() && !have_density));
 
   const bool mesh_mapping = m_pelelm->hasMeshMapping();
   auto* mm = mesh_mapping ? m_pelelm->meshMap() : nullptr;
@@ -1933,7 +1933,7 @@ DiffusionTensorOp::diffuse_velocity(
   for (int lev = 0; lev <= finest_level; ++lev) {
     auto const& rhs_ma = rhs[lev].arrays();
     auto const& vel_ma = a_vel[lev]->const_arrays();
-    if (m_pelelm->m_incompressible == 0) {
+    if (have_density != 0) {
       auto const& rho_ma = a_density[lev]->const_arrays();
       amrex::ParallelFor(
         rhs[lev], amrex::IntVect(0), AMREX_SPACEDIM,

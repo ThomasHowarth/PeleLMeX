@@ -80,6 +80,16 @@ function(build_pele_exe pele_exe_name pele_physics_lib_name)
        ${SRC_DIR}/main.cpp
   )
 
+  # Set per case (like PELE_PHYSICS_ENABLE_SPRAY) in the case CMakeLists.txt
+  if(PELELM_USE_VOF)
+    target_include_directories(${pele_exe_name} PRIVATE ${SRC_DIR}/VOF)
+    target_compile_definitions(${pele_exe_name} PRIVATE PELE_USE_VOF)
+    target_sources(${pele_exe_name}
+      PRIVATE
+        ${SRC_DIR}/VOF/PeleLMeX_VOF_K.H
+        ${SRC_DIR}/VOF/PeleLMeX_VOF.cpp)
+  endif()
+
   if(PELE_PHYSICS_ENABLE_SOOT)
     target_sources(${pele_exe_name}
       PRIVATE

@@ -163,9 +163,23 @@ PeleLM::getSpeciesVect(const TimeStamp a_time)
 amrex::Vector<std::unique_ptr<amrex::MultiFab>>
 PeleLM::getDensityVect(const TimeStamp a_time)
 {
-  AMREX_ASSERT(m_incompressible == 0);
+  AMREX_ASSERT(densityIsField());
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> r;
   r.reserve(finest_level + 1);
+#ifdef PELE_USE_VOF
+  if (m_incompressible != 0) {
+    // Two-phase mixture density from the volume fraction (a copy, not an
+    // alias of the state).  Its users only read valid cells, and ghost cells at
+    // the half time would cost a fill with wall ghosts.
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      r.push_back(
+        std::make_unique<amrex::MultiFab>(
+          grids[lev], dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev)));
+      fillVOFDensity(lev, getTime(lev, a_time), *(r[lev]), 0);
+    }
+    return r;
+  }
+#endif
   if (a_time == AmrOldTime) {
     for (int lev = 0; lev <= finest_level; ++lev) {
       r.push_back(

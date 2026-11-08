@@ -1083,7 +1083,9 @@ pelelmex_derkineticenergy(
 {
   AMREX_ASSERT(derfab.box().contains(bx));
   AMREX_ASSERT(statefab.box().contains(bx));
-  if (a_pelelm->m_incompressible != 0) {
+  // Constant density, unless it is a field (low Mach, or VOF: the mixture
+  // density is set in the DENSITY slot by PeleLM::derive)
+  if (!a_pelelm->densityIsField()) {
     auto const vel = statefab.array(VELX);
     auto der = derfab.array(dcomp);
     const auto rho = a_pelelm->m_rho;
@@ -1138,7 +1140,7 @@ pelelmex_derenstrophy(
   const amrex::GeometryData gd = geom.data();
 
   auto const& dat_arr = statefab.const_array(VELX);
-  auto const& rho_arr = (a_pelelm->m_incompressible) != 0
+  auto const& rho_arr = !a_pelelm->densityIsField()
                           ? amrex::Array4<const amrex::Real>{}
                           : statefab.const_array(DENSITY);
   auto const& ens_arr = derfab.array(dcomp);
@@ -1156,7 +1158,7 @@ pelelmex_derenstrophy(
       });
   } else if (typ == amrex::FabType::singlevalued) {
     const auto& flag_fab = flags.const_array();
-    const auto incomp = a_pelelm->m_incompressible;
+    const auto incomp = static_cast<int>(!a_pelelm->densityIsField());
     const auto rho = a_pelelm->m_rho;
     amrex::ParallelFor(
       bx,
@@ -1319,7 +1321,7 @@ pelelmex_derenstrophy(
   } else
 #endif
   {
-    const auto incomp = a_pelelm->m_incompressible;
+    const auto incomp = static_cast<int>(!a_pelelm->densityIsField());
     const auto rho = a_pelelm->m_rho;
     amrex::ParallelFor(
       bx, [rho_arr, dat_arr, rho, incomp, ens_arr, mmap, gd, idx0, idy0
@@ -1502,6 +1504,7 @@ pelelmex_dervisc(
   AMREX_ASSERT(derfab.nComp() >= dcomp + ncomp);
 
   if (a_pelelm->m_incompressible != 0) {
+    // VOF: overwritten with the mixture viscosity by PeleLM::derive
     derfab.setVal<amrex::RunOn::Device>(a_pelelm->m_mu, bx, dcomp, 1);
   } else {
     auto const& rhoY = statefab.const_array(FIRSTSPEC);
@@ -1673,13 +1676,13 @@ pelelmex_derturbforcing(
   amrex::FArrayBox DummyFab(bx, 1);
 
   // Declare a pointer for the density array view
-  amrex::Array4<const amrex::Real> rho = (a_pelelm->m_incompressible != 0)
-                                           ? DummyFab.const_array()
-                                           : statefab.const_array(DENSITY);
+  const int rho_const = static_cast<int>(!a_pelelm->densityIsField());
+  amrex::Array4<const amrex::Real> rho =
+    (rho_const != 0) ? DummyFab.const_array() : statefab.const_array(DENSITY);
 
   // call the function above to construct the forcing
   a_pelelm->turb_forcing.addTurbVelForces(
-    geomdata, bx, time, der, rho, a_pelelm->m_incompressible, a_pelelm->m_rho);
+    geomdata, bx, time, der, rho, rho_const, a_pelelm->m_rho);
 }
 
 //

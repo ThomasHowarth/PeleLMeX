@@ -251,6 +251,9 @@ PeleLM::WritePlotFile()
   if (m_nAux > 0) {
     averageDownAux(AmrNewTime);
   }
+#ifdef PELE_USE_VOF
+  averageDownVOF(AmrNewTime);
+#endif
   // Get consistent reaction data across level
   if ((m_do_react != 0) && (m_skipInstantRR == 0) && (m_plot_react != 0)) {
     averageDownReaction();
@@ -281,6 +284,11 @@ PeleLM::WritePlotFile()
   }
 
   ncomp += m_nAux;
+
+#ifdef PELE_USE_VOF
+  // Volume fraction and mixture density
+  ncomp += 2;
+#endif
 
   // Reactions
   if ((m_do_react != 0) && (m_skipInstantRR == 0) && (m_plot_react != 0)) {
@@ -397,6 +405,11 @@ PeleLM::WritePlotFile()
   for (int n = 0; n < m_nAux; ++n) {
     plt_VarsName.push_back(m_aux_names[n]);
   }
+
+#ifdef PELE_USE_VOF
+  plt_VarsName.push_back("vof");
+  plt_VarsName.push_back("density");
+#endif
 
   if ((m_do_react != 0) && (m_skipInstantRR == 0) && (m_plot_react != 0)) {
     for (int n = 0; n < NUM_SPECIES; ++n) {
@@ -537,6 +550,16 @@ PeleLM::WritePlotFile()
         mf_plt[lev], m_leveldata_new[lev]->auxiliaries, 0, cnt, m_nAux, 0);
       cnt += m_nAux;
     }
+
+#ifdef PELE_USE_VOF
+    amrex::MultiFab::Copy(mf_plt[lev], m_leveldata_new[lev]->vof, 0, cnt, 1, 0);
+    cnt += 1;
+    {
+      amrex::MultiFab rho(mf_plt[lev], amrex::make_alias, cnt, 1);
+      fillVOFDensity(lev, getTime(lev, AmrNewTime), rho, 0);
+    }
+    cnt += 1;
+#endif
 
     if ((m_do_react != 0) && (m_skipInstantRR == 0) && (m_plot_react != 0)) {
       amrex::MultiFab::Copy(
@@ -873,6 +896,12 @@ PeleLM::WriteCheckPointFile()
           lev, checkpointname, level_prefix, "aux"));
     }
 
+#ifdef PELE_USE_VOF
+    amrex::VisMF::Write(
+      m_leveldata_new[lev]->vof,
+      amrex::MultiFabFileFullPrefix(lev, checkpointname, level_prefix, "vof"));
+#endif
+
     if (m_incompressible == 0) {
       if (m_has_divu != 0) {
         amrex::VisMF::Write(
@@ -1114,6 +1143,13 @@ PeleLM::ReadCheckPointFile()
         amrex::MultiFabFileFullPrefix(
           lev, m_restart_chkfile, level_prefix, "aux"));
     }
+
+#ifdef PELE_USE_VOF
+    amrex::VisMF::Read(
+      m_leveldata_new[lev]->vof,
+      amrex::MultiFabFileFullPrefix(
+        lev, m_restart_chkfile, level_prefix, "vof"));
+#endif
 
     if (m_incompressible == 0) {
       if (m_has_divu != 0) {

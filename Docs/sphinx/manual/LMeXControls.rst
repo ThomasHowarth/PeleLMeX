@@ -262,8 +262,8 @@ PeleLMeX algorithm
     peleLM.chi_correction_type = DivuFirstIter  # [OPT, DEF=DivuEveryIter] When to compute divu for MAC proj divu constraint [DivuEveryIter, DivuFirstIter, NoDivu]
     peleLM.print_chi_convergence = 1            # [OPT, DEF=(peleLM.v > 1)] Boolean flag on whether to print size of chi correction on each SDC iter
     peleLM.incompressible = 0              # [OPT, DEF=0] Enable to run fully incompressible, scalar advance is bypassed
-    peleLM.rho = 1.17                      # [OPT, DEF=-1] If incompressible, density value [MKS]
-    peleLM.mu = 1.8e-5                     # [OPT, DEF=-1] If incompressible, dynamic visc. value [MKS]
+    peleLM.rho = 1.17                      # [OPT, DEF=-1] If incompressible, density value [MKS] (not with VOF)
+    peleLM.mu = 1.8e-5                     # [OPT, DEF=-1] If incompressible, dynamic visc. value [MKS] (not with VOF)
     peleLM.gravity = 0.0 0.0 -9.81         # [OPT, DEF=Vec{0.0}] Gravity vector [MKS]
     peleLM.gradP0 = 0.0 0.0 10.0           # [OPT, DEF=Vec{0.0}] Average background pressure gradient [Pa/m]
     peleLM.do_periodic_channel = 0         # [OPT, DEF= 0] Add an automatic pressure gradient to maintain initial condition mass flow rate in periodic channel
@@ -383,6 +383,108 @@ Mesh Mapping
    the file cannot fill the scales the stretched grid resolves near its
    clustering, and well below one means the injected field is aliased.
    See ``Exec/RegTests/TurbInflow`` for the round-trip and cross-map cases.
+
+.. _ssec:vofParameters:
+
+Volume of fluid
+---------------------------------------
+
+Two-phase interface capturing is compiled in with ``USE_VOF = TRUE`` (GNUmake)
+or, for the CMake test suite, ``PELE_ENABLE_VOF = ON``, which builds the cases
+whose ``CMakeLists.txt`` sets ``PELELM_USE_VOF ON``. The liquid volume fraction
+``vof`` is advected with the MAC velocities by the unsplit geometric PLIC scheme
+of Owkes & Desjardins (2014): the liquid crossing a face in a step is the liquid
+inside its flux volume, the region bounded by the face and its corners traced
+back along the flow. The analytic plane/volume relations of Scardovelli & Zaleski
+(2000) are ported from Kynema-SGF (formerly AMR-Wind). The interface normals come
+from height functions over 7-cell columns, which are exact for any planar
+interface, with Mixed Youngs-Centered normals where the heights are undefined
+(thin or strongly curved structures); the volume fraction carries 4 ghost cells.
+The liquid volume is conserved to round-off for a discretely divergence-free face
+velocity, including across coarse/fine boundaries, and the volume fraction is not
+clipped or limited: it leaves [0, 1] only by the round-off of the fluxes. The
+advection is explicit, so the face Courant number must stay below 1. The time
+step uses the cell-centered velocity (``peleLM.vof.cfl``), while the advection
+uses the face velocity, which can be larger; a run stops if the face Courant
+number reaches 1. The flux volumes do not tile across coarse/fine
+boundaries, so the interface is always tagged up to the finest level. The current
+implementation requires ``peleLM.incompressible = 1``, uniform cubic cells (no
+``geometry.mesh_mapping``) and no embedded boundaries: building with both
+``USE_VOF`` and ``USE_EB`` is a compile error, because the contact angle at an
+embedded boundary is not defined yet.
+
+The density and viscosity are fields derived from the volume fraction,
+:math:`\rho = F \rho_l + (1 - F) \rho_g` and either the arithmetic
+:math:`\mu = F \mu_l + (1 - F) \mu_g` or the harmonic average
+:math:`1/\mu = F/\mu_l + (1 - F)/\mu_g`, from the required phase properties
+``peleLM.vof.rho_liquid``, ``rho_gas``, ``mu_liquid`` and ``mu_gas``; the
+single-phase ``peleLM.rho`` and ``peleLM.mu`` are rejected. The mixture
+properties are used in the projections, the gravity and pressure-gradient terms
+and the implicit viscous solve; the viscous solve uses the density at
+:math:`t^{n+1/2}`, interpolated in time between the volume fractions before and
+after the VOF advection. The plotfile holds ``vof`` and the mixture ``density``,
+and the derived ``kinetic_energy``, ``enstrophy`` and ``viscosity`` (and the
+corresponding temporals) use the mixture density and viscosity.
+
+Gravity and the pressure gradient are balanced on the faces (Francois et al.,
+2006), replacing the nodal projection: the MAC velocity of the provisional
+velocity plus :math:`\Delta t\, g` is projected with the face density
+:math:`\rho_f = \rho_g + (\rho_l - \rho_g)\theta`, where :math:`\theta` is the
+liquid fraction of the segment joining the two cell centers, cut by each cell's
+PLIC plane. :math:`\rho_f g` is then an exact discrete gradient for a planar
+interface, so a fluid at rest stays at rest at any interface orientation. The
+cell-centered velocity is updated with the average of the face accelerations,
+and the stored pressure gradient (``gradpx``, ... in the plotfile) is the kinematic
+:math:`\nabla p / \rho`. The predictor MAC projection uses the same face
+density. Both face projections go through the AMReX-Hydro ``MacProjector`` and
+its ``mac_proj`` options (``rtol``, ``atol``, ``bottom_solver``, ...), with GMRES
+preconditioned by MLMG as the default for the face-coefficient jump of a sharp,
+high density ratio interface (``mac_proj.use_gmres = 0`` selects plain MLMG).
+After each solve the divergence left in the face velocity is checked, and the
+solve is repeated until it reaches the target, with a warning otherwise.
+
+Momentum is advected in conservative form with the mass the flux volumes carry,
+:math:`m_f = \rho_g u_f \Delta t + (\rho_l - \rho_g) \Phi_l`, with
+:math:`\Phi_l` the liquid volume crossing the face (Rudman, 1998):
+:math:`\rho' = \rho - \sum_d \delta_d m_f` and
+:math:`(\rho u)' = \rho u - \sum_d \delta_d p_f`, so momentum is carried with the
+liquid and a uniform flow stays uniform across the interface. Near the interface
+the momentum flux :math:`p_f` is the integral over the flux volume, each piece
+carrying the velocity of the cell it lies in, because a flux volume reaches
+beyond the upwind cell. Elsewhere :math:`p_f = m_f u_f`, with :math:`u_f` the
+Godunov face state. Coarse faces under fine faces take the average of the fine
+fluxes per unit area, so the composite update is conservative.
+
+::
+
+    #-----------------------Volume of fluid -----------------------
+    peleLM.vof.cfl              = 0.45  # [OPT, DEF=0.45] Courant number target, below 1
+    peleLM.vof.refine_band      = 2     # [OPT, DEF=2] Half-width (cells) of the tagged interface band
+    peleLM.vof.advect_only      = 0     # [OPT, DEF=0] Advect with the prescribed velocity curl(A), skip the momentum update
+    peleLM.vof.v                = 1     # [OPT, DEF=0] Verbose: 1 prints the liquid volume
+    peleLM.vof.rho_liquid       = 1000. # [REQ] Liquid (F = 1) density
+    peleLM.vof.rho_gas          = 1.2   # [REQ] Gas (F = 0) density
+    peleLM.vof.mu_liquid        = 1e-3  # [REQ] Liquid dynamic viscosity
+    peleLM.vof.mu_gas           = 1.8e-5 # [REQ] Gas dynamic viscosity
+    peleLM.vof.viscosity_average = arithmetic # [OPT, DEF=arithmetic] Cell viscosity: arithmetic or harmonic
+
+The problem's ``ProblemSpecificFunctions`` must provide ``initvof(i, j, k, vof,
+geomdata, prob_parm)`` to set the initial volume fraction;
+``pelelmex::vof::cell_fraction`` (``PeleLMeX_VOF_K.H``) computes it from an
+implicit function by sub-cell sampling, and ``pelelmex::vof::plane_fraction``
+exactly for a half space. ``bcnormal_vof(x, vof_ext, idir, sgn,
+time, geomdata, prob_parm)`` is optional and sets the volume fraction on
+``Inflow`` faces (pure gas by default). Outflows extrapolate the volume
+fraction. At walls the contact line is free: wall ghost cells take the PLIC plane
+of the nearest interface cell, extended through the wall, so the interface meets
+the wall at whatever angle it has, as appropriate without surface tension
+(extrapolation would impose 90 degrees and unbalance gravity at a tilted
+interface). Interfaces within about 20 degrees of the wall are extended from
+ghost planes iteratively. In ``advect_only`` mode the face velocities are
+the discrete curl of ``vof_vector_potential(x, time, A, prob_parm)`` (``A[2]`` is
+the stream function in 2D), used by the verification cases in
+``Exec/RegTests/VOFAdvection``. Two-phase cases with gravity (resting pool,
+Rayleigh-Taylor instability, dam break) are in ``Exec/RegTests/VOFTwoPhase``.
 
 Turbulent Forcing and Velocity Plotfile
 ---------------------------------------
@@ -962,6 +1064,7 @@ When compiling PeleLMeX, several compilation flags can be selected to help with 
     USE_PARTICLES = TRUE                 # [OPT, DEF=FALSE] Enable Lagrangian particle spray model
     USE_SOOT = TRUE                      # [OPT, DEF=FALSE] Enable soot model
     USE_RADIATION = TRUE                 # [OPT, DEF=FALSE] Enable radiation model
+    USE_VOF = TRUE                       # [OPT, DEF=FALSE] Enable the volume-of-fluid interface capturing
     PELELM_NUM_ODE = INT                 # [OPT, DEF=0] Number of user-defined ODEs to solve
 
     # If USE_PARTICLES = TRUE

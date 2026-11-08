@@ -1,0 +1,50 @@
+# CI: vof-dambreak-3d with 2 levels.  The flow stays two-dimensional: w must stay
+# at round-off across the coarse/fine boundaries too.
+#----------------------- Geometry ------------------------------
+geometry.is_periodic = 0 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0 0.0 0.0
+geometry.prob_hi     = 0.584 0.584 0.292
+peleLM.lo_bc = SlipWallAdiab SlipWallAdiab SlipWallAdiab
+peleLM.hi_bc = SlipWallAdiab SlipWallAdiab SlipWallAdiab
+
+#----------------------- AMR -----------------------------------
+amr.n_cell          = 16 16 8
+amr.v               = 1
+amr.max_level       = 1
+amr.ref_ratio       = 2
+amr.regrid_int      = 2
+amr.n_error_buf     = 2
+amr.grid_eff        = 0.7
+amr.blocking_factor = 8
+amr.max_grid_size   = 32
+
+#----------------------- Problem -------------------------------
+prob.type   = dambreak
+prob.width  = 0.146
+prob.height = 0.292
+
+#----------------------- PeleLMeX ------------------------------
+peleLM.v              = 1
+peleLM.incompressible = 1
+peleLM.vof.rho_liquid = 1000.0
+peleLM.vof.rho_gas    = 1.2
+peleLM.vof.mu_liquid  = 1.0e-3
+peleLM.vof.mu_gas     = 1.8e-5
+peleLM.gravity        = 0.0 -9.81 0.0
+peleLM.vof.v          = 1
+
+#----------------------- Time stepping -------------------------
+amr.cfl       = 0.45
+amr.dt_shrink = 1.0
+amr.init_dt   = 1.0e-4
+amr.max_dt    = 2.0e-3
+amr.stop_time = 0.16
+amr.max_step  = 100000
+amr.plot_file = plt
+amr.check_int = -1
+
+#----------------------- Temporals (read by Tests/test_vof.py) -
+peleLM.do_temporals = 1
+peleLM.temporal_int = 1
+peleLM.do_extremas  = 1

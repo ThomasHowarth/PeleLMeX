@@ -62,28 +62,46 @@ PeleLM::getVelForces(
   auto const& ext_ma = m_extSource[lev]->const_arrays();
   auto const& force_ma = a_velForce->arrays();
 
+  // Density field: the state for low Mach, the VOF mixture density for
+  // incompressible two-phase flow
+  amrex::MultiFab rho_vof;
+#ifdef PELE_USE_VOF
+  if (is_incomp != 0) {
+    rho_vof.define(grids[lev], dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
+    fillVOFDensity(lev, time, rho_vof, 0);
+  }
+#endif
+  const bool use_rho_vof = rho_vof.ok();
+  const int rho_const = densityIsField() ? 0 : 1;
+  auto const& rho_ma = use_rho_vof ? rho_vof.const_arrays() : state_ma;
+  const int rho_comp = use_rho_vof ? 0 : DENSITY;
+
   amrex::ParallelFor(
     *a_velForce,
-    [state_ma, ext_ma, force_ma, grav, gp0, ps_dir, is_incomp, rho_incomp,
-     pseudo_gravity,
+    [state_ma, ext_ma, force_ma, rho_ma, rho_comp, grav, gp0, ps_dir, is_incomp,
+     rho_const, rho_incomp, pseudo_gravity,
      dV_control] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) {
       amrex::Array4<amrex::Real const> vel(state_ma[box_no], VELX);
       amrex::Array4<amrex::Real const> extmom(ext_ma[box_no], VELX);
-      amrex::Array4<amrex::Real const> rho(state_ma[box_no], DENSITY);
+      amrex::Array4<amrex::Real const> rho(rho_ma[box_no], rho_comp);
       amrex::Array4<amrex::Real const> extrho(ext_ma[box_no], DENSITY);
       // overwrite if incompressible, just to point to something
       if (is_incomp != 0) {
-        rho = vel;
         extrho = extmom;
+        if (rho_const != 0) {
+          rho = vel;
+        }
       }
       // background gp, pseudo grav, ext sources
       makeVelForce(
-        i, j, k, is_incomp, rho_incomp, pseudo_gravity, ps_dir, grav, gp0,
+        i, j, k, rho_const, rho_incomp, pseudo_gravity, ps_dir, grav, gp0,
         dV_control, vel, rho, extmom, extrho, force_ma[box_no]);
     });
   amrex::Gpu::streamSynchronize();
 
-  if (add_gradP != 0) {
+  // Two-phase VOF: gp is the kinematic gradient grad(p)/rho, subtracted
+  // after the division by rho below
+  if (add_gradP != 0 && !use_rho_vof) {
     if (m_mesh_mapping) {
       // gp is stored in Xi-space (component i = fac_i . grad_phys p_i).
       // When subtracting from the physical-space velocity force we need
@@ -119,9 +137,13 @@ PeleLM::getVelForces(
          ++mfi) {
       const auto& bx = mfi.tilebox();
       amrex::FArrayBox DummyFab(bx, 1);
-      const auto& rho_arr = (m_incompressible != 0)
-                              ? DummyFab.array()
-                              : ldata_p->state.const_array(mfi, DENSITY);
+      // Density field: the VOF mixture density, or the low-Mach state
+      amrex::Array4<amrex::Real const> rho_arr = DummyFab.const_array();
+      if (use_rho_vof) {
+        rho_arr = rho_vof.const_array(mfi);
+      } else if (m_incompressible == 0) {
+        rho_arr = ldata_p->state.const_array(mfi, DENSITY);
+      }
       const auto& force_arr = a_velForce->array(mfi);
 #ifdef PELE_USE_PLASMA
       const auto& rhoY_arr = (m_incompressible != 0)
@@ -140,26 +162,30 @@ PeleLM::getVelForces(
 #endif
       {
         // Add forcing terms to maintain turbulence
-        // note: if m_incompressible == 0 then m_rho is unused by
-        // addTurbVelForce
+        // note: m_rho is unused by addTurbVelForce when the density is a
+        // field
         turb_forcing.addTurbVelForces(
-          geom[lev].data(), bx, time, force_arr, rho_arr, is_incomp,
+          geom[lev].data(), bx, time, force_arr, rho_arr, rho_const,
           rho_incomp);
       }
     }
   }
 
-  if (is_incomp != 0) {
+  if (rho_const != 0) {
     a_velForce->mult(1.0 / rho_incomp, 0, AMREX_SPACEDIM, 0);
   } else {
     amrex::ParallelFor(
       *a_velForce, amrex::IntVect(0), AMREX_SPACEDIM,
-      [force_ma, state_ma] AMREX_GPU_DEVICE(
+      [force_ma, rho_ma, rho_comp] AMREX_GPU_DEVICE(
         int box_no, int i, int j, int k, int n) noexcept {
-        amrex::Array4<amrex::Real const> rho(state_ma[box_no], DENSITY);
+        amrex::Array4<amrex::Real const> rho(rho_ma[box_no], rho_comp);
         force_ma[box_no](i, j, k, n) /= rho(i, j, k);
       });
     amrex::Gpu::streamSynchronize();
+  }
+  if (add_gradP != 0 && use_rho_vof) {
+    amrex::MultiFab::Subtract(
+      *a_velForce, ldataGP_p->gp, 0, 0, AMREX_SPACEDIM, 0);
   }
 }
 
