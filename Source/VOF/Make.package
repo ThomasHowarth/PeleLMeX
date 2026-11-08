@@ -3,8 +3,7 @@
 ## Wired in through LMdirs in Exec/Make.PeleLMeX when USE_VOF = TRUE, which
 ## adds this directory to both INCLUDE_LOCATIONS and VPATH_LOCATIONS.
 
-## Header
-CEXE_headers += PeleLMeX_VOF_K.H
+## The PLIC kernels come from AMReX-Hydro (Hdirs += PLIC in Make.PeleLMeX)
 
 ## Sources
 CEXE_sources += PeleLMeX_VOF.cpp

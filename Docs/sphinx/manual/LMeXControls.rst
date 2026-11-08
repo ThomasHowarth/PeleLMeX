@@ -460,7 +460,6 @@ fluxes per unit area, so the composite update is conservative.
     #-----------------------Volume of fluid -----------------------
     peleLM.vof.cfl              = 0.45  # [OPT, DEF=0.45] Courant number target, below 1
     peleLM.vof.refine_band      = 2     # [OPT, DEF=2] Half-width (cells) of the tagged interface band
-    peleLM.vof.advect_only      = 0     # [OPT, DEF=0] Advect with the prescribed velocity curl(A), skip the momentum update
     peleLM.vof.v                = 1     # [OPT, DEF=0] Verbose: 1 prints the liquid volume
     peleLM.vof.rho_liquid       = 1000. # [REQ] Liquid (F = 1) density
     peleLM.vof.rho_gas          = 1.2   # [REQ] Gas (F = 0) density
@@ -470,21 +469,22 @@ fluxes per unit area, so the composite update is conservative.
 
 The problem's ``ProblemSpecificFunctions`` must provide ``initvof(i, j, k, vof,
 geomdata, prob_parm)`` to set the initial volume fraction;
-``pelelmex::vof::cell_fraction`` (``PeleLMeX_VOF_K.H``) computes it from an
-implicit function by sub-cell sampling, and ``pelelmex::vof::plane_fraction``
+``PLIC::cell_fraction`` (``hydro_plic_K.H`` in AMReX-Hydro) computes it from an
+implicit function by sub-cell sampling, and ``PLIC::plane_fraction``
 exactly for a half space. ``bcnormal_vof(x, vof_ext, idir, sgn,
 time, geomdata, prob_parm)`` is optional and sets the volume fraction on
-``Inflow`` faces (pure gas by default). Outflows extrapolate the volume
-fraction. At walls the contact line is free: wall ghost cells take the PLIC plane
-of the nearest interface cell, extended through the wall, so the interface meets
-the wall at whatever angle it has, as appropriate without surface tension
-(extrapolation would impose 90 degrees and unbalance gravity at a tilted
-interface). Interfaces within about 20 degrees of the wall are extended from
-ghost planes iteratively. In ``advect_only`` mode the face velocities are
-the discrete curl of ``vof_vector_potential(x, time, A, prob_parm)`` (``A[2]`` is
-the stream function in 2D), used by the verification cases in
-``Exec/RegTests/VOFAdvection``. Two-phase cases with gravity (resting pool,
-Rayleigh-Taylor instability, dam break) are in ``Exec/RegTests/VOFTwoPhase``.
+``Inflow`` faces (pure gas by default). The geometric kernels (PLIC
+reconstruction, unsplit fluxes, wall ghost cells and the sharp face density)
+are those of the ``PLIC`` directory of AMReX-Hydro. At walls the contact line
+is free: wall ghost cells take the PLIC plane of the nearest interface cell,
+extended through the wall, so the interface meets the wall at whatever angle it
+has, as appropriate without surface tension (extrapolation would impose 90
+degrees and unbalance gravity at a tilted interface). Interfaces within about 20
+degrees of the wall are extended from ghost planes iteratively. At outflows the
+interface is extended the same way, so it continues smoothly through the
+boundary. The cases (resting pool, Rayleigh-Taylor instability, dam break, a
+drop in a uniform flow) are in ``Exec/RegTests/VOFTwoPhase``; the geometric
+advection itself is verified in AMReX-Hydro (``Tests/PLIC``).
 
 Turbulent Forcing and Velocity Plotfile
 ---------------------------------------

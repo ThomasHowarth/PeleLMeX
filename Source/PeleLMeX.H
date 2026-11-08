@@ -309,14 +309,11 @@ public:
       uDrift; // ions drift face velocity
 #endif
 #ifdef PELE_USE_VOF
-    // VOF step, for the momentum advection: liquid crossing each face per unit
-    // area [lev][dir]
-    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> vof_lflux;
-    // Cells near the interface at the start of the step, with a ghost layer
-    amrex::Vector<amrex::iMultiFab> vof_band;
-    // Mass and momentum crossing the faces near the
-    // interface, per cell volume, from the cuts of the VOF step [lev][dir]
-    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> vof_momflux;
+    // Mass and momentum fluxes from the cuts of the VOF step [lev][dir].  The
+    // momentum flux of the faces away from the interface is set later, from
+    // the Godunov face velocity (PLIC::FarFieldMomentumFluxes).
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> vof_mflux;
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> vof_pflux;
 #endif
   };
   //-----------------------------------------------------------------------------
@@ -962,21 +959,9 @@ public:
   void VOFCheckSetup();
   void setVOFBoundaryConditions();
   void initLevelVOF(const int lev);
+  // One geometric advection step (Owkes & Desjardins, JCP 270, 2014) with the
+  // AMReX-Hydro PLIC fluxes
   void advanceVOF(std::unique_ptr<AdvanceAdvData>& advData);
-  // One geometric advection step (Owkes & Desjardins, JCP 270, 2014)
-  void VOFAdvectStep(
-    const amrex::Vector<amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>>&
-      a_umac,
-    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_flux,
-    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_momflux,
-    amrex::Vector<amrex::iMultiFab>& a_band);
-  // Liquid crossing the faces of one level in a step
-  void VOFFluxes(
-    const int lev,
-    const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_umac,
-    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& flux,
-    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& momflux,
-    amrex::iMultiFab& band);
   // Conservative momentum advection term, with the mass the VOF flux volumes
   // carry
   void VOFMomentumAdvTerm(
@@ -984,10 +969,6 @@ public:
     const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>&
       a_faces);
   amrex::Real estVOFDt(const PeleLM::TimeStamp a_time);
-  void VOFPrescribedVelocity(
-    std::unique_ptr<AdvanceAdvData>& advData,
-    const amrex::Real a_umac_time,
-    const amrex::Real a_cc_time);
   void VOFTagInterface(const int lev, amrex::TagBoxArray& tags);
   amrex::Real VOFLiquidVolume(const PeleLM::TimeStamp a_time);
   void fillPatchVOF(const PeleLM::TimeStamp a_time);
@@ -1002,7 +983,7 @@ public:
     amrex::MultiFab& a_vof,
     const int nGhost);
   void averageDownVOF(const PeleLM::TimeStamp a_time);
-  // Free-contact-line wall ghost cells, after a fill
+  // Free-contact-line wall ghost cells, after a fill (PLIC::FillWallGhosts)
   void VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost);
   // Mixture density / viscosity from the volume fraction at a_time, in
   // nGhost ghost cells
@@ -1063,10 +1044,6 @@ public:
   // Interface band half-width (in cells) tagged for refinement
   int m_vof_refine_band = 2;
   int m_vof_verbose = 0;
-  // Verification mode: advect the VOF with the prescribed velocity
-  // u = curl(A) from ProblemSpecificFunctions::vof_vector_potential and
-  // skip the momentum update
-  int m_vof_advect_only = 0;
   //-----------------------------------------------------------------------------
 #endif
 #ifdef PELE_USE_SOOT
@@ -2626,7 +2603,7 @@ public:
 #endif
 #ifdef PELE_USE_VOF
   // Volume fraction ghost cells: 7-cell height-function columns evaluated
-  // up to the first ghost layer (pelelmex::vof::nghost)
+  // up to the first ghost layer (PLIC::nGrowF("myc_height"), checked at setup)
   static constexpr int m_nGrowVOF = 4;
 #endif
   static constexpr int m_nGrowAdv = 1;
@@ -2749,16 +2726,6 @@ public:
     return true;
 #else
     return m_incompressible == 0;
-#endif
-  }
-
-  // The velocity is prescribed: no velocity advance
-  [[nodiscard]] bool velocityIsPrescribed() const noexcept
-  {
-#ifdef PELE_USE_VOF
-    return m_vof_advect_only != 0;
-#else
-    return false;
 #endif
   }
 

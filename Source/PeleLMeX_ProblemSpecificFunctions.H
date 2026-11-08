@@ -93,38 +93,6 @@ struct has_bcnormal_vof<T, std::void_t<decltype(&T::bcnormal_vof)>>
 {
 };
 
-// Verification mode (peleLM.vof.advect_only = 1):
-//  - `vof_vector_potential(x, time, A, prob_parm)` returns the vector
-//    potential A (A[2] is the stream function in 2D) of a prescribed
-//    velocity u = curl A.
-template <typename T, typename = void>
-struct has_vof_vector_potential : std::false_type
-{
-};
-
-template <typename T>
-struct has_vof_vector_potential<
-  T,
-  std::void_t<decltype(&T::vof_vector_potential)>> : std::true_type
-{
-};
-
-template <typename PSF, typename ProbParm>
-AMREX_GPU_DEVICE AMREX_FORCE_INLINE void
-call_vof_vector_potential(
-  const amrex::Real x[AMREX_SPACEDIM],
-  const amrex::Real time,
-  amrex::Real A[3],
-  ProbParm const& prob_parm) noexcept
-{
-  if constexpr (has_vof_vector_potential<PSF>::value) {
-    PSF::vof_vector_potential(x, time, A, prob_parm);
-  } else {
-    amrex::ignore_unused(x, time, prob_parm);
-    A[0] = A[1] = A[2] = 0.0;
-  }
-}
-
 template <typename PSF, typename ProbParm>
 AMREX_GPU_DEVICE AMREX_FORCE_INLINE void
 call_initvof(

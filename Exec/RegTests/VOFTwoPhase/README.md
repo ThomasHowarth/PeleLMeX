@@ -2,13 +2,14 @@
 
 Incompressible two-phase cases (`USE_VOF = TRUE`) in which the density and
 viscosity are derived from the liquid volume fraction,
-`rho = F rho_l + (1 - F) rho_g`, with gravity along -y.
+`rho = F rho_l + (1 - F) rho_g`, with gravity along -y where set.
 
 | Input               | Case                                                            |
 |---------------------|-----------------------------------------------------------------|
 | `input.2d-pool`     | Water layer at rest under air; `prob.tilt` tilts the surface     |
 | `input.2d-rt`       | Rayleigh-Taylor instability, rho 3:1, Re = 3000, 3 levels         |
 | `input.2d-dambreak` | Water column collapse (Martin & Moyce 1952), rho 1000:1.2          |
+| `input.2d-translate`| Drop carried by a uniform flow through a periodic box, 2 levels   |
 
 ```
 make -j
@@ -40,8 +41,8 @@ volume is conserved to round-off in all cases.
   The surge front is ahead of the Martin & Moyce data by about 0.3 column
   widths with a similar speed, as is usual for simulations that ignore the
   gate opening.  It also runs with `amr.cfl=0.9`.
-- A uniform flow carrying a 1000:1 drop (`Exec/RegTests/VOFAdvection`,
-  `input.2d-translate peleLM.vof.rho_liquid=1000`) stays exactly uniform, and
+- A uniform flow carrying a 1000:1 drop
+  (`input.2d-translate peleLM.vof.rho_liquid=1000`) stays exactly uniform, and
   its volume fraction and velocity are identical to those of the equal-density
   case.
 
@@ -53,6 +54,11 @@ CTest when configuring with `-DPELE_ENABLE_VOF=ON` (`ctest -L vof`).
 volume conserved to 1e-13 per step, the volume fraction within 1e-9 of [0, 1],
 and for the tilted pools, a velocity below 1e-8 m/s (without the free contact
 line it reaches 6e-3 m/s within 20 steps).  `vof-dambreak-3d` and
-`vof-dambreak-amr-3d` check that w stays at round-off in an extruded flow.
+`vof-dambreak-amr-3d` check that w stays at round-off in an extruded flow, and
+`vof-translate-2d` that a uniform velocity stays uniform across a 1000:1
+interface, with regridding.  The geometric advection itself (shape errors in
+the single vortex, Zalesak's disk and the 3D deformation, independence of the
+box layout and of the number of ranks) is verified in AMReX-Hydro, by
+`Tests/PLIC`.
 
 Surface tension is the next step.
