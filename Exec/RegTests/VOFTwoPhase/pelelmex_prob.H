@@ -7,12 +7,12 @@
 
 #include <PeleLMeX_ProblemSpecificFunctions.H>
 #include <PeleLMeX_Index.H>
-#include <PeleLMeX_VOF_K.H>
+#include <hydro_plic_K.H>
 #include <PMFData.H>
 #include <PelePhysics.H>
 
 // Incompressible two-phase cases with the density and viscosity derived
-// from the liquid volume fraction (gravity along -y):
+// from the liquid volume fraction (gravity along -y, where set):
 //  - pool:     flat liquid layer at rest, below the plane n.(x - c) = 0
 //              through the domain center c with n = (sin tilt, cos tilt)
 //              (tilt in degrees), shifted so that the depth at the center
@@ -21,8 +21,11 @@
 //              F = 1) above y = depth + amplitude * cos(2 pi x / wavelength)
 //  - dambreak: liquid column of width `width` and height `height` in the
 //              lower-left corner, released from rest
+//  - translate: drop (circle / sphere) of radius `radius` at `center`,
+//              carried by the uniform velocity `velocity` through a periodic
+//              domain without gravity: the velocity must stay uniform
 
-enum class TwoPhaseType { Pool, RT, DamBreak };
+enum class TwoPhaseType { Pool, RT, DamBreak, Translate };
 
 struct MyProbParm : public ProbParmDefault
 {
@@ -33,6 +36,11 @@ struct MyProbParm : public ProbParmDefault
   amrex::Real wavelength = 1.0;
   amrex::Real width = 0.146;
   amrex::Real height = 0.292;
+  amrex::Real radius = 0.2;
+  amrex::GpuArray<amrex::Real, AMREX_SPACEDIM> center = {
+    AMREX_D_DECL(0.5, 0.5, 0.5)};
+  amrex::GpuArray<amrex::Real, AMREX_SPACEDIM> velocity = {
+    AMREX_D_DECL(0.0, 0.0, 0.0)};
 };
 
 struct MyProblemSpecificFunctions : public DefaultProblemSpecificFunctions
@@ -47,11 +55,14 @@ struct MyProblemSpecificFunctions : public DefaultProblemSpecificFunctions
     amrex::Array4<amrex::Real> const& state,
     amrex::Array4<amrex::Real> const& /*aux*/,
     amrex::GeometryData const& /*geomdata*/,
-    MyProbParm const& /*prob_parm*/,
+    MyProbParm const& prob_parm,
     pele::physics::PMF::PmfData::DataContainer const* /*pmf_data*/)
   {
-    AMREX_D_TERM(state(i, j, k, VELX) = 0.0;, state(i, j, k, VELY) = 0.0;
-                 , state(i, j, k, VELZ) = 0.0;)
+    // At rest, but for the translated drop
+    const bool moving = (prob_parm.type == TwoPhaseType::Translate);
+    AMREX_D_TERM(state(i, j, k, VELX) = moving ? prob_parm.velocity[0] : 0.0;
+                 , state(i, j, k, VELY) = moving ? prob_parm.velocity[1] : 0.0;
+                 , state(i, j, k, VELZ) = moving ? prob_parm.velocity[2] : 0.0;)
   }
 
   // Walls only: zero velocity
@@ -89,7 +100,7 @@ struct MyProblemSpecificFunctions : public DefaultProblemSpecificFunctions
       const amrex::Real xc = 0.5 * (geomdata.ProbLo(0) + geomdata.ProbHi(0));
       const amrex::Real n[AMREX_SPACEDIM] = {
         AMREX_D_DECL(std::sin(th), std::cos(th), 0.0)};
-      vof(i, j, k) = pelelmex::vof::plane_fraction(
+      vof(i, j, k) = PLIC::plane_fraction(
         i, j, k, geomdata, n, pp.depth + std::sin(th) * xc);
       return;
     }
@@ -112,10 +123,20 @@ struct MyProblemSpecificFunctions : public DefaultProblemSpecificFunctions
     // phi > 0 inside the liquid
     auto phi = [=] AMREX_GPU_DEVICE(
                  amrex::Real x, amrex::Real y, amrex::Real z) -> amrex::Real {
+      if (pp.type == TwoPhaseType::Translate) {
+        const auto c = pp.center;
+        amrex::Real r2 = (x - c[0]) * (x - c[0]) + (y - c[1]) * (y - c[1]);
+#if AMREX_SPACEDIM == 3
+        r2 += (z - c[2]) * (z - c[2]);
+#else
+        amrex::ignore_unused(z);
+#endif
+        return pp.radius * pp.radius - r2;
+      }
       amrex::ignore_unused(z);
       return amrex::min(pp.width - x, pp.height - y);
     };
-    vof(i, j, k) = pelelmex::vof::cell_fraction(i, j, k, geomdata, phi, 16);
+    vof(i, j, k) = PLIC::cell_fraction(i, j, k, geomdata, phi, 16);
   }
 };
 

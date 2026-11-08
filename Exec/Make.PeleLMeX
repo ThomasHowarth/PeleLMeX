@@ -192,6 +192,9 @@ endif
 # AMReX-Hydro sources
 #---------------
 Hdirs := Godunov MOL Utils Projections BDS
+ifeq ($(USE_VOF),TRUE)
+    Hdirs += PLIC
+endif
 ifeq ($(USE_EB), TRUE)
     Hdirs += EBGodunov EBMOL
 endif
