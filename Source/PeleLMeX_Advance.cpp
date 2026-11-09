@@ -123,12 +123,14 @@ PeleLM::Advance(const int is_initIter)
   }
 
   // compute t^{n} data
-  calcViscosity(AmrOldTime);
   if (m_incompressible == 0) {
     calcDiffusivity(AmrOldTime);
+    setViscosityFromDiffusivity(AmrOldTime);
 #ifdef PELE_USE_PLASMA
     poissonSolveEF(AmrOldTime);
 #endif
+  } else {
+    calcViscosity(AmrOldTime);
   }
   if (m_do_les) {
     calcTurbViscosity(AmrOldTime);
@@ -241,9 +243,14 @@ PeleLM::Advance(const int is_initIter)
   if (m_verbose > 1) {
     VelAdvStart = amrex::ParallelDescriptor::second();
   }
-  // Re-evaluate viscosity only if scalar updated
+  // Re-evaluate viscosity only if scalar updated. With divu, calcDivU has
+  // just evaluated the transport (including mu) on the post-SDC state.
   if (m_incompressible == 0) {
-    calcViscosity(AmrNewTime);
+    if (m_has_divu != 0) {
+      setViscosityFromDiffusivity(AmrNewTime);
+    } else {
+      calcViscosity(AmrNewTime);
+    }
   }
 
   // Compute t^{n+1/2} velocity advection term

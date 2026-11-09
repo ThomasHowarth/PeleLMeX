@@ -564,6 +564,9 @@ public:
    * \param a_time either Old or New stamp
    */
   void calcViscosity(const PeleLM::TimeStamp a_time);
+  //! Copy the viscosity calcDiffusivity stored in diff_cc into visc_cc
+  //! (low-Mach only; saves a second transport evaluation)
+  void setViscosityFromDiffusivity(const PeleLM::TimeStamp a_time);
 
   /**
    * \brief Compute the face-centered turbulent viscosity on all levels

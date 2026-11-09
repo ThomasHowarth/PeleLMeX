@@ -301,8 +301,8 @@ PeleLM::evaluateChemExtForces(
   fillPatchState(AmrOldTime);
 
   // compute t^{n} data
-  calcViscosity(AmrOldTime);
   calcDiffusivity(AmrOldTime);
+  setViscosityFromDiffusivity(AmrOldTime);
   if (m_do_les) {
     calcTurbViscosity(AmrOldTime);
   }
@@ -412,8 +412,8 @@ PeleLM::evaluateAdvectionTerms(
   fillPatchState(AmrOldTime);
 
   // compute t^{n} data
-  calcViscosity(AmrOldTime);
   calcDiffusivity(AmrOldTime);
+  setViscosityFromDiffusivity(AmrOldTime);
   if (m_do_les) {
     calcTurbViscosity(AmrOldTime);
   }
