@@ -873,6 +873,11 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
       grids[lev], dmap[lev], 1, m_nGrowdivu, amrex::MFInfo(), Factory(lev));
     if (m_incompressible != 0) {
       divu.setVal(0.0);
+    } else if (m_has_divu != 0) {
+      // Old-time divu and its ghosts were filled by fillPatchState(AmrOldTime)
+      // at the start of the step and do not change during it.
+      amrex::MultiFab::Copy(
+        divu, getLevelDataPtr(lev, AmrOldTime)->divu, 0, 0, 1, m_nGrowdivu);
     } else {
       const amrex::Real time = getTime(lev, AmrOldTime);
       fillpatch_divu(lev, time, divu, m_nGrowdivu);
@@ -1151,6 +1156,11 @@ PeleLM::computePassiveAdvTerms(
       grids[lev], dmap[lev], 1, m_nGrowdivu, amrex::MFInfo(), Factory(lev));
     if (m_incompressible != 0) {
       divu.setVal(0.0);
+    } else if (m_has_divu != 0) {
+      // Old-time divu and its ghosts were filled by fillPatchState(AmrOldTime)
+      // at the start of the step and do not change during it.
+      amrex::MultiFab::Copy(
+        divu, getLevelDataPtr(lev, AmrOldTime)->divu, 0, 0, 1, m_nGrowdivu);
     } else {
       const amrex::Real time = getTime(lev, AmrOldTime);
       fillpatch_divu(lev, time, divu, m_nGrowdivu);
