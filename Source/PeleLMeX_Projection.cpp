@@ -435,62 +435,37 @@ PeleLM::velocityProjection(
   // factor per component because grad_phys p = (T^T / J) grad_Xi p, and
   // only the diagonal 1/fac_i part survives the face-aligned mapping.
   if (incremental == 0) {
-    if (m_incompressible == 0) {
-      for (int lev = 0; lev <= finest_level; ++lev) {
-        auto* ldataOld_p = getLevelDataPtr(lev, AmrOldTime);
-        auto* ldataNew_p = getLevelDataPtr(lev, AmrNewTime);
-        auto const& state_new_ma = ldataNew_p->state.arrays();
-        auto const& gp_old_ma = ldataOld_p->gp.const_arrays();
-        auto const& rho_ma = rhoHalf[lev]->const_arrays();
-        if (m_mesh_mapping) {
-          auto const& fac_ma = m_mesh_map->fac_cc(lev).const_arrays();
-          amrex::ParallelFor(
-            ldataNew_p->state, amrex::IntVect(0), AMREX_SPACEDIM,
-            [state_new_ma, gp_old_ma, rho_ma, fac_ma, dt = a_dt] AMREX_GPU_DEVICE(
-              int box_no, int i, int j, int k, int n) noexcept {
-              amrex::Array4<amrex::Real> vel(state_new_ma[box_no], VELX);
-              const amrex::Real soverrho = dt / rho_ma[box_no](i, j, k);
-              vel(i, j, k, n) += gp_old_ma[box_no](i, j, k, n) * soverrho /
-                                 fac_ma[box_no](i, j, k, n);
-            });
-        } else {
-          amrex::ParallelFor(
-            ldataNew_p->state, amrex::IntVect(0), AMREX_SPACEDIM,
-            [state_new_ma, gp_old_ma, rho_ma, dt = a_dt] AMREX_GPU_DEVICE(
-              int box_no, int i, int j, int k, int n) noexcept {
-              amrex::Array4<amrex::Real> vel(state_new_ma[box_no], VELX);
-              const amrex::Real soverrho = dt / rho_ma[box_no](i, j, k);
-              vel(i, j, k, n) += gp_old_ma[box_no](i, j, k, n) * soverrho;
-            });
-        }
+    const bool lowMach = (m_incompressible == 0);
+    const bool mapped = m_mesh_mapping;
+    // Incompressible: constant dt/rho (using m_dt, as before)
+    const amrex::Real soverrho_const = lowMach ? 0.0 : m_dt / m_rho;
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      auto* ldataOld_p = getLevelDataPtr(lev, AmrOldTime);
+      auto* ldataNew_p = getLevelDataPtr(lev, AmrNewTime);
+      auto const& state_new_ma = ldataNew_p->state.arrays();
+      auto const& gp_old_ma = ldataOld_p->gp.const_arrays();
+      amrex::MultiArray4<amrex::Real const> rho_ma{};
+      if (lowMach) {
+        rho_ma = rhoHalf[lev]->const_arrays();
       }
-    } else {
-      for (int lev = 0; lev <= finest_level; ++lev) {
-        auto* ldataOld_p = getLevelDataPtr(lev, AmrOldTime);
-        auto* ldataNew_p = getLevelDataPtr(lev, AmrNewTime);
-        auto const& state_new_ma = ldataNew_p->state.arrays();
-        auto const& gp_old_ma = ldataOld_p->gp.const_arrays();
-        const amrex::Real soverrho = m_dt / m_rho;
-        if (m_mesh_mapping) {
-          auto const& fac_ma = m_mesh_map->fac_cc(lev).const_arrays();
-          amrex::ParallelFor(
-            ldataNew_p->state, amrex::IntVect(0), AMREX_SPACEDIM,
-            [state_new_ma, gp_old_ma, fac_ma, soverrho] AMREX_GPU_DEVICE(
-              int box_no, int i, int j, int k, int n) noexcept {
-              amrex::Array4<amrex::Real> vel(state_new_ma[box_no], VELX);
-              vel(i, j, k, n) += gp_old_ma[box_no](i, j, k, n) * soverrho /
-                                 fac_ma[box_no](i, j, k, n);
-            });
-        } else {
-          amrex::ParallelFor(
-            ldataNew_p->state, amrex::IntVect(0), AMREX_SPACEDIM,
-            [state_new_ma, gp_old_ma, soverrho] AMREX_GPU_DEVICE(
-              int box_no, int i, int j, int k, int n) noexcept {
-              amrex::Array4<amrex::Real> vel(state_new_ma[box_no], VELX);
-              vel(i, j, k, n) += gp_old_ma[box_no](i, j, k, n) * soverrho;
-            });
-        }
+      amrex::MultiArray4<amrex::Real const> fac_ma{};
+      if (mapped) {
+        fac_ma = m_mesh_map->fac_cc(lev).const_arrays();
       }
+      amrex::ParallelFor(
+        ldataNew_p->state, amrex::IntVect(0), AMREX_SPACEDIM,
+        [=, dt = a_dt] AMREX_GPU_DEVICE(
+          int box_no, int i, int j, int k, int n) noexcept {
+          amrex::Array4<amrex::Real> vel(state_new_ma[box_no], VELX);
+          const amrex::Real soverrho =
+            lowMach ? dt / rho_ma[box_no](i, j, k) : soverrho_const;
+          if (mapped) {
+            vel(i, j, k, n) += gp_old_ma[box_no](i, j, k, n) * soverrho /
+                               fac_ma[box_no](i, j, k, n);
+          } else {
+            vel(i, j, k, n) += gp_old_ma[box_no](i, j, k, n) * soverrho;
+          }
+        });
     }
     amrex::Gpu::streamSynchronize();
   }
