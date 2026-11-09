@@ -1082,7 +1082,8 @@ PeleLM::derive(
   const std::string& a_name,
   const amrex::Real a_time,
   const int lev,
-  const int nGrow)
+  const int nGrow,
+  const amrex::MultiFab* a_state)
 {
   BL_PROFILE("PeleLMeX::derive()");
   AMREX_ASSERT(nGrow >= 0);
@@ -1102,8 +1103,12 @@ PeleLM::derive(
     mf = std::make_unique<amrex::MultiFab>(
       grids[lev], dmap[lev], rec->numDerive(), nGrow, amrex::MFInfo(),
       Factory(lev));
-    std::unique_ptr<amrex::MultiFab> statemf =
-      fillPatchState(lev, a_time, m_nGrowState);
+    std::unique_ptr<amrex::MultiFab> statemf_filled;
+    if (a_state == nullptr) {
+      statemf_filled = fillPatchState(lev, a_time, m_nGrowState);
+      a_state = statemf_filled.get();
+    }
+    AMREX_ASSERT(a_state->nGrow() >= m_nGrowState);
     // Get pressure: TODO no fillpatch for pressure just yet, simply get new
     // state
     auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
@@ -1125,7 +1130,7 @@ PeleLM::derive(
          ++mfi) {
       const amrex::Box& bx = mfi.growntilebox(nGrow);
       amrex::FArrayBox& derfab = (*mf)[mfi];
-      amrex::FArrayBox const& statefab = (*statemf)[mfi];
+      amrex::FArrayBox const& statefab = (*a_state)[mfi];
       amrex::FArrayBox const& reactfab = (*reactmf)[mfi];
       amrex::FArrayBox const& pressfab = ldata_p->press[mfi];
       rec->derFunc()(

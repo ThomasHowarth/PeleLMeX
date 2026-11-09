@@ -773,8 +773,12 @@ PeleLM::writeTemporals()
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> kinEnergy(finest_level + 1);
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> enstrophy(finest_level + 1);
   for (int lev = 0; lev <= finest_level; ++lev) {
-    kinEnergy[lev] = derive("kinetic_energy", m_cur_time, lev, 0);
-    enstrophy[lev] = derive("enstrophy", m_cur_time, lev, 0);
+    // One state fillpatch shared by both derives
+    const std::unique_ptr<amrex::MultiFab> statemf =
+      fillPatchState(lev, m_cur_time, m_nGrowState);
+    kinEnergy[lev] =
+      derive("kinetic_energy", m_cur_time, lev, 0, statemf.get());
+    enstrophy[lev] = derive("enstrophy", m_cur_time, lev, 0, statemf.get());
   }
   amrex::Real kinenergy_int = MFSum(GetVecOfConstPtrs(kinEnergy), 0);
   amrex::Real enstrophy_int = MFSum(GetVecOfConstPtrs(enstrophy), 0);

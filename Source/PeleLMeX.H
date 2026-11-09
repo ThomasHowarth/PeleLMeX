@@ -1594,12 +1594,15 @@ public:
   void loadActiveControlHistory();
   void getActiveControlLowT(amrex::Real& a_coft);
 
-  // Derived variable evaluation
+  // Derived variable evaluation. a_state optionally supplies an already
+  // filled state (m_nGrowState ghosts) so several derives can share one
+  // fillpatch.
   std::unique_ptr<amrex::MultiFab> derive(
     const std::string& a_name,
     const amrex::Real a_time,
     const int lev,
-    const int nGrow);
+    const int nGrow,
+    const amrex::MultiFab* a_state = nullptr);
   std::unique_ptr<amrex::MultiFab> deriveComp(
     const std::string& a_name,
     const amrex::Real a_time,
