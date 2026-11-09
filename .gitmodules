@@ -1,7 +1,8 @@
 [submodule "Submodules/AMReX-Hydro"]
 	path = Submodules/AMReX-Hydro
-	url = https://github.com/AMReX-Fluids/AMReX-Hydro.git
+	url = https://github.com/ThomasHowarth/AMReX-Hydro.git
 	shallow = true
+	branch = plic-5-momentum
 [submodule "Submodules/PelePhysics"]
 	path = Submodules/PelePhysics
 	url = https://github.com/AMReX-Combustion/PelePhysics.git
