@@ -11,7 +11,10 @@ if:
   - the largest velocity magnitude component exceeds ``--max-velocity``,
   - the z velocity exceeds ``--max-z-velocity`` (a flow extruded along z),
   - any velocity component departs from ``--uniform-velocity`` by more than
-    ``--uniform-atol``.
+    ``--uniform-atol``,
+  - ``--laplace`` is given and the last pressure jump between the pure liquid
+    and pure gas cells (printed with surface tension) departs from it by more
+    than ``--laplace-rtol``.
 """
 import argparse
 import math
@@ -23,7 +26,9 @@ def read_log(fname):
     warnings = []
     changes = []
     bounds = []
-    pattern = re.compile(r"VOF: liquid volume \S+, relative change (\S+)")
+    jumps = []
+    pattern = re.compile(r"VOF: liquid volume \S+, relative change ([^\s,]+)")
+    pattern_jump = re.compile(r"VOF: time .* pressure_jump (\S+)")
     pattern_bounds = re.compile(r"F below 0 by ([^\s,]+), above 1 by (\S+)")
     with open(fname) as f:
         for line in f:
@@ -35,7 +40,10 @@ def read_log(fname):
             m = pattern_bounds.search(line)
             if m:
                 bounds.append(max(float(m.group(1)), float(m.group(2))))
-    return warnings, changes, bounds
+            m = pattern_jump.search(line)
+            if m:
+                jumps.append(float(m.group(1)))
+    return warnings, changes, bounds, jumps
 
 
 def read_velocity_extrema(fname, ndim):
@@ -63,11 +71,13 @@ def main():
     parser.add_argument("--max-z-velocity", type=float, default=None)
     parser.add_argument("--uniform-velocity", type=float, nargs="+", default=None)
     parser.add_argument("--uniform-atol", type=float, default=1.0e-12)
+    parser.add_argument("--laplace", type=float, default=None)
+    parser.add_argument("--laplace-rtol", type=float, default=1.0e-2)
     parser.add_argument("--extremas", default="temporals/tempExtremas")
     args = parser.parse_args()
 
     failures = []
-    warnings, changes, bounds = read_log(args.log)
+    warnings, changes, bounds, jumps = read_log(args.log)
 
     if not changes:
         failures.append("no 'VOF: liquid volume' lines: set peleLM.vof.v = 1")
@@ -91,6 +101,17 @@ def main():
             failures.append(
                 f"F left [0, 1] by {worst:.3e} > {args.fraction_atol:.1e}"
             )
+    if args.laplace is not None:
+        if not jumps:
+            failures.append("no pressure jump in the log: set peleLM.vof.sigma")
+        else:
+            err = abs(jumps[-1] - args.laplace) / abs(args.laplace)
+            print(f"pressure jump {jumps[-1]:.8f}, Laplace {args.laplace}, "
+                  f"relative error {err:.3e}")
+            if err > args.laplace_rtol:
+                failures.append(
+                    f"pressure jump error {err:.3e} > {args.laplace_rtol:.1e}"
+                )
 
     if (
         args.max_velocity is not None

@@ -61,4 +61,4 @@ the single vortex, Zalesak's disk and the 3D deformation, independence of the
 box layout and of the number of ranks) is verified in AMReX-Hydro, by
 `Tests/PLIC`.
 
-Surface tension is the next step.
+Surface tension (`peleLM.vof.sigma`) is verified in `Exec/RegTests/VOFDroplet`.

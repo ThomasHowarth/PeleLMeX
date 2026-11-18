@@ -5,5 +5,8 @@
 
 ## The PLIC kernels come from AMReX-Hydro (Hdirs += PLIC in Make.PeleLMeX)
 
+## Headers
+CEXE_headers += PeleLMeX_VOF_SurfaceTension_K.H
+
 ## Sources
 CEXE_sources += PeleLMeX_VOF.cpp

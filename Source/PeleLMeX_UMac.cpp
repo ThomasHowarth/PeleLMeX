@@ -285,7 +285,7 @@ PeleLM::macProject(
 
 #ifdef PELE_USE_VOF
   if (m_incompressible != 0) {
-    // Sharp face density (see VOFFaceProjection)
+    // VOF face density (see getVOFProjFaceDensity and VOFFaceProjection)
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> beta(
       finest_level + 1);
     for (int lev = 0; lev <= finest_level; ++lev) {

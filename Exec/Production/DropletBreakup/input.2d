@@ -1,0 +1,67 @@
+# Aerodynamic breakup of a drop in an impulsively started gas stream (2D:
+# planar, i.e. a liquid cylinder; qualitative only, see README.md).
+# Units: drop diameter D = 1, gas velocity U = 1, gas density rho_g = 1.
+#   density ratio rho_l / rho_g = 1000, viscosity ratio mu_l / mu_g = 50,
+#   gas Reynolds number Re = rho_g U D / mu_g = 1000.
+# The surface tension sets the Weber number We = rho_g U^2 D / sigma: the
+# value below is We = 15 (bag breakup).  run_weber_sweep.sh runs the sweep
+# We = 5, 15, 40, 120 by overriding peleLM.vof.sigma; the Ohnesorge number
+# Oh = mu_l / sqrt(rho_l sigma D) = 0.05 sqrt(We / 1000) stays below 0.02.
+# Times scale with the deformation time t* = t U / D sqrt(rho_g / rho_l),
+# i.e. t* = 1 at t = 31.6; stop_time is t* = 6.
+# The drop travels 20-30 D in that time: the domain is 40 D long and
+# 16 D wide (slip walls, 6% blockage).  The finest level has D / dx = 64.
+
+#----------------------DOMAIN DEFINITION------------------------
+geometry.is_periodic = 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     =  0.0 -8.0
+geometry.prob_hi     = 40.0  8.0
+
+peleLM.lo_bc = Inflow  SlipWallAdiab
+peleLM.hi_bc = Outflow SlipWallAdiab
+
+#-------------------------AMR CONTROL----------------------------
+amr.n_cell          = 160 64
+amr.v               = 1
+amr.max_level       = 4
+amr.ref_ratio       = 2 2 2 2
+amr.regrid_int      = 4
+amr.n_error_buf     = 4 4 4 4
+amr.grid_eff        = 0.7
+amr.blocking_factor = 8
+amr.max_grid_size   = 64
+
+#--------------------------- Problem ----------------------------
+prob.center   = 4.0 0.0
+prob.diameter = 1.0
+prob.velocity = 1.0
+
+#-------------------------PeleLM CONTROL-------------------------
+peleLM.v              = 1
+peleLM.incompressible = 1
+peleLM.vof.rho_liquid = 1000.0
+peleLM.vof.rho_gas    = 1.0
+peleLM.vof.mu_liquid  = 5.0e-2
+peleLM.vof.mu_gas     = 1.0e-3
+peleLM.vof.sigma      = 0.0666666666667   # We = 15
+peleLM.vof.v          = 1
+# Interface band refined to the finest level
+peleLM.vof.refine_band = 3
+
+nodal_proj.rtol = 1.0e-10
+mac_proj.rtol   = 1.0e-10
+
+amr.cfl       = 0.45
+amr.dt_shrink = 0.1
+amr.init_dt   = 1.0e-3
+amr.stop_time = 189.7366596   # t* = 6
+amr.max_step  = 1000000
+amr.plot_per  = 3.16227766    # t* = 0.1
+amr.plot_file = plt
+amr.check_per = 31.6227766    # t* = 1
+amr.check_file = chk
+
+peleLM.do_temporals = 1
+peleLM.temporal_int = 10
+peleLM.do_extremas  = 1

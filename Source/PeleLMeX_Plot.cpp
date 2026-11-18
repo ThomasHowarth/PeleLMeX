@@ -286,8 +286,8 @@ PeleLM::WritePlotFile()
   ncomp += m_nAux;
 
 #ifdef PELE_USE_VOF
-  // Volume fraction and mixture density
-  ncomp += 2;
+  // Volume fraction, mixture density, curvature and pressure
+  ncomp += 4;
 #endif
 
   // Reactions
@@ -409,6 +409,8 @@ PeleLM::WritePlotFile()
 #ifdef PELE_USE_VOF
   plt_VarsName.push_back("vof");
   plt_VarsName.push_back("density");
+  plt_VarsName.push_back("vof_curvature");
+  plt_VarsName.push_back("vof_pressure");
 #endif
 
   if ((m_do_react != 0) && (m_skipInstantRR == 0) && (m_plot_react != 0)) {
@@ -558,6 +560,17 @@ PeleLM::WritePlotFile()
       amrex::MultiFab rho(mf_plt[lev], amrex::make_alias, cnt, 1);
       fillVOFDensity(lev, getTime(lev, AmrNewTime), rho, 0);
     }
+    cnt += 1;
+    {
+      amrex::MultiFab kappa(
+        grids[lev], dmap[lev], 1, 1, amrex::MFInfo(), Factory(lev));
+      // The level data hold F with all its ghost cells
+      VOFCurvature(lev, m_leveldata_new[lev]->vof, kappa);
+      amrex::MultiFab::Copy(mf_plt[lev], kappa, 0, cnt, 1, 0);
+    }
+    cnt += 1;
+    amrex::MultiFab::Copy(
+      mf_plt[lev], m_leveldata_new[lev]->vof_press, 0, cnt, 1, 0);
     cnt += 1;
 #endif
 

@@ -202,7 +202,8 @@ public:
     amrex::MultiFab gp;          // pressure gradient (dim:AMREX_SPACEDIM)
     amrex::MultiFab divu;        // Velocity divergence constraint
 #ifdef PELE_USE_VOF
-    amrex::MultiFab vof; // Liquid volume fraction (dim:1)
+    amrex::MultiFab vof;       // Liquid volume fraction (dim:1)
+    amrex::MultiFab vof_press; // Pressure of the velocity projection (dim:1)
 #endif
 
     // node-centered state multifabs
@@ -971,6 +972,9 @@ public:
   amrex::Real estVOFDt(const PeleLM::TimeStamp a_time);
   void VOFTagInterface(const int lev, amrex::TagBoxArray& tags);
   amrex::Real VOFLiquidVolume(const PeleLM::TimeStamp a_time);
+  // Print the liquid centroid, second moments about it and the extent of
+  // the cells with F > 1/2 (peleLM.vof.v > 0)
+  void VOFLiquidStats(const PeleLM::TimeStamp a_time);
   void fillPatchVOF(const PeleLM::TimeStamp a_time);
   void fillpatch_vof(
     const int lev,
@@ -983,6 +987,8 @@ public:
     amrex::MultiFab& a_vof,
     const int nGhost);
   void averageDownVOF(const PeleLM::TimeStamp a_time);
+  amrex::Box VOFOutflowInnerBox(int lev) const;
+  amrex::Real VOFOutflowSink();
   // Free-contact-line wall ghost cells, after a fill (PLIC::FillWallGhosts)
   void VOFWallGhosts(const int lev, amrex::MultiFab& a_vof, const int nGhost);
   // Mixture density / viscosity from the volume fraction at a_time, in
@@ -1016,7 +1022,12 @@ public:
   // adjacent cell centers (PLIC); time averaged at AmrHalfTime
   amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
   getVOFSharpFaceDensity(const int lev, const PeleLM::TimeStamp a_time);
-  // a_numerator over the sharp face density: the projection coefficient
+  // Face density of the projections: the sharp one or the arithmetic
+  // average of the cell values (peleLM.vof.face_density)
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
+  getVOFProjFaceDensity(const int lev, const PeleLM::TimeStamp a_time);
+  // a_numerator over the face density of the projections: the projection
+  // coefficient
   amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> getVOFFaceBeta(
     const int lev,
     const PeleLM::TimeStamp a_time,
@@ -1026,9 +1037,20 @@ public:
   // a_initPress: only compute the (hydrostatic) pressure gradient.
   void VOFVelocityProjection(const int a_initPress, const amrex::Real a_dt);
   // umac -= beta grad phi, div(beta grad phi) = div(umac), GMRES-MLMG solve
+  // (phi is the pressure when beta = dt / rho_f), returned in a_phi if given
   void VOFFaceProjection(
     const amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>>& a_umac,
-    const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_beta);
+    const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_beta,
+    const amrex::Vector<amrex::MultiFab*>& a_phi = {});
+  // Interface curvature (height functions, see VOFCurvature in
+  // PeleLMeX_VOF.cpp) in the valid and first ghost cells, zero away from
+  // the interface
+  void VOFCurvature(
+    const int lev, const amrex::MultiFab& a_vof, amrex::MultiFab& a_kappa);
+  // Face surface tension force per unit volume sigma kappa_f grad_f F at
+  // a_time, discretized as the face pressure gradient (balanced force)
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
+  getVOFSurfaceTension(const int lev, const amrex::Real a_time);
 
   amrex::BCRec m_bcrec_vof;
   // Phase properties (required; peleLM.rho / peleLM.mu are rejected)
@@ -1038,6 +1060,12 @@ public:
   amrex::Real m_vof_mu_gas = -1.0;
   // Cell viscosity: 0 arithmetic, 1 harmonic average of the phase values
   int m_vof_mu_harmonic = 0;
+  // Surface tension coefficient (0: none)
+  amrex::Real m_vof_sigma = 0.0;
+  // Width in cells of the absorbing outflow band (VOFOutflowInnerBox)
+  int m_vof_outflow_band = 4;
+  // Projection face density: 1 sharp (getVOFSharpFaceDensity), 0 arithmetic
+  int m_vof_sharp_face_density = 1;
   // Well below the limit of 1 to leave room for face velocities exceeding the
   // cell-centered ones used in the estimate
   amrex::Real m_vof_cfl = 0.45;

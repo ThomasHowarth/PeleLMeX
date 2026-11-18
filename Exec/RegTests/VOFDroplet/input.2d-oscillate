@@ -1,0 +1,59 @@
+# Oscillating drop (Rayleigh 1879; Fyfe, Oran & Fritts, JCP 76, 1988):
+# R = 0.2 with the mode-2 perturbation r = R (1 + 0.05 cos 2 theta),
+# density ratio 1000, sigma = 1, no gravity.  For small amplitudes the
+# 2D (cylindrical) drop oscillates at
+#   omega^2 = (n^3 - n) sigma / ((rho_l + rho_g) R^3),  n = 2,
+# i.e. a period of 0.2296; viscosity damps the oscillation.  The period is
+# measured on the second moments of the liquid (analyze_droplet.py).
+
+#----------------------DOMAIN DEFINITION------------------------
+geometry.is_periodic = 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0 0.0
+geometry.prob_hi     = 1.0 1.0
+
+peleLM.lo_bc = SlipWallAdiab SlipWallAdiab
+peleLM.hi_bc = SlipWallAdiab SlipWallAdiab
+
+#-------------------------AMR CONTROL----------------------------
+amr.n_cell          = 64 64
+amr.v               = 1
+amr.max_level       = 0
+amr.ref_ratio       = 2 2
+amr.regrid_int      = 4
+amr.n_error_buf     = 2 2
+amr.grid_eff        = 0.7
+amr.blocking_factor = 8
+amr.max_grid_size   = 32
+
+#--------------------------- Problem ----------------------------
+prob.type      = oscillate
+prob.center    = 0.5 0.5
+prob.radius    = 0.2
+prob.amplitude = 0.05
+
+#-------------------------PeleLM CONTROL-------------------------
+peleLM.v              = 1
+peleLM.incompressible = 1
+peleLM.vof.rho_liquid = 1.0
+peleLM.vof.rho_gas    = 1.0e-3
+peleLM.vof.mu_liquid  = 5.0e-3
+peleLM.vof.mu_gas     = 5.0e-5
+peleLM.vof.sigma      = 1.0
+peleLM.vof.v          = 1
+
+nodal_proj.rtol = 1.0e-11
+mac_proj.rtol   = 1.0e-11
+
+amr.cfl       = 0.45
+amr.dt_shrink = 1.0
+amr.init_dt   = 1.0e-4
+amr.stop_time = 1.0
+amr.max_step  = 100000
+amr.plot_per  = 0.05
+amr.plot_file = plt_osc_
+amr.check_int = -1
+
+peleLM.do_temporals = 1
+peleLM.temporal_int = 1
+peleLM.do_extremas  = 1

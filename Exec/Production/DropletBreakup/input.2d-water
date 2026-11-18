@@ -1,0 +1,80 @@
+# Aerodynamic breakup of a water drop in an air jet (2D: planar, i.e. a
+# water cylinder; qualitative only, see README.md).
+# Dimensional version of input.2d: real fluid properties, SI units.
+#   Water drop, D = 2 mm, 20 C: rho_l = 998.2 kg/m3, mu_l = 1.002e-3 Pa s,
+#     sigma = 0.0728 N/m
+#   Air, 20 C, 1 atm: rho_g = 1.204 kg/m3, mu_g = 1.81e-5 Pa s
+#   density ratio 829, viscosity ratio 55, Oh = mu_l / sqrt(rho_l sigma D)
+#   = 0.0026, Bond number rho_l g D^2 / sigma = 0.54.
+# The air velocity sets the Weber number We = rho_g U^2 D / sigma, as in an
+# air-jet or wind-tunnel experiment.  The value below is U = 21.3 m/s,
+# We = 15 (bag breakup), Re_g = rho_g U D / mu_g = 2830.
+# run_weber_sweep.sh with CASE=water runs We = 5 15 40 120 by overriding
+# prob.velocity and rescaling the times below:
+#   We    U (m/s)   Re_g    t_scale (ms)
+#    5    12.29     1640    4.684
+#   15    21.30     2830    2.704
+#   40    34.78     4630    1.656
+#  120    60.23     8010    0.956
+# t_scale = D / U sqrt(rho_l / rho_g) is the deformation time (t* = 1);
+# stop_time is t* = 6, plotfiles every t* = 0.1, checkpoints every t* = 1.
+# The drop travels 20-30 D in that time: the domain is 80 mm (40 D) long,
+# 32 mm wide (slip walls, 6% blockage).  The finest level has D / dx = 64.
+
+#----------------------DOMAIN DEFINITION------------------------
+geometry.is_periodic = 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0 -0.016
+geometry.prob_hi     = 0.080  0.016
+
+peleLM.lo_bc = Inflow  SlipWallAdiab
+peleLM.hi_bc = Outflow SlipWallAdiab
+
+#-------------------------AMR CONTROL----------------------------
+amr.n_cell          = 160 64
+amr.v               = 1
+amr.max_level       = 4
+amr.ref_ratio       = 2 2 2 2
+amr.regrid_int      = 4
+amr.n_error_buf     = 4 4 4 4
+amr.grid_eff        = 0.7
+amr.blocking_factor = 8
+amr.max_grid_size   = 64
+
+#--------------------------- Problem ----------------------------
+prob.center   = 0.008 0.0     # 4 D from the inlet (m)
+prob.diameter = 2.0e-3   # m
+prob.velocity = 21.2953  # m/s, We = 15
+
+#-------------------------PeleLM CONTROL-------------------------
+peleLM.v              = 1
+peleLM.incompressible = 1
+peleLM.vof.rho_liquid = 998.2     # kg/m3
+peleLM.vof.rho_gas    = 1.204     # kg/m3
+peleLM.vof.mu_liquid  = 1.002e-3  # Pa s
+peleLM.vof.mu_gas     = 1.81e-5   # Pa s
+peleLM.vof.sigma      = 0.0728    # N/m
+peleLM.vof.v          = 1
+# Interface band refined to the finest level
+peleLM.vof.refine_band = 3
+# Gravity across the jet, as for a drop falling through a horizontal air
+# stream.  Off by default: over t* = 6 at We = 15 the drop falls about 0.6 D,
+# which shifts it but hardly changes the breakup (Bo = 0.54 << We).
+#peleLM.gravity = 0.0 -9.81
+
+nodal_proj.rtol = 1.0e-10
+mac_proj.rtol   = 1.0e-10
+
+amr.cfl       = 0.45
+amr.dt_shrink = 0.1
+amr.init_dt   = 1.0e-7          # s
+amr.stop_time = 1.622534e-02    # s, t* = 6 at We = 15
+amr.max_step  = 1000000
+amr.plot_per  = 2.704223e-04    # s, t* = 0.1
+amr.plot_file = plt
+amr.check_per = 2.704223e-03    # s, t* = 1
+amr.check_file = chk
+
+peleLM.do_temporals = 1
+peleLM.temporal_int = 10
+peleLM.do_extremas  = 1

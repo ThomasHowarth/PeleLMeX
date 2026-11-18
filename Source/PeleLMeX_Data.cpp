@@ -56,6 +56,9 @@ PeleLM::LevelData::LevelData(
   }
 #ifdef PELE_USE_VOF
   vof.define(ba, dm, 1, m_nGrowVOF, amrex::MFInfo(), factory);
+  // Diagnostic only, set by each velocity projection
+  vof_press.define(ba, dm, 1, 0, amrex::MFInfo(), factory);
+  vof_press.setVal(0.0);
 #endif
 }
 
