@@ -348,3 +348,21 @@ else()
   endif()
   add_test_r(eb-odeqty-${PELE_DIM}d EB_ODEQty)
 endif()
+
+#=============================================================================
+# Sanitizer subset
+#=============================================================================
+
+# A few short 2D cases run under AddressSanitizer and
+# UndefinedBehaviorSanitizer in CI (ctest -L sanitizer, see the
+# CPU-Sanitizers job in .github/workflows/ci.yml). Between them they cover
+# CVODE chemistry (GMRES and dense direct), AMR with regridding, a periodic
+# closed chamber, EB, ODE quantities and the recycling-plane inflow.
+if(PELE_DIM EQUAL 2)
+  if(NOT PELE_ENABLE_EB)
+    set(PELE_SANITIZER_TESTS flamesheet-drm19-2d covo-2d)
+  else()
+    set(PELE_SANITIZER_TESTS eb_bfs_recycle_amr eb-odeqty-2d)
+  endif()
+  set_property(TEST ${PELE_SANITIZER_TESTS} APPEND PROPERTY LABELS sanitizer)
+endif()
