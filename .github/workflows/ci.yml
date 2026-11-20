@@ -786,6 +786,10 @@ jobs:
     env:
       CCACHE_MAXSIZE: 300M
       CACHE_KEY: ccache-${{github.workflow}}-${{github.job}}-${{matrix.name}}
+      # Strict warnings for the GNU MPI Run builds. AMReX's comps/gnu.mak
+      # assigns CXXFLAGS, which overrides a CXXFLAGS environment variable;
+      # XTRA_CXXFLAGS is appended to it (Tools/GNUMake/Make.defs).
+      XTRA_CXXFLAGS: &strict_cxxflags "-Werror -Wshadow -Woverloaded-virtual -Wunreachable-code"
     defaults:
       run:
         working-directory: ${{matrix.dir}}
@@ -817,6 +821,7 @@ jobs:
     env:
       CCACHE_MAXSIZE: 400M
       CACHE_KEY: ccache-${{github.workflow}}-${{github.job}}
+      XTRA_CXXFLAGS: *strict_cxxflags
     defaults:
       run:
         working-directory: Exec/RegTests/SootRadTest
@@ -855,6 +860,7 @@ jobs:
     env:
       CCACHE_MAXSIZE: 600M
       CACHE_KEY: ccache-${{github.workflow}}-${{github.job}}
+      XTRA_CXXFLAGS: *strict_cxxflags
       TURB_GEN: ${{github.workspace}}/Submodules/PelePhysics/Support/TurbInflowGenerator
     defaults:
       run:
@@ -878,7 +884,9 @@ jobs:
         run: |
           ccache -z
           make -C ${PLOTFILE_TOOLS} -j $(nproc) programs=fcompare
-          make -C ${TURB_GEN} -j $(nproc) COMP=gnu
+          # PelePhysics tool, not PeleLMeX code: the pinned version fails
+          # -Wshadow. Drop XTRA_CXXFLAGS= once the submodule includes the fix.
+          XTRA_CXXFLAGS= make -C ${TURB_GEN} -j $(nproc) COMP=gnu
       - name: Generate the turbulence file
         if: env.RUN_TESTS == 'true'
         working-directory: ${{env.TURB_GEN}}
@@ -967,6 +975,7 @@ jobs:
     env:
       CCACHE_MAXSIZE: 800M
       CACHE_KEY: ccache-${{github.workflow}}-${{github.job}}
+      XTRA_CXXFLAGS: *strict_cxxflags
       CMLM_VERSION: 0.0.1
     defaults:
       run:
