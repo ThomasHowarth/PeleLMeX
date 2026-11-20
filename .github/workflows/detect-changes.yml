@@ -1,6 +1,6 @@
 name: Detect-Changes
 
-# Shared by PeleLMeX-CI, PeleLMeX_linux and unitTest (the same file as
+# Shared by PeleLMeX-CI and unitTest (the same file as
 # PelePhysics', apart from the filter list): whether this run touches
 # anything but docs, so that docs-only changes skip the builds, and whether
 # the jobs without a cache run (not on the scheduled cache refreshes).

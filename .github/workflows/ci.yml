@@ -766,6 +766,277 @@ jobs:
       - name: Run codespell
         run: codespell
 
+  # The GNUmake regression cases, built with MPI and run on 2 ranks (they
+  # were linux.yml). Like the other build jobs they build through ccache
+  # (USE_CCACHE in the job env reaches every make, including the ones
+  # Validate.py runs), save it from development only, and on the scheduled
+  # cache refreshes build without running the cases.
+  MPI-Run:
+    name: GNU MPI Run [${{matrix.name}}]
+    needs: [Detect-Changes, Formatting]
+    if: needs['Detect-Changes'].outputs['has-source-changes'] == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: EBPF3D
+            dir: Exec/RegTests/EB_PipeFlow
+            run: ./PeleLMeX3d.gnu.MPI.ex input.3d-regt amr.max_step=2 amr.plot_int=-1 amr.check_int=-1 amrex.abort_on_unused_inputs=1 amr.n_cell=128 32 32
+          - name: EBBFS
+            dir: Exec/RegTests/EB_BackwardStepFlame
+            run: ./PeleLMeX2d.gnu.MPI.ex eb_bfs.inp amr.max_step=2 amr.plot_int=-1 amr.check_int=-1 amrex.abort_on_unused_inputs=1 mac_proj.verbose=2 mac_proj.atol=5e-11 mac_proj.rtol=5e-11
+          - name: PLASMA
+            dir: Exec/Plasma/FlameSheetIons
+            run: ./PeleLMeX2d.gnu.MPI.PLASMA.ex input.2d-regt amr.max_step=2 amr.plot_int=-1 amr.check_int=-1 amrex.abort_on_unused_inputs=1
+    env:
+      USE_CCACHE: TRUE
+      CCACHE_MAXSIZE: 300M
+      CACHE_KEY: ccache-${{github.workflow}}-${{github.job}}-${{matrix.name}}
+    defaults:
+      run:
+        working-directory: ${{matrix.dir}}
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Dependencies
+        run: ${{github.workspace}}/.github/workflows/dependencies/dependencies_mpi.sh
+      - *install_ccache
+      - *restore_ccache
+      - name: Build
+        run: |
+          ccache -z
+          make TPL COMP=gnu USE_MPI=TRUE
+          make -j $(nproc) COMP=gnu USE_MPI=TRUE
+          ccache -s
+      - name: Run
+        if: env.RUN_TESTS == 'true'
+        run: mpirun -n 2 ${{matrix.run}}
+      - *trim_ccache
+      - *save_ccache
+
+  SootRadTest:
+    name: GNU MPI Run [SootRadTest]
+    needs: [Detect-Changes, Formatting]
+    if: needs['Detect-Changes'].outputs['has-source-changes'] == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      USE_CCACHE: TRUE
+      CCACHE_MAXSIZE: 400M
+      CACHE_KEY: ccache-${{github.workflow}}-${{github.job}}
+    defaults:
+      run:
+        working-directory: Exec/RegTests/SootRadTest
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Dependencies
+        run: ${{github.workspace}}/.github/workflows/dependencies/dependencies_mpi.sh
+      - *install_ccache
+      - *restore_ccache
+      - name: Build Release
+        run: |
+          ccache -z
+          make TPL COMP=gnu USE_MPI=TRUE
+          make -j $(nproc) COMP=gnu USE_MPI=TRUE
+      - name: Run Release
+        if: env.RUN_TESTS == 'true'
+        run: mpirun -n 2 ./PeleLMeX2d.gnu.MPI.ex soot-rad-2d.inp amr.max_step=2 amr.plot_int=2 amr.check_int=2 amrex.abort_on_unused_inputs=1
+      - name: Build Debug
+        run: |
+          make TPL COMP=gnu USE_MPI=TRUE DEBUG=TRUE
+          make -j $(nproc) COMP=gnu USE_MPI=TRUE DEBUG=TRUE
+          ccache -s
+      - name: Run Debug
+        if: env.RUN_TESTS == 'true'
+        run: mpirun -n 2 ./PeleLMeX2d.gnu.DEBUG.MPI.ex soot-rad-2d.inp amr.max_step=2 amr.plot_int=2 amr.check_int=2 amrex.abort_on_unused_inputs=1
+      - *trim_ccache
+      - *save_ccache
+
+  TurbInflow:
+    name: GNU MPI Run [TI3DDBG]
+    needs: [Detect-Changes, Formatting]
+    if: needs['Detect-Changes'].outputs['has-source-changes'] == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      USE_CCACHE: TRUE
+      CCACHE_MAXSIZE: 600M
+      CACHE_KEY: ccache-${{github.workflow}}-${{github.job}}
+      TURB_GEN: ${{github.workspace}}/Submodules/PelePhysics/Support/TurbInflowGenerator
+      PLOTFILE_TOOLS: ${{github.workspace}}/Submodules/PelePhysics/Submodules/amrex/Tools/Plotfile
+    defaults:
+      run:
+        working-directory: Exec/RegTests/TurbInflow
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Dependencies
+        run: ${{github.workspace}}/.github/workflows/dependencies/dependencies_mpi.sh
+      - name: Python packages
+        # Only the cases (gen_hit_ic.py and the check scripts) use them.
+        if: env.RUN_TESTS == 'true'
+        run: |
+          sudo apt-get install -y python3-setuptools
+          python3 -m pip install --user numpy scipy matplotlib
+      - *install_ccache
+      - *restore_ccache
+      - name: Build AMReX Tools and the TurbInflowGenerator
+        run: |
+          ccache -z
+          make -C ${PLOTFILE_TOOLS} -j $(nproc) programs=fcompare
+          make -C ${TURB_GEN} -j $(nproc) COMP=gnu
+      - name: Generate the turbulence file
+        if: env.RUN_TESTS == 'true'
+        working-directory: Submodules/PelePhysics/Support/TurbInflowGenerator
+        run: |
+          ./gen_hit_ic.py -k0 4 -N 32 -Nk 256
+          ./PeleTurb3d.gnu.ex input hit_file=hit_ic_4_32.dat input_ncell=32 amrex.abort_on_unused_inputs=1
+          mkdir ${GITHUB_WORKSPACE}/Exec/RegTests/TurbInflow/TurbFileHIT
+          cp -r TurbTEST ${GITHUB_WORKSPACE}/Exec/RegTests/TurbInflow/TurbFileHIT
+      - name: Build
+        run: |
+          make TPL COMP=gnu USE_MPI=TRUE DEBUG=TRUE
+          make -j $(nproc) COMP=gnu USE_MPI=TRUE DEBUG=TRUE
+      - name: Run
+        if: env.RUN_TESTS == 'true'
+        run: |
+          mpirun -n 2 ./PeleLMeX3d.gnu.DEBUG.MPI.ex input.3d peleLM.num_init_iter=1 amr.n_cell=32 32 32 amr.max_step=2 amr.plot_int=2 amr.check_int=-1 amrex.abort_on_unused_inputs=1
+          mpirun -n 2 ./PeleLMeX3d.gnu.DEBUG.MPI.ex input.3d_twoInjs peleLM.num_init_iter=1 amr.n_cell=32 32 32 amr.max_step=2 amr.plot_int=-1 amr.check_int=-1 amrex.abort_on_unused_inputs=1
+          mpirun -n 2 ./PeleLMeX3d.gnu.DEBUG.MPI.ex input.3d_posX peleLM.num_init_iter=1 amr.n_cell=32 32 32 amr.max_step=2 amr.plot_int=-1 amr.check_int=-1 amrex.abort_on_unused_inputs=1
+          mpirun -n 2 ./PeleLMeX3d.gnu.DEBUG.MPI.ex input.3d_BoxLoZ peleLM.num_init_iter=1 amr.n_cell=32 32 32 amr.max_step=2 amr.plot_int=-1 amr.check_int=-1 amrex.abort_on_unused_inputs=1
+          mpirun -n 2 ./PeleLMeX3d.gnu.DEBUG.MPI.ex input.3d_twoInjsOverlap peleLM.num_init_iter=1 amr.n_cell=32 32 32 amr.max_step=2 amr.plot_int=2 amr.check_int=-1 amrex.abort_on_unused_inputs=0
+          ${GITHUB_WORKSPACE}/Submodules/PelePhysics/Submodules/amrex/Tools/Plotfile/fcompare.gnu.ex plt00002 pltoverlap00002
+          # Mesh mapping x turbulent inflow: the injected field must follow physical,
+          # not computational, transverse positions.  ConstantMap doubles x, so the
+          # mapped run and its unmapped reference share one physical mesh and their
+          # inflow-plane slices must agree (correlation ~1); the tanh case is a smoke test.
+          mpirun -n 2 ./PeleLMeX3d.gnu.DEBUG.MPI.ex input.3d_ConstantMap peleLM.num_init_iter=1 amr.plot_int=2 amr.plot_file=pltCM_ amrex.abort_on_unused_inputs=1
+          mpirun -n 2 ./PeleLMeX3d.gnu.DEBUG.MPI.ex input.3d_ConstantMap_ref peleLM.num_init_iter=1 amr.plot_int=2 amr.plot_file=pltCMref_ amrex.abort_on_unused_inputs=1
+          python3 compare_inflow_plane.py planeCMref_000001 planeCM_000001 --map constant --beta 2 --require 0.99
+          # The same pair is a round-off equivalence test of every mapped operator: on
+          # index-identical grids of the same physical mesh, the ConstantMap run must
+          # reproduce the unmapped one field by field (gradp up to its known fac scaling),
+          # including the gradient derives (mag_vort, vorticity, Qcrit, enstrophy) and
+          # the x/y/z coordinate derives, which must be physical.
+          python3 ../MeshMappingConvergence/compare_plotfiles.py pltCMref_00002 pltCM_00002 --fac 2,1,1 --tol 1e-10
+          mpirun -n 2 ./PeleLMeX3d.gnu.DEBUG.MPI.ex input.3d_TanhStretch peleLM.num_init_iter=1 amr.max_step=2 amr.plot_int=-1 amr.check_int=-1 amrex.abort_on_unused_inputs=1
+          # Same map with x periodic: the tanh clustering straddles the periodic seam and meets the inflow face.
+          # Used to abort in the initial nodal projection (metric ghost cells at the inflow-layer corners were not periodic images).
+          mpirun -n 2 ./PeleLMeX3d.gnu.DEBUG.MPI.ex input.3d_TanhStretch geometry.is_periodic="1 1 0" peleLM.lo_bc="Interior Interior Inflow" peleLM.hi_bc="Interior Interior Outflow" peleLM.num_init_iter=1 amr.max_step=2 amr.plot_int=-1 amr.check_int=-1 amrex.abort_on_unused_inputs=1
+          # Turbulence file extracted from a mesh-mapped precursor (MESHMAP trailer):
+          # the tanh run's inflow ghost layer is dumped every step, turned into a
+          # turbulence file tagged with the run's map, and injected back.  On the
+          # same mesh the ghost layer must reproduce the source planes to round-off;
+          # on a uniform mesh it must equal the source interpolated in the file's Xi
+          # at the physical cell centres (and not the source read at Xi = x).
+          mpirun -n 2 ./PeleLMeX3d.gnu.DEBUG.MPI.ex input.3d_TanhStretch_gen peleLM.num_init_iter=1 amrex.abort_on_unused_inputs=1
+          ${GITHUB_WORKSPACE}/Submodules/PelePhysics/Support/TurbInflowGenerator/PeleTurb3d.gnu.ex type=diag_frame_planes ofile=TurbTanhRT ifiles=$(ls -d ghostTanh_*) normal=2 level=0 periodicity="0 1 0" geometry.mesh_mapping=TanhStretchMap TanhStretchMap.beta="2.0 0.0 0.0"
+          mpirun -n 2 ./PeleLMeX3d.gnu.DEBUG.MPI.ex input.3d_TanhStretch_rt peleLM.num_init_iter=1 amrex.abort_on_unused_inputs=1
+          python3 check_inflow_roundtrip.py ghostTanh_000002 ghostRT_000002 --tol 1e-12
+          mpirun -n 2 ./PeleLMeX3d.gnu.DEBUG.MPI.ex input.3d_Uniform_xmap peleLM.num_init_iter=1 amrex.abort_on_unused_inputs=1
+          python3 check_inflow_roundtrip.py ghostTanh_000002 ghostXM_000002 --source-map tanh --beta 2.0 --tol 1e-10
+          # Same file on a two-level tanh mesh with the inflow face refined: level 0 is
+          # still exact, level 1 (half the file's Xi spacing) must match the source
+          # interpolated in the file's Xi at the fine physical positions.
+          mpirun -n 2 ./PeleLMeX3d.gnu.DEBUG.MPI.ex input.3d_TanhStretch_rt_amr peleLM.num_init_iter=1 amrex.abort_on_unused_inputs=1
+          python3 check_inflow_roundtrip.py ghostTanh_000002 ghostRTamr_000002 --tol 1e-12
+          python3 check_inflow_roundtrip.py ghostTanh_000002 ghostRTamr_000002 --level 1 --source-map tanh --target-map tanh --beta 2.0 --tol 1e-10
+      - name: Build Vortex Test
+        working-directory: Exec/RegTests/PeriodicCases
+        run: |
+          make TPL DIM=3 COMP=gnu USE_MPI=TRUE
+          make -j $(nproc) DIM=3 COMP=gnu USE_MPI=TRUE
+          ccache -s
+      - name: Periodic Vortex for Inflow
+        if: env.RUN_TESTS == 'true'
+        working-directory: Exec/RegTests/PeriodicCases
+        run: mpirun -n 2 ./PeleLMeX3d.gnu.MPI.ex input.3d_CoVo_InflowGen amr.max_step=100 amrex.abort_on_unused_inputs=1
+      - name: Vortex Inflow Generation
+        if: env.RUN_TESTS == 'true'
+        working-directory: Exec/RegTests/PeriodicCases
+        run: |
+          ${TURB_GEN}/PeleTurb3d.gnu.ex type=periodic_plt ofile=PltInflow ifile=plt00000 normal=0 level=1 periodicity="1 1 1"
+          ${TURB_GEN}/PeleTurb3d.gnu.ex type=diag_frame_planes ofile=PlaneInflow ifiles=$(ls -d oplane/plt*) normal=0 level=0 periodicity="1 1 1"
+      - name: Vortex Inflow Test
+        if: env.RUN_TESTS == 'true'
+        working-directory: Exec/RegTests/PeriodicCases
+        run: |
+          mpirun -n 2 ./PeleLMeX3d.gnu.MPI.ex input.3d_CoVo_PlaneInput amr.max_step=80 amrex.abort_on_unused_inputs=0
+          mpirun -n 2 ./PeleLMeX3d.gnu.MPI.ex input.3d_CoVo_PltInput amr.max_step=120 amrex.abort_on_unused_inputs=0
+      - *trim_ccache
+      - *save_ccache
+
+  Spray:
+    name: GNU MPI Run [SPRAY]
+    needs: [Detect-Changes, Formatting]
+    if: needs['Detect-Changes'].outputs['has-source-changes'] == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      USE_CCACHE: TRUE
+      CCACHE_MAXSIZE: 800M
+      CACHE_KEY: ccache-${{github.workflow}}-${{github.job}}
+      CMLM_VERSION: 0.0.1
+    defaults:
+      run:
+        working-directory: Exec/RegTests/SingleDropEvap
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Dependencies
+        run: ${{github.workspace}}/.github/workflows/dependencies/dependencies_mpi.sh
+      - name: Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: CMLM
+        # Includes the Python packages the other scripts use. From the
+        # workspace root: pip -e clones it into ./src/cmlm (--cmlm_path).
+        working-directory: ${{github.workspace}}
+        run: pip install -e git+https://github.com/NatLabRockies/cmlm.git@v${CMLM_VERSION}#egg=cmlm
+      - *install_ccache
+      - *restore_ccache
+      - name: Build AMReX Tools
+        working-directory: Submodules/PelePhysics/Submodules/amrex/Tools/Plotfile
+        run: |
+          ccache -z
+          make -j $(nproc) programs=fcompare
+      - name: Build PeleLMeX for Convergence
+        working-directory: Exec/RegTests/SprayTest
+        run: |
+          make TPL COMP=gnu USE_MPI=TRUE
+          make -j $(nproc) COMP=gnu USE_MPI=TRUE
+      - name: Run Convergence
+        if: env.RUN_TESTS == 'true'
+        working-directory: Exec/RegTests/SprayTest
+        run: |
+          cp ${GITHUB_WORKSPACE}/Submodules/PelePhysics/Submodules/amrex/Tools/Plotfile/fcompare.gnu.ex .
+          sed -i "s/mpiexec -n 1/mpiexec -n 2/g" multiRuns.py
+          ./multiRuns.py
+          ./compareOutput.py
+      # Validate.py builds (-b) and runs each case in one go, so these also run
+      # on the scheduled refreshes: otherwise their builds would drop out of
+      # the trimmed cache.
+      - name: Daif GCM Manifold
+        run: python Validate.py -b -c Daif -m -n 2 --cmlm_path ${GITHUB_WORKSPACE}/src/cmlm
+      - name: Nomura GCM
+        run: python Validate.py -b -c Nomura -n 2
+      - name: WongLin MP Antoine
+        run: python Validate.py -b -c WongLin -l mp -p Antoine -n 2
+      - name: RungeJP8 GCM Many-to-One
+        run: python Validate.py -b -c RungeJP8 -n 2 -r amr.max_step=1000
+      - name: Ccache Report
+        run: ccache -s
+      - *trim_ccache
+      - *save_ccache
+
   # The one check for branch protection to require in PeleLMeX-CI. A job skipped
   # by its own `if:` (docs-only changes) does not expand its matrix, so its
   # per-entry checks never report and a PR requiring them waits forever;
@@ -774,7 +1045,8 @@ jobs:
   CI-Status:
     needs: [Detect-Changes, Formatting, CPU-GNUmake, CPU-CMake, CPU-CMake-Hypre,
             CPU-CMake-SINGLE, GPU-Nvidia, GPU-AMD, GPU-Intel, Lint-clang-tidy,
-            Lint-codeql, Lint-codespell]
+            Lint-codeql, Lint-codespell, MPI-Run, SootRadTest, TurbInflow,
+            Spray]
     if: always()
     runs-on: ubuntu-latest
     steps:

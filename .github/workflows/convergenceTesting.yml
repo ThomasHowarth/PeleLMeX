@@ -24,13 +24,10 @@ jobs:
       run: |
          .github/workflows/dependencies/dependencies.sh
          sudo apt-get install -y python3-setuptools
-         python3 -m pip install --user numpy
-         python3 -m pip install --user argparse
-         python3 -m pip install --user matplotlib
+         python3 -m pip install --user numpy matplotlib
     - name: Build AMReX Tools
       working-directory: ./Submodules/PelePhysics/Submodules/amrex/Tools/Plotfile
-      run: |
-        make
+      run: make -j $(nproc) programs=fcompare
     - name: Build PeleLMeX
       working-directory: ./Exec/RegTests/PeriodicCases
       run: |
