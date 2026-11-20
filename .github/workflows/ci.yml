@@ -437,10 +437,9 @@ jobs:
       - *install_ccache
       - *restore_ccache
       - name: Configure
+        # nvcc is on the PATH: dependencies_cuda.sh exports the toolkit
+        # (PATH, LD_LIBRARY_PATH, CUDA_HOME) to the later steps.
         run: |
-          # /usr/local/cuda points at whichever version dependencies_cuda.sh installed.
-          export PATH=/usr/local/nvidia/bin:/usr/local/cuda/bin:${PATH}
-          export LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
           cmake -Bbuild-cuda \
             -DCMAKE_BUILD_TYPE:STRING=Release \
             -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON \
@@ -531,18 +530,12 @@ jobs:
       - name: Dependencies
         run: |
           ${{github.workspace}}/Submodules/PelePhysics/Submodules/amrex/.github/workflows/dependencies/ubuntu_free_disk_space.sh
-          sudo wget https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
-          sudo apt-key add GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
-          echo "deb https://apt.repos.intel.com/oneapi all main" | sudo tee /etc/apt/sources.list.d/oneAPI.list
-          sudo apt-get update
-          sudo apt-get install -y intel-oneapi-compiler-dpcpp-cpp intel-oneapi-mkl-devel
+          # Also sources setvars.sh in every later step (BASH_ENV).
+          ${{github.workspace}}/Submodules/PelePhysics/.github/workflows/dependencies/dependencies_dpcpp.sh
       - *install_ccache
       - *restore_ccache
       - name: Configure
         run: |
-          set +e
-          source /opt/intel/oneapi/setvars.sh
-          set -e
           cmake -B${{runner.workspace}}/build-sycl \
             -DCMAKE_BUILD_TYPE:STRING=Release \
             -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON \
@@ -555,9 +548,6 @@ jobs:
             ${{github.workspace}}
       - name: Build
         run: |
-          set +e
-          source /opt/intel/oneapi/setvars.sh
-          set -e
           ccache -z
           cmake --build ${{runner.workspace}}/build-sycl --parallel ${{env.NPROCS}}
       - name: Ccache Report
