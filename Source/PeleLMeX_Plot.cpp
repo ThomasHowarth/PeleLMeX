@@ -260,17 +260,11 @@ PeleLM::WritePlotFile()
   // Number of components
   int ncomp = 0;
 
-  // State
+  // State, then pressure gradients if requested
   if (m_incompressible != 0) {
-    // Velocity + pressure gradients
-    ncomp = 2 * AMREX_SPACEDIM;
+    ncomp = AMREX_SPACEDIM;
   } else {
-    // State + pressure gradients
-    if (m_plot_grad_p != 0) {
-      ncomp = NVAR + AMREX_SPACEDIM;
-    } else {
-      ncomp = NVAR;
-    }
+    ncomp = NVAR;
     // Make the plot lighter by dropping species by default
     if (m_plotStateSpec == 0) {
       ncomp -= NUM_SPECIES;
@@ -278,6 +272,9 @@ PeleLM::WritePlotFile()
     if (m_has_divu != 0) {
       ncomp += 1;
     }
+  }
+  if (m_plot_grad_p != 0) {
+    ncomp += AMREX_SPACEDIM;
   }
 
   ncomp += m_nAux;
