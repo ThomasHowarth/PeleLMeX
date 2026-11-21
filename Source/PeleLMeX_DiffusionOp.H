@@ -50,7 +50,6 @@ public:
     amrex::Vector<amrex::MultiFab*> const& a_phi,
     const int phi_comp,
     amrex::Vector<amrex::MultiFab const*> const& a_phiEB,
-    const int phiEB_comp,
     amrex::Vector<amrex::MultiFab const*> const& a_rhs,
     const int rhs_comp,
     amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>> const&
@@ -61,7 +60,6 @@ public:
     amrex::Vector<amrex::MultiFab const*> const& a_bcoeff,
     const int bcoeff_comp,
     amrex::Vector<amrex::MultiFab const*> const& a_bcoeffEB,
-    const int bcoeffEB_comp,
     amrex::Vector<amrex::BCRec> a_bcrec,
     const int ncomp,
     const int isPoissonSolve,

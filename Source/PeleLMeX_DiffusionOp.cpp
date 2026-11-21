@@ -6,7 +6,6 @@
 #include <AMReX_VisMF.H>
 #include <AMReX_GMRES_MLMG.H>
 #ifdef AMREX_USE_HYPRE
-#include <AMReX_HypreMLABecLap.H>
 #endif
 
 #ifdef AMREX_USE_EB
@@ -669,7 +668,6 @@ DiffusionOp::diffuse_scalar(
   amrex::Vector<amrex::MultiFab*> const& a_phi,
   const int phi_comp,
   amrex::Vector<amrex::MultiFab const*> const& a_phiEB,
-  const int /*phiEB_comp*/,
   amrex::Vector<amrex::MultiFab const*> const& a_rhs,
   const int rhs_comp,
   amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>> const& a_flux,
@@ -679,7 +677,6 @@ DiffusionOp::diffuse_scalar(
   amrex::Vector<amrex::MultiFab const*> const& a_bcoeff,
   const int bcoeff_comp,
   amrex::Vector<amrex::MultiFab const*> const& a_bcoeffEB,
-  const int /*bcoeffEB_comp*/,
   amrex::Vector<amrex::BCRec> a_bcrec,
   const int ncomp,
   const int isPoissonSolve,
@@ -1675,7 +1672,6 @@ DiffusionTensorOp::computeGradientTensor(
   }
 
   // Set up some parameters
-  m_apply_op->setMaxOrder(m_mg_maxorder);
   m_apply_op->setScalars(0.0, 1.0);
   for (int lev = 0; lev <= finest_level; ++lev) {
     m_apply_op->setShearViscosity(lev, 0.0);
@@ -1801,11 +1797,9 @@ DiffusionTensorOp::compute_divtau(
           });
       }
       amrex::Gpu::streamSynchronize();
-#if defined(AMREX_MLTENSOROP_HAS_MAPPING_FACTORS) && !defined(AMREX_USE_EB)
+#ifdef AMREX_MLTENSOROP_HAS_MAPPING_FACTORS
       // The scaled face viscosity handles the normal-derivative part; the
       // transpose and bulk (cross) terms need the per-direction factors.
-      // (m_apply_op is an MLEBTensorOp with EB, which has no mapping API;
-      // mesh mapping is rejected at runtime with EB anyway.)
       m_apply_op->setMappingFactors(
         lev, {AMREX_D_DECL(
                &mm->fac_fc(lev, 0), &mm->fac_fc(lev, 1), &mm->fac_fc(lev, 2))});

@@ -1704,11 +1704,10 @@ PeleLM::differentialDiffusionUpdate(
         }
         getDiffusionOp()->diffuse_scalar(
           GetVecOfPtrs(getTempVect(AmrNewTime)), 0, GetVecOfConstPtrs(EBvalue),
-          0, GetVecOfConstPtrs(rhs), 0, GetVecOfArrOfPtrs(fluxes), NUM_SPECIES,
+          GetVecOfConstPtrs(rhs), 0, GetVecOfArrOfPtrs(fluxes), NUM_SPECIES,
           GetVecOfConstPtrs(RhoCp), {},
           GetVecOfConstPtrs(getDiffusivityVect(AmrNewTime)), NUM_SPECIES,
-          GetVecOfConstPtrs(EBdiff), 0, bcRecTemp, 1, 0, m_dt, {},
-          "Temperature");
+          GetVecOfConstPtrs(EBdiff), bcRecTemp, 1, 0, m_dt, {}, "Temperature");
       } else
 #endif
       {
