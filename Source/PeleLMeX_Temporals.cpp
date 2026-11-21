@@ -4,6 +4,76 @@
 
 using namespace amrex::literals;
 
+namespace {
+// Sums over the low and high domain faces normal to idim of
+// cellSum(flux, i, j, k, area), where flux is the face data a_face (on the
+// level of a_geom, level 0 here) and area the face area (from
+// Geometry::GetFaceArea on RZ meshes). Reduced over all ranks.
+template <typename F>
+std::array<amrex::Real, 2>
+domainFaceSums(
+  const amrex::MultiFab& a_face,
+  const amrex::Geometry& a_geom,
+  const int idim,
+  F const& cellSum)
+{
+  auto const faceDomain =
+    amrex::convert(a_geom.Domain(), amrex::IntVect::TheDimensionVector(idim));
+  auto const& fma = a_face.const_arrays();
+
+  // Uniform face area of a Cartesian cell
+  const auto dx = a_geom.CellSizeArray();
+  amrex::Real area = 1.0;
+  for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+    if (d != idim) {
+      area *= dx[d];
+    }
+  }
+
+  auto lohi =
+    [=] AMREX_GPU_DEVICE(
+      int box_no, int i, int j, int k,
+      amrex::Real a) noexcept -> amrex::GpuTuple<amrex::Real, amrex::Real> {
+    const int idx = (idim == 0) ? i : ((idim == 1) ? j : k);
+    const amrex::Real low = (idx == faceDomain.smallEnd(idim))
+                              ? cellSum(fma[box_no], i, j, k, a)
+                              : 0.0;
+    const amrex::Real high =
+      (idx == faceDomain.bigEnd(idim)) ? cellSum(fma[box_no], i, j, k, a) : 0.0;
+    return {low, high};
+  };
+
+  amrex::GpuTuple<amrex::Real, amrex::Real> r;
+#if (AMREX_SPACEDIM == 2)
+  if (a_geom.IsRZ()) {
+    amrex::MultiFab mf_a;
+    a_geom.GetFaceArea(
+      mf_a, amrex::convert(a_face.boxArray(), amrex::IntVect::TheCellVector()),
+      a_face.DistributionMap(), idim, 0);
+    auto const& ama = mf_a.const_arrays();
+    r = amrex::ParReduce(
+      amrex::TypeList<amrex::ReduceOpSum, amrex::ReduceOpSum>{},
+      amrex::TypeList<amrex::Real, amrex::Real>{}, a_face, amrex::IntVect(0),
+      [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+        return lohi(box_no, i, j, k, ama[box_no](i, j, k));
+      });
+  } else
+#endif
+  {
+    r = amrex::ParReduce(
+      amrex::TypeList<amrex::ReduceOpSum, amrex::ReduceOpSum>{},
+      amrex::TypeList<amrex::Real, amrex::Real>{}, a_face, amrex::IntVect(0),
+      [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+        return lohi(box_no, i, j, k, area);
+      });
+  }
+  std::array<amrex::Real, 2> sums{amrex::get<0>(r), amrex::get<1>(r)};
+  amrex::ParallelAllReduce::Sum<amrex::Real>(
+    sums.data(), 2, amrex::ParallelContext::CommunicatorSub());
+  return sums;
+}
+} // namespace
+
 void
 PeleLM::initTemporals(const PeleLM::TimeStamp a_time)
 {
@@ -129,99 +199,20 @@ PeleLM::addMassFluxes(
     return;
   }
 
-  // Get the face areas
-  const amrex::Real* dx = a_geom.CellSize();
-  amrex::Array<amrex::Real, AMREX_SPACEDIM> area;
-#if (AMREX_SPACEDIM == 1)
-  area[0] = 1.0;
-#elif (AMREX_SPACEDIM == 2)
-  area[0] = dx[1];
-  area[1] = dx[0];
-#else
-  area[0] = dx[1] * dx[2];
-  area[1] = dx[0] * dx[2];
-  area[2] = dx[0] * dx[1];
-#endif
-
   for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-    auto faceDomain =
-      amrex::convert(a_geom.Domain(), amrex::IntVect::TheDimensionVector(idim));
-
-    auto const& fma = a_fluxes[idim]->const_arrays();
-
-    amrex::Real sumLo = 0.0;
-    amrex::Real sumHi = 0.0;
-
-#if (AMREX_SPACEDIM == 2)
-    if (geom[0].IsRZ()) {
-      amrex::MultiFab mf_a;
-      geom[0].GetFaceArea(mf_a, grids[0], dmap[0], idim, 0);
-      auto const& ama = mf_a.const_arrays();
-      auto r = amrex::ParReduce(
-        amrex::TypeList<amrex::ReduceOpSum, amrex::ReduceOpSum>{},
-        amrex::TypeList<amrex::Real, amrex::Real>{}, *a_fluxes[idim],
-        amrex::IntVect(0),
-        [fma, ama, idim, faceDomain] AMREX_GPU_DEVICE(
-          int box_no, int i, int j,
-          int k) noexcept -> amrex::GpuTuple<amrex::Real, amrex::Real> {
-          amrex::Array4<const amrex::Real> const& flux = fma[box_no];
-          amrex::Array4<const amrex::Real> const& area_ar = ama[box_no];
-
-          int idx = (idim == 0) ? i : ((idim == 1) ? j : k);
-          // low
-          amrex::Real low = 0.0;
-          if (idx == faceDomain.smallEnd(idim)) {
-            for (int n = 0; n < NUM_SPECIES; ++n) {
-              low += flux(i, j, k, n) * area_ar(i, j, k);
-            }
-          }
-          // high
-          amrex::Real high = 0.0;
-          if (idx == faceDomain.bigEnd(idim)) {
-            for (int n = 0; n < NUM_SPECIES; ++n) {
-              high += flux(i, j, k, n) * area_ar(i, j, k);
-            }
-          }
-          return {low, high};
-        });
-      sumLo = amrex::get<0>(r);
-      sumHi = amrex::get<1>(r);
-    } else
-#endif
-    {
-      auto r = amrex::ParReduce(
-        amrex::TypeList<amrex::ReduceOpSum, amrex::ReduceOpSum>{},
-        amrex::TypeList<amrex::Real, amrex::Real>{}, *a_fluxes[idim],
-        amrex::IntVect(0),
-        [fma, idim, faceDomain, area] AMREX_GPU_DEVICE(
-          int box_no, int i, int j,
-          int k) noexcept -> amrex::GpuTuple<amrex::Real, amrex::Real> {
-          amrex::Array4<const amrex::Real> const& flux = fma[box_no];
-
-          int idx = (idim == 0) ? i : ((idim == 1) ? j : k);
-          // low
-          amrex::Real low = 0.0;
-          if (idx == faceDomain.smallEnd(idim)) {
-            for (int n = 0; n < NUM_SPECIES; ++n) {
-              low += flux(i, j, k, n) * area[idim];
-            }
-          }
-          // high
-          amrex::Real high = 0.0;
-          if (idx == faceDomain.bigEnd(idim)) {
-            for (int n = 0; n < NUM_SPECIES; ++n) {
-              high += flux(i, j, k, n) * area[idim];
-            }
-          }
-          return {low, high};
-        });
-      sumLo = amrex::get<0>(r);
-      sumHi = amrex::get<1>(r);
-    }
-    amrex::ParallelAllReduce::Sum<amrex::Real>(
-      {sumLo, sumHi}, amrex::ParallelContext::CommunicatorSub());
-    m_domainMassFlux[2 * idim] += sumLo;
-    m_domainMassFlux[2 * idim + 1] -= sumHi; // Outflow, negate flux
+    const auto sums = domainFaceSums(
+      *a_fluxes[idim], a_geom, idim,
+      [] AMREX_GPU_DEVICE(
+        amrex::Array4<const amrex::Real> const& flux, int i, int j, int k,
+        amrex::Real area) noexcept {
+        amrex::Real sum = 0.0;
+        for (int n = 0; n < NUM_SPECIES; ++n) {
+          sum += flux(i, j, k, n) * area;
+        }
+        return sum;
+      });
+    m_domainMassFlux[2 * idim] += sums[0];
+    m_domainMassFlux[2 * idim + 1] -= sums[1]; // Outflow, negate flux
   }
 }
 
@@ -229,94 +220,17 @@ void
 PeleLM::addUmacFluxes(
   const std::unique_ptr<AdvanceAdvData>& advData, const amrex::Geometry& a_geom)
 {
-  // Get the face areas
-  const amrex::Real* dx = a_geom.CellSize();
-  amrex::Array<amrex::Real, AMREX_SPACEDIM> area;
-#if (AMREX_SPACEDIM == 1)
-  area[0] = 1.0;
-#elif (AMREX_SPACEDIM == 2)
-  area[0] = dx[1];
-  area[1] = dx[0];
-#else
-  area[0] = dx[1] * dx[2];
-  area[1] = dx[0] * dx[2];
-  area[2] = dx[0] * dx[1];
-#endif
-
   // Just use level 0 since we are calling after averaging down
   constexpr int lev = 0;
 
   for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-    auto faceDomain =
-      amrex::convert(a_geom.Domain(), amrex::IntVect::TheDimensionVector(idim));
-
-    auto const& fma = advData->umac[lev][idim].const_arrays();
-
-    amrex::Real sumLo = 0.0;
-    amrex::Real sumHi = 0.0;
-
-#if (AMREX_SPACEDIM == 2)
-    if (geom[0].IsRZ()) {
-      amrex::MultiFab mf_a;
-      geom[0].GetFaceArea(mf_a, grids[0], dmap[0], idim, 0);
-      auto const& ama = mf_a.const_arrays();
-      auto r = amrex::ParReduce(
-        amrex::TypeList<amrex::ReduceOpSum, amrex::ReduceOpSum>{},
-        amrex::TypeList<amrex::Real, amrex::Real>{}, advData->umac[lev][idim],
-        amrex::IntVect(0),
-        [fma, ama, idim, faceDomain] AMREX_GPU_DEVICE(
-          int box_no, int i, int j,
-          int k) noexcept -> amrex::GpuTuple<amrex::Real, amrex::Real> {
-          amrex::Array4<const amrex::Real> const& flux = fma[box_no];
-          amrex::Array4<const amrex::Real> const& area_ar = ama[box_no];
-
-          int idx = (idim == 0) ? i : ((idim == 1) ? j : k);
-          // low
-          amrex::Real low = 0.0;
-          if (idx == faceDomain.smallEnd(idim)) {
-            low += flux(i, j, k) * area_ar(i, j, k);
-          }
-          // high
-          amrex::Real high = 0.0;
-          if (idx == faceDomain.bigEnd(idim)) {
-            high += flux(i, j, k) * area_ar(i, j, k);
-          }
-          return {low, high};
-        });
-      sumLo = amrex::get<0>(r);
-      sumHi = amrex::get<1>(r);
-    } else
-#endif
-    {
-      auto r = amrex::ParReduce(
-        amrex::TypeList<amrex::ReduceOpSum, amrex::ReduceOpSum>{},
-        amrex::TypeList<amrex::Real, amrex::Real>{}, advData->umac[lev][idim],
-        amrex::IntVect(0),
-        [fma, idim, faceDomain, area] AMREX_GPU_DEVICE(
-          int box_no, int i, int j,
-          int k) noexcept -> amrex::GpuTuple<amrex::Real, amrex::Real> {
-          amrex::Array4<const amrex::Real> const& flux = fma[box_no];
-
-          int idx = (idim == 0) ? i : ((idim == 1) ? j : k);
-          // low
-          amrex::Real low = 0.0;
-          if (idx == faceDomain.smallEnd(idim)) {
-            low += flux(i, j, k) * area[idim];
-          }
-          // high
-          amrex::Real high = 0.0;
-          if (idx == faceDomain.bigEnd(idim)) {
-            high += flux(i, j, k) * area[idim];
-          }
-          return {low, high};
-        });
-      sumLo = amrex::get<0>(r);
-      sumHi = amrex::get<1>(r);
-    }
-    amrex::ParallelAllReduce::Sum<amrex::Real>(
-      {sumLo, sumHi}, amrex::ParallelContext::CommunicatorSub());
-    m_domainUmacFlux[2 * idim] += sumLo;
-    m_domainUmacFlux[2 * idim + 1] -= sumHi; // Outflow, negate flux
+    const auto sums = domainFaceSums(
+      advData->umac[lev][idim], a_geom, idim,
+      [] AMREX_GPU_DEVICE(
+        amrex::Array4<const amrex::Real> const& flux, int i, int j, int k,
+        amrex::Real area) noexcept { return flux(i, j, k) * area; });
+    m_domainUmacFlux[2 * idim] += sums[0];
+    m_domainUmacFlux[2 * idim + 1] -= sums[1]; // Outflow, negate flux
   }
 }
 
@@ -358,93 +272,16 @@ PeleLM::addRhoHFluxes(
     return;
   }
 
-  // Get the face areas
-  const amrex::Real* dx = a_geom.CellSize();
-  amrex::Array<amrex::Real, AMREX_SPACEDIM> area;
-#if (AMREX_SPACEDIM == 1)
-  area[0] = 1.0;
-#elif (AMREX_SPACEDIM == 2)
-  area[0] = dx[1];
-  area[1] = dx[0];
-#else
-  area[0] = dx[1] * dx[2];
-  area[1] = dx[0] * dx[2];
-  area[2] = dx[0] * dx[1];
-#endif
-
   for (int n = NUM_SPECIES; n < NUM_SPECIES + a_nComp; ++n) {
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      auto faceDomain = amrex::convert(
-        a_geom.Domain(), amrex::IntVect::TheDimensionVector(idim));
-
-      auto const& fma = a_fluxes[idim]->const_arrays();
-
-      amrex::Real sumLo = 0.0;
-      amrex::Real sumHi = 0.0;
-
-#if (AMREX_SPACEDIM == 2)
-      if (geom[0].IsRZ()) {
-        amrex::MultiFab mf_a;
-        geom[0].GetFaceArea(mf_a, grids[0], dmap[0], idim, 0);
-        auto const& ama = mf_a.const_arrays();
-        auto r = amrex::ParReduce(
-          amrex::TypeList<amrex::ReduceOpSum, amrex::ReduceOpSum>{},
-          amrex::TypeList<amrex::Real, amrex::Real>{}, *a_fluxes[idim],
-          amrex::IntVect(0),
-          [fma, ama, idim, faceDomain, n] AMREX_GPU_DEVICE(
-            int box_no, int i, int j,
-            int k) noexcept -> amrex::GpuTuple<amrex::Real, amrex::Real> {
-            amrex::Array4<const amrex::Real> const& flux = fma[box_no];
-            amrex::Array4<const amrex::Real> const& area_ar = ama[box_no];
-
-            int idx = (idim == 0) ? i : ((idim == 1) ? j : k);
-            // low
-            amrex::Real low = 0.0;
-            if (idx == faceDomain.smallEnd(idim)) {
-              low += flux(i, j, k, n) * area_ar(i, j, k);
-            }
-            // high
-            amrex::Real high = 0.0;
-            if (idx == faceDomain.bigEnd(idim)) {
-              high += flux(i, j, k, n) * area_ar(i, j, k);
-            }
-            return {low, high};
-          });
-        sumLo = amrex::get<0>(r);
-        sumHi = amrex::get<1>(r);
-      } else
-#endif
-      {
-        auto r = amrex::ParReduce(
-          amrex::TypeList<amrex::ReduceOpSum, amrex::ReduceOpSum>{},
-          amrex::TypeList<amrex::Real, amrex::Real>{}, *a_fluxes[idim],
-          amrex::IntVect(0),
-          [fma, idim, faceDomain, area, n] AMREX_GPU_DEVICE(
-            int box_no, int i, int j,
-            int k) noexcept -> amrex::GpuTuple<amrex::Real, amrex::Real> {
-            amrex::Array4<const amrex::Real> const& flux = fma[box_no];
-
-            int idx = (idim == 0) ? i : ((idim == 1) ? j : k);
-            // low
-            amrex::Real low = 0.0;
-            if (idx == faceDomain.smallEnd(idim)) {
-              low += flux(i, j, k, n) * area[idim];
-            }
-            // high
-            amrex::Real high = 0.0;
-            if (idx == faceDomain.bigEnd(idim)) {
-              high += flux(i, j, k, n) * area[idim];
-            }
-            return {low, high};
-          });
-        sumLo = amrex::get<0>(r);
-        sumHi = amrex::get<1>(r);
-      }
-      amrex::ParallelAllReduce::Sum<amrex::Real>(
-        {sumLo, sumHi}, amrex::ParallelContext::CommunicatorSub());
-      m_domainRhoHFlux[2 * idim] += a_factor * sumLo;
+      const auto sums = domainFaceSums(
+        *a_fluxes[idim], a_geom, idim,
+        [n] AMREX_GPU_DEVICE(
+          amrex::Array4<const amrex::Real> const& flux, int i, int j, int k,
+          amrex::Real area) noexcept { return flux(i, j, k, n) * area; });
+      m_domainRhoHFlux[2 * idim] += a_factor * sums[0];
       m_domainRhoHFlux[2 * idim + 1] -=
-        a_factor * sumHi; // Outflow, negate flux
+        a_factor * sums[1]; // Outflow, negate flux
     }
   }
 }
@@ -519,95 +356,16 @@ PeleLM::addRhoYFluxes(
     return;
   }
 
-  // Get the face areas
-  const amrex::Real* dx = a_geom.CellSize();
-  amrex::Array<amrex::Real, AMREX_SPACEDIM> area;
-#if (AMREX_SPACEDIM == 1)
-  area[0] = 1.0;
-#elif (AMREX_SPACEDIM == 2)
-  area[0] = dx[1];
-  area[1] = dx[0];
-#else
-  area[0] = dx[1] * dx[2];
-  area[1] = dx[0] * dx[2];
-  area[2] = dx[0] * dx[1];
-#endif
-
-  // Outer loop over species
   for (int n = 0; n < NUM_SPECIES; ++n) {
-    // Inner loop over dimensions
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      auto faceDomain = amrex::convert(
-        a_geom.Domain(), amrex::IntVect::TheDimensionVector(idim));
-
-      auto const& fma = a_fluxes[idim]->const_arrays();
-
-      amrex::Real sumLo = 0.0;
-      amrex::Real sumHi = 0.0;
-
-#if (AMREX_SPACEDIM == 2)
-      if (geom[0].IsRZ()) {
-        amrex::MultiFab mf_a;
-        geom[0].GetFaceArea(mf_a, grids[0], dmap[0], idim, 0);
-        auto const& ama = mf_a.const_arrays();
-        auto r = amrex::ParReduce(
-          amrex::TypeList<amrex::ReduceOpSum, amrex::ReduceOpSum>{},
-          amrex::TypeList<amrex::Real, amrex::Real>{}, *a_fluxes[idim],
-          amrex::IntVect(0),
-          [fma, ama, idim, faceDomain, n] AMREX_GPU_DEVICE(
-            int box_no, int i, int j,
-            int k) noexcept -> amrex::GpuTuple<amrex::Real, amrex::Real> {
-            amrex::Array4<const amrex::Real> const& flux = fma[box_no];
-            amrex::Array4<const amrex::Real> const& area_ar = ama[box_no];
-
-            int idx = (idim == 0) ? i : ((idim == 1) ? j : k);
-            // low
-            amrex::Real low = 0.0;
-            if (idx == faceDomain.smallEnd(idim)) {
-              low += flux(i, j, k, n) * area_ar(i, j, k);
-            }
-            // high
-            amrex::Real high = 0.0;
-            if (idx == faceDomain.bigEnd(idim)) {
-              high += flux(i, j, k, n) * area_ar(i, j, k);
-            }
-            return {low, high};
-          });
-        sumLo = amrex::get<0>(r);
-        sumHi = amrex::get<1>(r);
-      } else
-#endif
-      {
-        auto r = amrex::ParReduce(
-          amrex::TypeList<amrex::ReduceOpSum, amrex::ReduceOpSum>{},
-          amrex::TypeList<amrex::Real, amrex::Real>{}, *a_fluxes[idim],
-          amrex::IntVect(0),
-          [fma, idim, faceDomain, area, n] AMREX_GPU_DEVICE(
-            int box_no, int i, int j,
-            int k) noexcept -> amrex::GpuTuple<amrex::Real, amrex::Real> {
-            amrex::Array4<const amrex::Real> const& flux = fma[box_no];
-
-            int idx = (idim == 0) ? i : ((idim == 1) ? j : k);
-            // low
-            amrex::Real low = 0.0;
-            if (idx == faceDomain.smallEnd(idim)) {
-              low += flux(i, j, k, n) * area[idim];
-            }
-            // high
-            amrex::Real high = 0.0;
-            if (idx == faceDomain.bigEnd(idim)) {
-              high += flux(i, j, k, n) * area[idim];
-            }
-            return {low, high};
-          });
-        sumLo = amrex::get<0>(r);
-        sumHi = amrex::get<1>(r);
-      }
-      amrex::ParallelAllReduce::Sum<amrex::Real>(
-        {sumLo, sumHi}, amrex::ParallelContext::CommunicatorSub());
-      m_domainRhoYFlux[2 * idim + n * 2 * AMREX_SPACEDIM] += a_factor * sumLo;
+      const auto sums = domainFaceSums(
+        *a_fluxes[idim], a_geom, idim,
+        [n] AMREX_GPU_DEVICE(
+          amrex::Array4<const amrex::Real> const& flux, int i, int j, int k,
+          amrex::Real area) noexcept { return flux(i, j, k, n) * area; });
+      m_domainRhoYFlux[2 * idim + n * 2 * AMREX_SPACEDIM] += a_factor * sums[0];
       m_domainRhoYFlux[2 * idim + n * 2 * AMREX_SPACEDIM + 1] -=
-        a_factor * sumHi; // Outflow, negate flux
+        a_factor * sums[1]; // Outflow, negate flux
     }
   }
 }
