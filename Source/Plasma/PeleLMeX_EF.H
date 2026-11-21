@@ -12,9 +12,7 @@ static_assert(
 
 // Algorithm int/real data holder
 int ef_verbose = 1;
-int ef_substep = 1;       // number of sub time steps
-amrex::Real dtsub;        // sub time step size
-amrex::Real curtime;      // time of current substep
+amrex::Real dtsub;        // time step of the non-linear solve
 amrex::Real nl_stateNorm; // norm of the non-linear state
 amrex::Real nl_residNorm; // norm of the non-linear residual
 
@@ -38,7 +36,6 @@ amrex::Real FphiV_scale = 1.0; // phiV residual scale
 
 // non-linear / linear solve
 int m_ef_maxNewtonIter = 5;
-int m_ef_use_PETSC_direct = 0;
 int m_ef_PC_approx = 1;
 int m_ef_diffT_jfnk = 1;
 amrex::Real m_ABecCecOmega = 0.9;

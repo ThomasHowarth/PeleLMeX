@@ -1870,8 +1870,7 @@ public:
 
   void updateNLState(const amrex::Vector<amrex::MultiFab*>& a_update);
 
-  void incrementElectronForcing(
-    const int a_sstep, const std::unique_ptr<AdvanceAdvData>& advData);
+  void incrementElectronForcing(const std::unique_ptr<AdvanceAdvData>& advData);
 
   void getNLStateScaling(amrex::Real& nEScale, amrex::Real& phiVScale);
   void getNLResidScaling(amrex::Real& nEScale, amrex::Real& phiVScale);

@@ -31,8 +31,8 @@ PeleLM::implicitNonLinearSolve(
   // Get cell-centered charged species transport coefficients
   calcEFTransport(AmrNewTime);
 
-  // Substepping of non-linear solve
-  dtsub = a_dt / ef_substep;
+  // Time step of the non-linear solve, used by the GMRES callbacks
+  dtsub = a_dt;
 
   // Pass t^{n} nE/PhiV from leveldata to leveldatanlsolve
   // t^{n} have been fillpatched already
@@ -67,126 +67,106 @@ PeleLM::implicitNonLinearSolve(
   // Setup MLGMRES
   MLGMRESSolver gmres;
   int GMRES_tot_count = 0;
-  if (!m_ef_use_PETSC_direct) {
-    gmres.define(this, 2, 1);
-    MLJtimesVFunc jtv = &PeleLM::jTimesV;
-    gmres.setJtimesV(jtv);
-    MLNormFunc normF = &PeleLM::nlSolveNorm;
-    gmres.setNorm(normF);
-    MLPrecondFunc prec = &PeleLM::applyPrecond;
-    gmres.setPrecond(prec);
-  }
+  gmres.define(this, 2, 1);
+  MLJtimesVFunc jtv = &PeleLM::jTimesV;
+  gmres.setJtimesV(jtv);
+  MLNormFunc normF = &PeleLM::nlSolveNorm;
+  gmres.setNorm(normF);
+  MLPrecondFunc prec = &PeleLM::applyPrecond;
+  gmres.setPrecond(prec);
 
   //------------------------------------------------------------------------
-  // Outer subcycling loop
-  if (ef_substep > 1)
-    amrex::Abort("Non-linear solve sub-stepping not re-implemented yet");
-  int NK_tot_count = 0;
-  for (int sstep = 0; sstep < ef_substep; ++sstep) {
-    curtime = getTime(0, AmrOldTime) + (sstep + 1) * dtsub;
+  const amrex::Real newTime = getTime(0, AmrOldTime) + dtsub;
 
-    // -----------------
-    // Pre-Newton
-    // Set up the NL state scaling
-    getNLStateScaling(nE_scale, phiV_scale);
-    nE_scale = (nE_scale > 1.0e-12) ? nE_scale : 1.0;
-    phiV_scale = (phiV_scale > 1.0e-12) ? phiV_scale : 1.0;
+  // -----------------
+  // Pre-Newton
+  // Set up the NL state scaling
+  getNLStateScaling(nE_scale, phiV_scale);
+  nE_scale = (nE_scale > 1.0e-12) ? nE_scale : 1.0;
+  phiV_scale = (phiV_scale > 1.0e-12) ? phiV_scale : 1.0;
+  if (ef_verbose) {
+    amrex::Print() << " ne scaling: " << nE_scale << "\n";
+    amrex::Print() << " phiV scaling: " << phiV_scale << "\n";
+  }
+  scaleNLState(nE_scale, phiV_scale);
+
+  // Compute the background charge distribution at the new time
+  computeBGcharge(newTime, diffData, advData);
+
+  // Newton initial guess
+  // TODO newton initial guess
+  nlSolveNorm(getNLstateVect(), nl_stateNorm);
+
+  // Initial NL residual: update residual scaling and preconditioner
+  int update_scaling = 1;
+  int update_precond = 1;
+  nonLinearResidual(
+    dtsub, getNLstateVect(), getNLresidVect(), update_scaling, update_precond);
+  nlSolveNorm(getNLresidVect(), nl_residNorm);
+
+  // Check for convergence
+  amrex::Real scaledResnE, scaledResphiV;
+  getNLResidScaling(scaledResnE, scaledResphiV);
+  amrex::Real max_nlres = amrex::max<amrex::Real>(scaledResnE, scaledResphiV);
+  // Skip the Newton iterations if the initial state already satisfies the
+  // tolerance, but still do the post-Newton forcing and state update
+  int exit_newton = (max_nlres <= m_ef_newtonTol) ? 1 : 0;
+  if ((exit_newton != 0) && (ef_verbose != 0)) {
+    amrex::Print() << " No Newton iteration needed. \n";
+  }
+
+  // -----------------
+  // Newton iteration
+  int NK_ite = 0;
+  while (exit_newton == 0) {
+    NK_ite += 1;
+
+    // Verbose
     if (ef_verbose) {
-      amrex::Print() << "(" << sstep << ") ne scaling: " << nE_scale << "\n";
-      amrex::Print() << "(" << sstep << ") phiV scaling: " << phiV_scale
-                     << "\n";
+      amrex::Print() << " Newton it: " << NK_ite
+                     << " L2**2 residual: " << 0.5 * nl_residNorm * nl_residNorm
+                     << ". Linf residual: " << max_nlres << "\n";
     }
-    scaleNLState(nE_scale, phiV_scale);
 
-    // Compute the background charge distribution at curtime
-    computeBGcharge(curtime, diffData, advData);
-    // WriteDebugPlotFile(GetVecOfConstPtrs(getNLBGChargeVect()),"NLBGCharge");
+    // Solve for Newton direction
+    amrex::Vector<amrex::MultiFab> newtonDir;
+    newtonDir.reserve(finest_level + 1);
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      newtonDir.emplace_back(
+        grids[lev], dmap[lev], 2, 1, amrex::MFInfo(), Factory(lev));
+      newtonDir[lev].setVal(0.0, 0, 2, 1);
+    }
+    const amrex::Real S_tol = m_ef_GMRES_reltol;
+    const amrex::Real S_tol_abs = m_ef_GMRES_abstol;
+    GMRES_tot_count +=
+      gmres.solve(GetVecOfPtrs(newtonDir), getNLresidVect(), S_tol_abs, S_tol);
+    amrex::Real newtonDir_Norm;
+    nlSolveNorm(GetVecOfPtrs(newtonDir), newtonDir_Norm);
 
-    // Newton initial guess
-    // TODO newton initial guess
+    // Linesearch & update state TODO
+    updateNLState(GetVecOfPtrs(newtonDir));
     nlSolveNorm(getNLstateVect(), nl_stateNorm);
-
-    // Initial NL residual: update residual scaling and preconditioner
-    int update_scaling = 1;
-    int update_precond = 1;
+    update_scaling = 0;
+    update_precond = 1;
     nonLinearResidual(
       dtsub, getNLstateVect(), getNLresidVect(), update_scaling,
       update_precond);
     nlSolveNorm(getNLresidVect(), nl_residNorm);
-    // WriteDebugPlotFile(GetVecOfConstPtrs(getNLresidVect()),"NLResInit");
-
-    // Check for convergence
-    amrex::Real scaledResnE, scaledResphiV;
     getNLResidScaling(scaledResnE, scaledResphiV);
-    amrex::Real max_nlres = amrex::max<amrex::Real>(scaledResnE, scaledResphiV);
-    // Skip the Newton iterations if the initial state already satisfies the
-    // tolerance, but still do the post-Newton forcing and state update
-    int exit_newton = (max_nlres <= m_ef_newtonTol) ? 1 : 0;
-    if ((exit_newton != 0) && (ef_verbose != 0)) {
-      amrex::Print() << " No Newton iteration needed. \n";
-    }
+    max_nlres = amrex::max<amrex::Real>(scaledResnE, scaledResphiV);
 
-    // -----------------
-    // Newton iteration
-    int NK_ite = 0;
-    while (exit_newton == 0) {
-      NK_ite += 1;
+    // Exit condition
+    exit_newton = testExitNewton(NK_ite, max_nlres, newtonDir_Norm);
+  }
 
-      // Verbose
-      if (ef_verbose) {
-        amrex::Print() << " Newton it: " << NK_ite << " L2**2 residual: "
-                       << 0.5 * nl_residNorm * nl_residNorm
-                       << ". Linf residual: " << max_nlres << "\n";
-      }
-
-      // Solve for Newton direction
-      amrex::Vector<amrex::MultiFab> newtonDir;
-      newtonDir.reserve(finest_level + 1);
-      for (int lev = 0; lev <= finest_level; ++lev) {
-        newtonDir.emplace_back(
-          grids[lev], dmap[lev], 2, 1, amrex::MFInfo(), Factory(lev));
-        newtonDir[lev].setVal(0.0, 0, 2, 1);
-      }
-      if (!m_ef_use_PETSC_direct) {
-        const amrex::Real S_tol = m_ef_GMRES_reltol;
-        const amrex::Real S_tol_abs = m_ef_GMRES_abstol;
-        GMRES_tot_count += gmres.solve(
-          GetVecOfPtrs(newtonDir), getNLresidVect(), S_tol_abs, S_tol);
-      } else {
-      }
-      // WriteDebugPlotFile(GetVecOfConstPtrs(newtonDir),"newtonDir_"+std::to_string(NK_ite));
-      amrex::Real newtonDir_Norm;
-      nlSolveNorm(GetVecOfPtrs(newtonDir), newtonDir_Norm);
-      // Print() << " newtonDir_Norm " << newtonDir_Norm << "\n";
-
-      // Linesearch & update state TODO
-      updateNLState(GetVecOfPtrs(newtonDir));
-      nlSolveNorm(getNLstateVect(), nl_stateNorm);
-      update_scaling = 0;
-      update_precond = 1;
-      nonLinearResidual(
-        dtsub, getNLstateVect(), getNLresidVect(), update_scaling,
-        update_precond);
-      nlSolveNorm(getNLresidVect(), nl_residNorm);
-      getNLResidScaling(scaledResnE, scaledResphiV);
-      max_nlres = amrex::max<amrex::Real>(scaledResnE, scaledResphiV);
-      // WriteDebugPlotFile(GetVecOfConstPtrs(getNLstateVect()),"NLState_"+std::to_string(NK_ite));
-      // WriteDebugPlotFile(GetVecOfConstPtrs(getNLresidVect()),"NLResid_"+std::to_string(NK_ite));
-
-      // Exit condition
-      exit_newton = testExitNewton(NK_ite, max_nlres, newtonDir_Norm);
-    }
-    NK_tot_count += NK_ite;
-
-    // -----------------
-    // Post-Newton
-    // Increment the forcing term
-    incrementElectronForcing(sstep, advData);
-    // Unscale nl_state and if not last subcycle update 'old' state
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      m_leveldatanlsolve[lev]->nlState.mult(nE_scale, 0, 1, 0);
-      m_leveldatanlsolve[lev]->nlState.mult(phiV_scale, 1, 1, 0);
-    }
+  // -----------------
+  // Post-Newton
+  // Increment the forcing term
+  incrementElectronForcing(advData);
+  // Unscale nl_state
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    m_leveldatanlsolve[lev]->nlState.mult(nE_scale, 0, 1, 0);
+    m_leveldatanlsolve[lev]->nlState.mult(phiV_scale, 1, 1, 0);
   }
 
   // Update the state
@@ -206,15 +186,13 @@ PeleLM::implicitNonLinearSolve(
     amrex::Real run_time = amrex::ParallelDescriptor::second() - strt_time;
     amrex::ParallelDescriptor::ReduceRealMax(
       run_time, amrex::ParallelDescriptor::IOProcessorNumber());
-    if ((m_ef_use_PETSC_direct == 0) && (NK_tot_count > 0)) {
-      amrex::Real avgGMRES = (float)GMRES_tot_count / (float)NK_tot_count;
+    if (NK_ite > 0) {
+      amrex::Real avgGMRES = (float)GMRES_tot_count / (float)NK_ite;
       amrex::Print() << "  [" << sdcIter << "] dt: " << a_dt
                      << " - Avg GMRES/Newton: " << avgGMRES << "\n";
     }
     amrex::Print() << "  >> PeleLMeX::implicitNLSolve() " << run_time << "\n";
   }
-
-  // amrex::VisMF::Write(advData->Forcing[0],"ForcingNE");
 }
 
 int
@@ -248,20 +226,6 @@ PeleLM::testExitNewton(
 void
 PeleLM::updateNLState(const amrex::Vector<amrex::MultiFab*>& a_update)
 {
-  // AverageDown the newton direction
-  /*
-  for (int lev = finest_level; lev > 0; --lev) {
-#ifdef AMREX_USE_EB
-     EB_average_down(*a_update[lev],
-                     *a_update[lev-1],
-                     0,2,refRatio(lev-1));
-#else
-     average_down(*a_update[lev],
-                  *a_update[lev-1],
-                  0,2,refRatio(lev-1));
-#endif
-  }
-  */
   for (int lev = 0; lev <= finest_level; ++lev) {
     auto ldataNLs_p = getLevelDataNLSolvePtr(lev); // NL data
     ldataNLs_p->nlState.plus(*a_update[lev], 0, 2, 0);
@@ -281,14 +245,6 @@ PeleLM::updateNLState(const amrex::Vector<amrex::MultiFab*>& a_update)
       refRatio(lev - 1));
 #endif
   }
-
-  // FillBoundary NLState
-  /*
-  for (int lev = 0; lev <= finest_level; ++lev) {
-     auto ldataNLs_p = getLevelDataNLSolvePtr(lev);   // NL data
-     ldataNLs_p->nlState.FillBoundary(geom[lev].periodicity());
-  }
-  */
 
   // Need to fillpatch the NL state
   // First unscale NLState
@@ -314,10 +270,8 @@ PeleLM::updateNLState(const amrex::Vector<amrex::MultiFab*>& a_update)
 }
 
 void
-PeleLM::incrementElectronForcing(
-  const int a_sstep, const std::unique_ptr<AdvanceAdvData>& advData)
+PeleLM::incrementElectronForcing(const std::unique_ptr<AdvanceAdvData>& advData)
 {
-
   for (int lev = 0; lev <= finest_level; ++lev) {
     auto ldata_p = getLevelDataPtr(lev, AmrOldTime); // Old time electron
     auto ldataR_p = getLevelDataReactPtr(lev);       // Reaction
@@ -329,35 +283,18 @@ PeleLM::incrementElectronForcing(
     auto const& F_ma = advData->Forcing[lev].arrays();
     const amrex::Real scaling = nE_scale;
     const amrex::Real dtinv = 1.0 / dtsub;
-    if (a_sstep == 0) {
-      amrex::ParallelFor(
-        ldata_p->state,
-        [state_o_ma, nE_n_ma, I_R_ma, F_ma, scaling,
-         dtinv] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
-          amrex::Array4<amrex::Real const> nE_o(state_o_ma[box_no], NE);
-          amrex::Array4<amrex::Real const> I_R_nE(I_R_ma[box_no], NUM_SPECIES);
-          amrex::Array4<amrex::Real> FnE(F_ma[box_no], NUM_SPECIES + 1);
-          FnE(i, j, k) =
-            (nE_n_ma[box_no](i, j, k) * scaling - nE_o(i, j, k)) * dtinv -
-            I_R_nE(i, j, k);
-        });
-      // Shift outside?
-      amrex::Gpu::streamSynchronize();
-    } else {
-      amrex::ParallelFor(
-        ldata_p->state,
-        [state_o_ma, nE_n_ma, I_R_ma, F_ma, scaling,
-         dtinv] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
-          amrex::Array4<amrex::Real const> nE_o(state_o_ma[box_no], NE);
-          amrex::Array4<amrex::Real const> I_R_nE(I_R_ma[box_no], NUM_SPECIES);
-          amrex::Array4<amrex::Real> FnE(F_ma[box_no], NUM_SPECIES + 1);
-          FnE(i, j, k) +=
-            (nE_n_ma[box_no](i, j, k) * scaling - nE_o(i, j, k)) * dtinv -
-            I_R_nE(i, j, k);
-        });
-      // Shift outside?
-      amrex::Gpu::streamSynchronize();
-    }
+    amrex::ParallelFor(
+      ldata_p->state,
+      [state_o_ma, nE_n_ma, I_R_ma, F_ma, scaling,
+       dtinv] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+        amrex::Array4<amrex::Real const> nE_o(state_o_ma[box_no], NE);
+        amrex::Array4<amrex::Real const> I_R_nE(I_R_ma[box_no], NUM_SPECIES);
+        amrex::Array4<amrex::Real> FnE(F_ma[box_no], NUM_SPECIES + 1);
+        FnE(i, j, k) =
+          (nE_n_ma[box_no](i, j, k) * scaling - nE_o(i, j, k)) * dtinv -
+          I_R_nE(i, j, k);
+      });
+    amrex::Gpu::streamSynchronize();
   }
 }
 
@@ -474,9 +411,6 @@ PeleLM::nonLinearResidual(
   getDiffusionOp()->computeDiffLap(
     GetVecOfPtrs(diffnE), 0, GetVecOfConstPtrs(nE), 0,
     GetVecOfConstPtrs(getnEDiffusivityVect(AmrNewTime)), 0, bcRecnE, 1);
-  // WriteDebugPlotFile(GetVecOfConstPtrs(diffnE),"diffnE");
-  // amrex::VisMF::Write(nE[0],"nEForDiffnlResid");
-  // amrex::VisMF::Write(diffnE[0],"diffnEnlResid");
 
   // Get nE advection term
   amrex::Vector<amrex::MultiFab> advnE;
@@ -488,7 +422,6 @@ PeleLM::nonLinearResidual(
   getAdvectionTerm(
     GetVecOfConstPtrs(nE), GetVecOfPtrs(advnE),
     GetVecOfArrOfConstPtrs(gradPhiVCur));
-  // WriteDebugPlotFile(GetVecOfConstPtrs(advnE),"advnE");
 
   // Assemble non-linear residual
   // res(ne(:)) = dt * ( diff(:) + conv(:) + I_R(:) ) - ( ne(:) - ne_old(:) )
@@ -533,9 +466,7 @@ PeleLM::nonLinearResidual(
     // Shift outside?
     amrex::Gpu::streamSynchronize();
   }
-  // WriteDebugPlotFile(GetVecOfConstPtrs(a_nlresid),"UnscalednlResid");
 
-  //   /*
   // AverageDown the NLresiduals
   for (int lev = finest_level; lev > 0; --lev) {
 #ifdef AMREX_USE_EB
@@ -545,7 +476,6 @@ PeleLM::nonLinearResidual(
     average_down(*a_nlresid[lev], *a_nlresid[lev - 1], 0, 2, refRatio(lev - 1));
 #endif
   }
-  //   */
 
   // Update the residual scale if necessary
   if (updateScaling) {
@@ -562,7 +492,7 @@ PeleLM::nonLinearResidual(
   scaleNLResid(a_nlresid, FnE_scale, FphiV_scale);
 
   // Update the preconditioning LinOps
-  if (updatePrecond && !m_ef_use_PETSC_direct) {
+  if (updatePrecond) {
     setUpPrecond(a_dt, GetVecOfConstPtrs(nE));
   }
 }
@@ -624,23 +554,6 @@ PeleLM::getAdvectionTerm(
       amrex::Gpu::streamSynchronize();
     }
   }
-
-  // Average down the Ueff
-  /*
-  for (int lev = finest_level; lev > 0; --lev) {
-     auto ldataNLFine_p = getLevelDataNLSolvePtr(lev);
-     auto ldataNLCrse_p = getLevelDataNLSolvePtr(lev-1);
-#ifdef AMREX_USE_EB
-     EB_average_down_faces(GetArrOfConstPtrs(ldataNLFine_p->uEffnE),
-                           GetArrOfPtrs(ldataNLCrse_p->uEffnE),
-                           refRatio(lev-1),nGrow);
-#else
-     average_down_faces(GetArrOfConstPtrs(ldataNLFine_p->uEffnE),
-                        GetArrOfPtrs(ldataNLCrse_p->uEffnE),
-                        refRatio(lev-1),nGrow);
-#endif
-  }
-  */
 
   for (int lev = 0; lev <= finest_level; ++lev) {
     // Get nl solve data pointer
@@ -1005,9 +918,6 @@ PeleLM::getUpwindedEdge(
       amrex::convert(ba, amrex::IntVect::TheDimensionVector(2)), dm, ncomp, 0,
       amrex::MFInfo(), factory))};
 
-#ifdef AMREX_USE_EB
-  // TODO cen2edg_upwind EB
-#else
   const amrex::Box& domain = geom[lev].Domain();
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
@@ -1035,7 +945,6 @@ PeleLM::getUpwindedEdge(
         });
     }
   }
-#endif
 
   return ecMFs;
 }
