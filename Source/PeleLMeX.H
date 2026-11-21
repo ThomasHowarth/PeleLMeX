@@ -793,6 +793,33 @@ public:
     const std::unique_ptr<AdvanceDiffData>& diffData,
     amrex::Real& a_deltaT_norm);
 
+  //! Define the species/Fourier/differential-diffusion face fluxes, the
+  //! auxiliary fluxes and (isothermal EB only) the EB temperature flux
+  void defineDiffusionFluxes(
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_fluxes,
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_auxfluxes,
+    amrex::Vector<amrex::MultiFab>& a_EBfluxes);
+
+  //! Y = rhoY/rho with ghost cells, the boundary MF for isothermal Soret walls
+  amrex::Vector<amrex::MultiFab>
+  makeSpecBoundary(const PeleLM::TimeStamp a_time);
+
+  //! Fourier flux -lambda grad T into component NUM_SPECIES (not averaged
+  //! down); with a non-empty a_EBfluxes also the isothermal EB flux
+  void computeFourierFluxes(
+    const PeleLM::TimeStamp a_time,
+    const amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>>&
+      a_fluxes,
+    const amrex::Vector<amrex::MultiFab*>& a_EBfluxes);
+
+  //! New-time Fourier and differential diffusion fluxes, their divergence
+  //! into a_Dhat[NUM_SPECIES:NUM_SPECIES+1], then RhoH from T and Y
+  void computeEnthalpyDiffusionTerm(
+    const amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>>&
+      a_fluxes,
+    const amrex::Vector<amrex::MultiFab*>& a_EBfluxes,
+    const amrex::Vector<amrex::MultiFab*>& a_Dhat);
+
   //! Under mesh mapping, scale face diffusivities by J/fac_i^2 so that a
   //! hand-assembled beta . grad_Xi flux is a Xi-space flux (no-op without
   //! mapping).
