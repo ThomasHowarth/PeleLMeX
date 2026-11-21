@@ -1159,80 +1159,23 @@ PeleLM::deriveComp(
   const int lev,
   const int nGrow)
 {
-  BL_PROFILE("PeleLMeX::derive()");
-  AMREX_ASSERT(nGrow >= 0);
-
-  std::unique_ptr<amrex::MultiFab> mf;
-
-  bool itexists = derive_lst.canDerive(a_name) || isStateVariable(a_name) ||
-                  isReactVariable(a_name);
-
-  if (!itexists) {
-    amrex::Error("PeleLM::derive(): unknown variable: " + a_name);
-  }
-
+  BL_PROFILE("PeleLMeX::deriveComp()");
   const PeleLMDeriveRec* rec = derive_lst.get(a_name);
-
-  if (rec != nullptr) { // This is a derived variable
-    mf = std::make_unique<amrex::MultiFab>(
-      grids[lev], dmap[lev], 1, nGrow, amrex::MFInfo(), Factory(lev));
-    std::unique_ptr<amrex::MultiFab> statemf =
-      fillPatchState(lev, a_time, m_nGrowState);
-    // Get pressure: TODO no fillpatch for pressure just yet, simply get new
-    // state
-    auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
-    std::unique_ptr<amrex::MultiFab> reactmf;
-    if (m_incompressible == 0 && m_do_react != 0) {
-      reactmf = fillPatchReact(lev, a_time, nGrow);
-    } else {
-      // No reaction data exists; derives that read it (HeatRelease) get
-      // zeros of the right width rather than an unrelated array.
-      reactmf = std::make_unique<amrex::MultiFab>(
-        grids[lev], dmap[lev], nCompIR(), nGrow, amrex::MFInfo(), Factory(lev));
-      reactmf->setVal(0.0);
-    }
-    auto stateBCs = fetchBCRecArray(VELX, NVAR);
-
-    // Temp MF for all the derive components
-    amrex::MultiFab derTemp(grids[lev], dmap[lev], rec->numDerive(), nGrow);
-#ifdef AMREX_USE_OMP
-#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
-#endif
-    for (amrex::MFIter mfi(*mf, amrex::TilingIfNotGPU()); mfi.isValid();
-         ++mfi) {
-      const amrex::Box& bx = mfi.growntilebox(nGrow);
-      amrex::FArrayBox& derfab = derTemp[mfi];
-      amrex::FArrayBox const& statefab = (*statemf)[mfi];
-      amrex::FArrayBox const& reactfab = (*reactmf)[mfi];
-      amrex::FArrayBox const& pressfab = ldata_p->press[mfi];
-      rec->derFunc()(
-        this, bx, derfab, 0, rec->numDerive(), statefab, reactfab, pressfab,
-        geom[lev], a_time, stateBCs, lev);
-    }
-    // Copy into outgoing unique_ptr
-    int derComp = rec->variableComp(a_name);
-    if (derComp < 0) {
-      amrex::Error(
-        "PeleLM::deriveComp(): unknown derive component: " + a_name + " of " +
-        rec->variableName(1000));
-    }
-    amrex::MultiFab::Copy(*mf, derTemp, derComp, 0, 1, nGrow);
-  } else if (isStateVariable(a_name)) { // This is a state variable
-    mf = std::make_unique<amrex::MultiFab>(
-      grids[lev], dmap[lev], 1, nGrow, amrex::MFInfo(), Factory(lev));
-    int idx = stateVariableIndex(a_name);
-    std::unique_ptr<amrex::MultiFab> statemf =
-      fillPatchState(lev, a_time, nGrow);
-    amrex::MultiFab::Copy(*mf, *statemf, idx, 0, 1, nGrow);
-  } else { // This is a reaction variable
-    mf = std::make_unique<amrex::MultiFab>(
-      grids[lev], dmap[lev], 1, nGrow, amrex::MFInfo(), Factory(lev));
-    int idx = reactVariableIndex(a_name);
-    std::unique_ptr<amrex::MultiFab> reactmf =
-      fillPatchReact(lev, a_time, nGrow);
-    amrex::MultiFab::Copy(*mf, *reactmf, idx, 0, 1, nGrow);
+  if (rec == nullptr) {
+    // State and reaction variables are single components already
+    return derive(a_name, a_time, lev, nGrow);
   }
-
+  const int derComp = rec->variableComp(a_name);
+  if (derComp < 0) {
+    amrex::Error(
+      "PeleLM::deriveComp(): unknown derive component: " + a_name + " of " +
+      rec->variableName(1000));
+  }
+  const std::unique_ptr<amrex::MultiFab> all =
+    derive(a_name, a_time, lev, nGrow);
+  auto mf = std::make_unique<amrex::MultiFab>(
+    grids[lev], dmap[lev], 1, nGrow, amrex::MFInfo(), Factory(lev));
+  amrex::MultiFab::Copy(*mf, *all, derComp, 0, 1, nGrow);
   return mf;
 }
 
