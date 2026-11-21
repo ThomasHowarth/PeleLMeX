@@ -160,10 +160,13 @@ public:
     int a_ncomp,
     int a_ngrow = 0) const
   {
-    for (int n = 0; n < a_ncomp; ++n) {
-      amrex::MultiFab::Multiply(
-        a_mf, m_detJ_cc[lev], 0, a_comp + n, 1, a_ngrow);
-    }
+    auto const& mf_ma = a_mf.arrays();
+    auto const& detJ_ma = m_detJ_cc[lev].const_arrays();
+    amrex::ParallelFor(
+      a_mf, amrex::IntVect(a_ngrow), a_ncomp,
+      [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
+        mf_ma[box_no](i, j, k, a_comp + n) *= detJ_ma[box_no](i, j, k);
+      });
   }
 
   /// a_mf[a_comp, a_comp + a_ncomp) /= detJ_cc, on a_ngrow ghost cells
@@ -174,9 +177,13 @@ public:
     int a_ncomp,
     int a_ngrow = 0) const
   {
-    for (int n = 0; n < a_ncomp; ++n) {
-      amrex::MultiFab::Divide(a_mf, m_detJ_cc[lev], 0, a_comp + n, 1, a_ngrow);
-    }
+    auto const& mf_ma = a_mf.arrays();
+    auto const& detJ_ma = m_detJ_cc[lev].const_arrays();
+    amrex::ParallelFor(
+      a_mf, amrex::IntVect(a_ngrow), a_ncomp,
+      [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
+        mf_ma[box_no](i, j, k, a_comp + n) /= detJ_ma[box_no](i, j, k);
+      });
   }
 
   // ---- Nodal accessors ---------------------------------------------------

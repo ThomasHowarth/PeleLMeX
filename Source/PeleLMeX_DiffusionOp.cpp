@@ -288,8 +288,7 @@ DiffusionOp::diffuse_scalar(
       } else {
         acoeff_scaled[lev].setVal(1.0);
       }
-      amrex::MultiFab::Multiply(
-        acoeff_scaled[lev], mm->detJ_cc(lev), 0, 0, 1, 0);
+      mm->multiply_by_detJ_cc(lev, acoeff_scaled[lev], 0, 1);
     }
   }
 
@@ -1796,8 +1795,7 @@ DiffusionTensorOp::diffuse_velocity(
       } else {
         a_coeff_scaled[lev].setVal(m_pelelm->m_rho);
       }
-      amrex::MultiFab::Multiply(
-        a_coeff_scaled[lev], mm->detJ_cc(lev), 0, 0, 1, 0);
+      mm->multiply_by_detJ_cc(lev, a_coeff_scaled[lev], 0, 1);
     }
   }
 

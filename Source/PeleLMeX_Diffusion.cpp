@@ -328,7 +328,6 @@ PeleLM::scaleFaceDiffusivityMapped(
         b_ma[box_no](i, j, k, n) *= dJ / (f * f);
       });
   }
-  amrex::Gpu::streamSynchronize();
 }
 
 template <typename EOSType>

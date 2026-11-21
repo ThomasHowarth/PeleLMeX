@@ -69,6 +69,7 @@ PeleLM::redistribute(
   const amrex::Geometry& a_geom,
   const std::string& a_redist_type) const
 {
+  BL_PROFILE("PeleLMeX::redistribute()");
   AMREX_ASSERT(a_tmpDiv.nComp() >= div_comp + ncomp);
   AMREX_ASSERT(a_out.nComp() >= out_comp + ncomp);
   AMREX_ASSERT(a_state.nComp() >= state_comp + ncomp);
@@ -139,46 +140,6 @@ PeleLM::redistribute(
       }
     }
   }
-}
-
-void
-PeleLM::redistributeAofS(
-  const int a_lev,
-  const amrex::Real a_dt,
-  amrex::MultiFab& a_tmpDiv,
-  const int div_comp,
-  amrex::MultiFab& a_AofS,
-  const int aofs_comp,
-  const amrex::MultiFab& a_state,
-  const int state_comp,
-  const int ncomp,
-  const amrex::BCRec* d_bc,
-  const amrex::Geometry& a_geom) const
-{
-  BL_PROFILE("PeleLMeX::redistributeAofS()");
-  redistribute(
-    a_lev, a_dt, a_tmpDiv, div_comp, a_AofS, aofs_comp, a_state, state_comp,
-    ncomp, d_bc, a_geom, m_adv_redist_type);
-}
-
-void
-PeleLM::redistributeDiff(
-  const int a_lev,
-  const amrex::Real a_dt,
-  amrex::MultiFab& a_tmpDiv,
-  const int div_comp,
-  amrex::MultiFab& a_diff,
-  const int diff_comp,
-  const amrex::MultiFab& a_state,
-  const int state_comp,
-  const int ncomp,
-  const amrex::BCRec* d_bc,
-  const amrex::Geometry& a_geom) const
-{
-  BL_PROFILE("PeleLMeX::redistributeDiff()");
-  redistribute(
-    a_lev, a_dt, a_tmpDiv, div_comp, a_diff, diff_comp, a_state, state_comp,
-    ncomp, d_bc, a_geom, m_diff_redist_type);
 }
 
 void
