@@ -1516,23 +1516,9 @@ public:
     const amrex::Real& scale,
     const amrex::Real& a_dt);
 
+  // Advective flux divergence; a_EBvelocity and a_EBvalue (EB builds, given
+  // together or not at all) are the EB wall velocity and value
   void advFluxDivergence(
-    const int a_lev,
-    amrex::MultiFab& a_divergence,
-    const int div_comp,
-    amrex::MultiFab& a_divu,
-    const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_fluxes,
-    const int flux_comp,
-    const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_faceState,
-    const int face_comp,
-    const int ncomp,
-    int const* l_conserv_d,
-    const amrex::Geometry& a_geom,
-    const amrex::Real scale,
-    const bool fluxes_are_area_weighted) const;
-  // Shared body of the advFluxDivergence overloads; a_EBvelocity and
-  // a_EBvalue (EB builds) may be null
-  void advFluxDivergenceImpl(
     const int a_lev,
     amrex::MultiFab& a_divergence,
     const int div_comp,
@@ -1546,27 +1532,8 @@ public:
     const amrex::Geometry& a_geom,
     const amrex::Real scale,
     const bool fluxes_are_area_weighted,
-    const amrex::MultiFab* a_EBvelocity,
-    const amrex::MultiFab* a_EBvalue) const;
-
-#ifdef AMREX_USE_EB
-  void advFluxDivergence(
-    const int a_lev,
-    amrex::MultiFab& a_divergence,
-    const int div_comp,
-    amrex::MultiFab& a_divu,
-    const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_fluxes,
-    const int flux_comp,
-    const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_faceState,
-    const int face_comp,
-    const amrex::MultiFab* a_EBvelocity,
-    const amrex::MultiFab* a_EBvalue,
-    const int ncomp,
-    int const* l_conserv_d,
-    const amrex::Geometry& a_geom,
-    const amrex::Real scale,
-    const bool fluxes_are_area_weighted) const;
-#endif
+    const amrex::MultiFab* a_EBvelocity = nullptr,
+    const amrex::MultiFab* a_EBvalue = nullptr) const;
 
   void extFluxDivergenceLevel(
     const int lev,
@@ -1739,33 +1706,8 @@ public:
   void setCoveredState(const PeleLM::TimeStamp a_time);
   void setCoveredState(const int lev, const PeleLM::TimeStamp a_time);
 
-  void redistributeAofS(
-    const int a_lev,
-    amrex::Real a_dt,
-    amrex::MultiFab& a_tmpDiv,
-    const int div_comp,
-    amrex::MultiFab& a_AofS,
-    const int aofs_comp,
-    const amrex::MultiFab& a_state,
-    const int state_comp,
-    const int ncomp,
-    const amrex::BCRec* d_bc,
-    const amrex::Geometry& a_geom) const;
-
-  void redistributeDiff(
-    const int a_lev,
-    const amrex::Real a_dt,
-    amrex::MultiFab& a_tmpDiv,
-    const int div_comp,
-    amrex::MultiFab& a_diff,
-    const int diff_comp,
-    const amrex::MultiFab& a_state,
-    const int state_comp,
-    const int ncomp,
-    const amrex::BCRec* d_bc,
-    const amrex::Geometry& a_geom) const;
-
-  // Shared body of redistributeAofS/redistributeDiff
+  // EB redistribution of a_tmpDiv into a_out (a_redist_type is
+  // m_adv_redist_type for advection, m_diff_redist_type for diffusion)
   void redistribute(
     const int a_lev,
     const amrex::Real a_dt,

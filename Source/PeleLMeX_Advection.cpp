@@ -162,8 +162,7 @@ PeleLM::computeVelocityAdvTerm(const std::unique_ptr<AdvanceAdvData>& advData)
       amrex::MultiFab::Copy(divu, advData->mac_divu[lev], 0, 0, 1, m_nGrowdivu);
     }
     if (m_mesh_mapping) {
-      amrex::MultiFab::Multiply(
-        divu, m_mesh_map->detJ_cc(lev), 0, 0, 1, m_nGrowdivu);
+      m_mesh_map->multiply_by_detJ_cc(lev, divu, 0, 1, m_nGrowdivu);
     }
 
     constexpr bool fluxes_are_area_weighted = false;
@@ -179,10 +178,10 @@ PeleLM::computeVelocityAdvTerm(const std::unique_ptr<AdvanceAdvData>& advData)
     if (m_useEBinflow != 0) {
       advFluxDivergence(
         lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
-        GetArrOfConstPtrs(faces[lev]), 0,
+        GetArrOfConstPtrs(faces[lev]), 0, AMREX_SPACEDIM,
+        AdvTypeVel_d.dataPtr(), geom[lev], -1.0, fluxes_are_area_weighted,
         getEBState(lev, VELX, AMREX_SPACEDIM, AmrOldTime).get(),
-        getEBState(lev, VELX, AMREX_SPACEDIM, AmrOldTime).get(), AMREX_SPACEDIM,
-        AdvTypeVel_d.dataPtr(), geom[lev], -1.0, fluxes_are_area_weighted);
+        getEBState(lev, VELX, AMREX_SPACEDIM, AmrOldTime).get());
     } else {
       advFluxDivergence(
         lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
@@ -192,9 +191,9 @@ PeleLM::computeVelocityAdvTerm(const std::unique_ptr<AdvanceAdvData>& advData)
 
     divTmp.FillBoundary(geom[lev].periodicity());
 
-    redistributeAofS(
+    redistribute(
       lev, m_dt, divTmp, 0, advData->AofS[lev], VELX, ldata_p->state, VELX,
-      AMREX_SPACEDIM, bcRecVel_d.dataPtr(), geom[lev]);
+      AMREX_SPACEDIM, bcRecVel_d.dataPtr(), geom[lev], m_adv_redist_type);
     EB_set_covered(advData->AofS[lev], 0.0);
 #else
     //----------------------------------------------------------------
@@ -843,8 +842,7 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
       amrex::MultiFab::Copy(divu, advData->mac_divu[lev], 0, 0, 1, m_nGrowdivu);
     }
     if (m_mesh_mapping) {
-      amrex::MultiFab::Multiply(
-        divu, m_mesh_map->detJ_cc(lev), 0, 0, 1, m_nGrowdivu);
+      m_mesh_map->multiply_by_detJ_cc(lev, divu, 0, 1, m_nGrowdivu);
     }
 
     constexpr bool fluxes_are_area_weighted = false;
@@ -862,10 +860,10 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
         lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
         GetArrOfConstPtrs(fluxes[lev]),
         0, // This will not be used since none of rhoY/rhoH in convective
-        getEBState(lev, VELX, AMREX_SPACEDIM, AmrOldTime).get(),
-        getEBState(lev, FIRSTSPEC, NUM_SPECIES + 1, AmrOldTime).get(),
         NUM_SPECIES + 1, AdvTypeAll_d.dataPtr(), geom[lev], -1.0,
-        fluxes_are_area_weighted);
+        fluxes_are_area_weighted,
+        getEBState(lev, VELX, AMREX_SPACEDIM, AmrOldTime).get(),
+        getEBState(lev, FIRSTSPEC, NUM_SPECIES + 1, AmrOldTime).get());
     } else {
       advFluxDivergence(
         lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
@@ -878,13 +876,14 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
     divTmp.FillBoundary(geom[lev].periodicity());
 
     // Need separate redistribution of rhoYs/rhoH
-    redistributeAofS(
+    redistribute(
       lev, m_dt, divTmp, 0, advData->AofS[lev], FIRSTSPEC, ldata_p->state,
-      FIRSTSPEC, NUM_SPECIES, bcRecSpec_d.dataPtr(), geom[lev]);
+      FIRSTSPEC, NUM_SPECIES, bcRecSpec_d.dataPtr(), geom[lev],
+      m_adv_redist_type);
 
-    redistributeAofS(
+    redistribute(
       lev, m_dt, divTmp, NUM_SPECIES, advData->AofS[lev], RHOH, ldata_p->state,
-      RHOH, 1, bcRecRhoH_d.dataPtr(), geom[lev]);
+      RHOH, 1, bcRecRhoH_d.dataPtr(), geom[lev], m_adv_redist_type);
 
     EB_set_covered(advData->AofS[lev], 0.0);
 
@@ -901,9 +900,10 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
 
       divTmp_aux.FillBoundary(geom[lev].periodicity());
 
-      redistributeAofS(
+      redistribute(
         lev, m_dt, divTmp_aux, 0, advData->AofS_aux[lev], 0,
-        ldata_p->auxiliaries, 0, m_nAux, bcRecAux_d.dataPtr(), geom[lev]);
+        ldata_p->auxiliaries, 0, m_nAux, bcRecAux_d.dataPtr(), geom[lev],
+        m_adv_redist_type);
 
       EB_set_covered(advData->AofS_aux[lev], 0.0);
     }
@@ -929,13 +929,12 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
     // Under mesh mapping, the flux divergence was computed in uniform
     // (Xi) space with umac = u_bar, giving J . (physical divergence).
     // Restore physical-space AofS for species (FIRSTSPEC..FIRSTSPEC+NSPEC-1)
-    // and enthalpy (RHOH) by dividing by J.  The density component of AofS
-    // is re-derived from the species sum below, so it inherits the scaling
-    // automatically.
+    // and the adjacent enthalpy (RHOH) by dividing by J.  The density
+    // component of AofS is re-derived from the species sum below, so it
+    // inherits the scaling automatically.
     if (m_mesh_mapping) {
       m_mesh_map->divide_by_detJ_cc(
-        lev, advData->AofS[lev], FIRSTSPEC, NUM_SPECIES);
-      m_mesh_map->divide_by_detJ_cc(lev, advData->AofS[lev], RHOH, 1);
+        lev, advData->AofS[lev], FIRSTSPEC, NUM_SPECIES + 1);
       if (m_nAux > 0) {
         m_mesh_map->divide_by_detJ_cc(lev, advData->AofS_aux[lev], 0, m_nAux);
       }
@@ -1099,8 +1098,7 @@ PeleLM::computePassiveAdvTerms(
     }
     // Fluxes are J.u~.q: the non-conservative correction needs J.divU
     if (m_mesh_mapping) {
-      amrex::MultiFab::Multiply(
-        divu, m_mesh_map->detJ_cc(lev), 0, 0, 1, m_nGrowdivu);
+      m_mesh_map->multiply_by_detJ_cc(lev, divu, 0, 1, m_nGrowdivu);
     }
 
     constexpr bool fluxes_are_area_weighted = false;
@@ -1120,9 +1118,9 @@ PeleLM::computePassiveAdvTerms(
 
     divTmp.FillBoundary(geom[lev].periodicity());
 
-    redistributeAofS(
+    redistribute(
       lev, m_dt, divTmp, 0, advData->AofS[lev], state_comp, ldata_p->state,
-      state_comp, ncomp, bcRecPass_d.dataPtr(), geom[lev]);
+      state_comp, ncomp, bcRecPass_d.dataPtr(), geom[lev], m_adv_redist_type);
 #else
     //----------------------------------------------------------------
     // Otherwise go directly into AofS

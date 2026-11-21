@@ -172,9 +172,9 @@ PeleLM::fluxDivergenceRD(
     divTmp.FillBoundary(geom[lev].periodicity());
 
     // Redistribute diffusion term
-    redistributeDiff(
+    redistribute(
       lev, a_dt, divTmp, 0, *a_divergence[lev], div_comp, *a_state[lev],
-      state_comp, ncomp, state_bc_d, geom[lev]);
+      state_comp, ncomp, state_bc_d, geom[lev], m_diff_redist_type);
   }
 #else
   amrex::ignore_unused(a_state);
@@ -429,7 +429,7 @@ PeleLM::intFluxDivergenceLevel(
 }
 
 void
-PeleLM::advFluxDivergenceImpl(
+PeleLM::advFluxDivergence(
   const int a_lev,
   amrex::MultiFab& a_divergence,
   const int div_comp,
@@ -606,54 +606,6 @@ PeleLM::advFluxDivergenceImpl(
     }
   }
 }
-
-void
-PeleLM::advFluxDivergence(
-  const int a_lev,
-  amrex::MultiFab& a_divergence,
-  const int div_comp,
-  amrex::MultiFab& a_divu,
-  const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_fluxes,
-  const int flux_comp,
-  const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_faceState,
-  const int face_comp,
-  const int ncomp,
-  int const* l_conserv_d,
-  const amrex::Geometry& a_geom,
-  const amrex::Real scale,
-  const bool fluxes_are_area_weighted) const
-{
-  advFluxDivergenceImpl(
-    a_lev, a_divergence, div_comp, a_divu, a_fluxes, flux_comp, a_faceState,
-    face_comp, ncomp, l_conserv_d, a_geom, scale, fluxes_are_area_weighted,
-    nullptr, nullptr);
-}
-
-#ifdef AMREX_USE_EB
-void
-PeleLM::advFluxDivergence(
-  const int a_lev,
-  amrex::MultiFab& a_divergence,
-  const int div_comp,
-  amrex::MultiFab& a_divu,
-  const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_fluxes,
-  const int flux_comp,
-  const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_faceState,
-  const int face_comp,
-  const amrex::MultiFab* a_EBvelocity,
-  const amrex::MultiFab* a_EBvalue,
-  const int ncomp,
-  int const* l_conserv_d,
-  const amrex::Geometry& a_geom,
-  const amrex::Real scale,
-  const bool fluxes_are_area_weighted) const
-{
-  advFluxDivergenceImpl(
-    a_lev, a_divergence, div_comp, a_divu, a_fluxes, flux_comp, a_faceState,
-    face_comp, ncomp, l_conserv_d, a_geom, scale, fluxes_are_area_weighted,
-    a_EBvelocity, a_EBvalue);
-}
-#endif
 
 void
 PeleLM::floorSpecies(const TimeStamp a_time)
@@ -1252,8 +1204,7 @@ PeleLM::defineCellVolume(
       (m_mesh_map != nullptr) && !m_mesh_map->detJ_cc(lev).empty(),
       "defineCellVolume: mesh-mapping metrics must be defined on this "
       "level before the cell volume is built");
-    amrex::MultiFab::Multiply(
-      m_cellVol[lev], m_mesh_map->detJ_cc(lev), 0, 0, 1, 0);
+    m_mesh_map->multiply_by_detJ_cc(lev, m_cellVol[lev], 0, 1);
   }
 #ifdef AMREX_USE_EB
   auto const& ebfact = dynamic_cast<amrex::EBFArrayBoxFactory const&>(factory);
@@ -1788,7 +1739,7 @@ PeleLM::updateTypicalValuesChem()
   }
 }
 
-namespace {
+namespace pelelmex_utils_detail {
 // Local reduction (Op = amrex::ReduceOpMax or ReduceOpMin) of component comp
 // over the cells where a_mask is non-zero and, in EB builds, not covered.
 // a_skip is the value an excluded cell contributes.
@@ -1830,7 +1781,7 @@ maskedReduce(
       return ma[box_no](i, j, k, comp);
     });
 }
-} // namespace
+} // namespace pelelmex_utils_detail
 
 // amrex::MultiFab max, excluding EB-covered/fine-covered cells, local
 amrex::Real
@@ -1838,7 +1789,7 @@ PeleLM::MFmax(
   const amrex::MultiFab* a_MF, const amrex::iMultiFab& a_mask, const int comp)
 {
   BL_PROFILE("PeleLMeX::MFmax()");
-  return maskedReduce<amrex::ReduceOpMax>(
+  return pelelmex_utils_detail::maskedReduce<amrex::ReduceOpMax>(
     *a_MF, a_mask, comp, std::numeric_limits<amrex::Real>::lowest());
 }
 
@@ -1848,7 +1799,7 @@ PeleLM::MFmin(
   const amrex::MultiFab* a_MF, const amrex::iMultiFab& a_mask, const int comp)
 {
   BL_PROFILE("PeleLMeX::MFmin()");
-  return maskedReduce<amrex::ReduceOpMin>(
+  return pelelmex_utils_detail::maskedReduce<amrex::ReduceOpMin>(
     *a_MF, a_mask, comp, std::numeric_limits<amrex::Real>::max());
 }
 

@@ -364,9 +364,8 @@ PeleLM::macProject(
           a_divu[lev]->nGrow(), amrex::MFInfo(), a_divu[lev]->Factory());
         amrex::MultiFab::Copy(
           scaled_divu[lev], *a_divu[lev], 0, 0, 1, a_divu[lev]->nGrow());
-        amrex::MultiFab::Multiply(
-          scaled_divu[lev], m_mesh_map->detJ_cc(lev), 0, 0, 1,
-          a_divu[lev]->nGrow());
+        m_mesh_map->multiply_by_detJ_cc(
+          lev, scaled_divu[lev], 0, 1, a_divu[lev]->nGrow());
         divu_for_proj[lev] = &scaled_divu[lev];
       }
     }

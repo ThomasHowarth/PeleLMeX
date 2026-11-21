@@ -78,14 +78,14 @@ vorticity(GradU const& g) noexcept
 #endif
 }
 
-// Call f(i, j, k, gradU) for each cell of bx, with gradU the (mesh-mapping
-// aware) velocity gradient of the state velocity, switching to one-sided
-// stencils next to covered EB cells. Covered cells call on_covered(i, j, k)
-// instead.
+// Call f(i, j, k, gradU) for each cell of bx, with gradU the velocity
+// gradient of the state velocity (physical derivatives through mmap, the
+// identity without mesh mapping), switching to one-sided stencils next to
+// covered EB cells. Covered cells call on_covered(i, j, k) instead.
 template <typename F, typename C>
 void
 forEachVelocityGradient(
-  PeleLM* a_pelelm,
+  const MeshMapEvaluator& mmap,
   const amrex::Box& bx,
   const amrex::FArrayBox& statefab,
   const amrex::Geometry& geom,
@@ -94,8 +94,6 @@ forEachVelocityGradient(
 {
   const auto vel = statefab.const_array(VELX);
   const auto dxinv0 = geom.InvCellSizeArray();
-  // Physical derivatives under mesh mapping (identity otherwise).
-  const MeshMapEvaluator mmap = a_pelelm->meshMapEvaluator();
   const amrex::GeometryData gd = geom.data();
 
 #ifdef AMREX_USE_EB
@@ -469,7 +467,7 @@ pelelmex_dermgvort(
   using namespace pelelmex_derive_detail;
   auto const& vort_arr = derfab.array(dcomp);
   forEachVelocityGradient(
-    a_pelelm, bx, statefab, geom,
+    a_pelelm->meshMapEvaluator(), bx, statefab, geom,
     [=] AMREX_GPU_DEVICE(int i, int j, int k, GradU const& g) noexcept {
       const auto w = vorticity(g);
 #if (AMREX_SPACEDIM == 2)
@@ -507,7 +505,7 @@ pelelmex_dervort(
   AMREX_ASSERT(derfab.nComp() >= dcomp + ncomp);
   auto const& vort_arr = derfab.array(dcomp);
   forEachVelocityGradient(
-    a_pelelm, bx, statefab, geom,
+    a_pelelm->meshMapEvaluator(), bx, statefab, geom,
     [=] AMREX_GPU_DEVICE(int i, int j, int k, GradU const& g) noexcept {
       const auto w = vorticity(g);
 #if (AMREX_SPACEDIM == 2)
@@ -629,7 +627,7 @@ pelelmex_derQcrit(
   using namespace pelelmex_derive_detail;
   auto const& qcrit_arr = derfab.array(dcomp);
   forEachVelocityGradient(
-    a_pelelm, bx, statefab, geom,
+    a_pelelm->meshMapEvaluator(), bx, statefab, geom,
     [=] AMREX_GPU_DEVICE(int i, int j, int k, GradU const& gradU) noexcept {
       // Divu
       const amrex::Real divU = gradU(0, 0) + gradU(1, 1) + gradU(2, 2);
@@ -732,7 +730,7 @@ pelelmex_derenstrophy(
                                       : statefab.const_array(DENSITY);
   auto const& ens_arr = derfab.array(dcomp);
   forEachVelocityGradient(
-    a_pelelm, bx, statefab, geom,
+    a_pelelm->meshMapEvaluator(), bx, statefab, geom,
     [=] AMREX_GPU_DEVICE(int i, int j, int k, GradU const& g) noexcept {
       const amrex::Real l_rho = (incomp != 0) ? rho : rho_arr(i, j, k);
       const auto w = vorticity(g);

@@ -4,7 +4,7 @@
 
 using namespace amrex::literals;
 
-namespace {
+namespace pelelmex_temporals_detail {
 // Sums over the low and high domain faces normal to idim of
 // cellSum(flux, i, j, k, area), where flux is the face data a_face (on the
 // level of a_geom, level 0 here) and area the face area (from
@@ -72,7 +72,7 @@ domainFaceSums(
     sums.data(), 2, amrex::ParallelContext::CommunicatorSub());
   return sums;
 }
-} // namespace
+} // namespace pelelmex_temporals_detail
 
 void
 PeleLM::initTemporals(const PeleLM::TimeStamp a_time)
@@ -200,7 +200,7 @@ PeleLM::addMassFluxes(
   }
 
   for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-    const auto sums = domainFaceSums(
+    const auto sums = pelelmex_temporals_detail::domainFaceSums(
       *a_fluxes[idim], a_geom, idim,
       [] AMREX_GPU_DEVICE(
         amrex::Array4<const amrex::Real> const& flux, int i, int j, int k,
@@ -256,7 +256,7 @@ PeleLM::addRhoHFluxes(
 
   for (int n = NUM_SPECIES; n < NUM_SPECIES + a_nComp; ++n) {
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      const auto sums = domainFaceSums(
+      const auto sums = pelelmex_temporals_detail::domainFaceSums(
         *a_fluxes[idim], a_geom, idim,
         [n] AMREX_GPU_DEVICE(
           amrex::Array4<const amrex::Real> const& flux, int i, int j, int k,
@@ -340,7 +340,7 @@ PeleLM::addRhoYFluxes(
 
   for (int n = 0; n < NUM_SPECIES; ++n) {
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      const auto sums = domainFaceSums(
+      const auto sums = pelelmex_temporals_detail::domainFaceSums(
         *a_fluxes[idim], a_geom, idim,
         [n] AMREX_GPU_DEVICE(
           amrex::Array4<const amrex::Real> const& flux, int i, int j, int k,

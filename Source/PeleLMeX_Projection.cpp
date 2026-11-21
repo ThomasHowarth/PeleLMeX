@@ -140,8 +140,8 @@ PeleLM::initialProjection()
     amrex::Gpu::streamSynchronize();
     if (!rhs_cc.empty()) {
       for (int lev = 0; lev <= finest_level; ++lev) {
-        amrex::MultiFab::Multiply(
-          rhs_cc[lev], m_mesh_map->detJ_cc(lev), 0, 0, 1, rhs_cc[lev].nGrow());
+        m_mesh_map->multiply_by_detJ_cc(
+          lev, rhs_cc[lev], 0, 1, rhs_cc[lev].nGrow());
       }
     }
   }
@@ -625,8 +625,8 @@ PeleLM::velocityProjection(
 
     if (!rhs_cc.empty()) {
       for (int lev = 0; lev <= finest_level; ++lev) {
-        amrex::MultiFab::Multiply(
-          rhs_cc[lev], m_mesh_map->detJ_cc(lev), 0, 0, 1, rhs_cc[lev].nGrow());
+        m_mesh_map->multiply_by_detJ_cc(
+          lev, rhs_cc[lev], 0, 1, rhs_cc[lev].nGrow());
       }
     }
   }
