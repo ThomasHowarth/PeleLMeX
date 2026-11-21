@@ -2002,18 +2002,9 @@ PeleLM::getScalarDiffForce(
           dnp1_aux_ma[box_no], aux_advect_d, aux_diffuse_d, nAux);
       });
   }
+  // No ghost cells needed: the diffusion solves and the chemistry only read
+  // the forcing on valid cells, and getScalarAdvForce refills them.
   amrex::Gpu::streamSynchronize();
-
-  // Fill forcing ghost cells
-  if (advData->Forcing[0].nGrow() > 0) {
-    fillpatch_forces(
-      m_cur_time, GetVecOfPtrs(advData->Forcing), advData->Forcing[0].nGrow());
-  }
-  if (m_nAux > 0 && advData->Forcing_aux[0].nGrow() > 0) {
-    fillpatch_forces(
-      m_cur_time, GetVecOfPtrs(advData->Forcing_aux),
-      advData->Forcing_aux[0].nGrow());
-  }
 }
 
 void
