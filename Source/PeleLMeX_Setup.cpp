@@ -1347,7 +1347,9 @@ PeleLM::readIOParameters()
   pp.query("restart", m_restart_chkfile);
   pp.query("initDataPlt", m_restart_pltfile);
   pp.query("initDataPltSource", pltfileSource);
-  if (pltfileSource != "LM" && pltfileSource != "C") {
+  if (
+    !m_restart_pltfile.empty() && pltfileSource != "LM" &&
+    pltfileSource != "C") {
     amrex::Abort(
       "amr.initDataPltSource must be LM or C, got: " + pltfileSource);
   }

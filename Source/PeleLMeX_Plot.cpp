@@ -346,15 +346,24 @@ PeleLM::WritePlotFile()
 #endif
 #ifdef PELE_USE_RADIATION
     if (do_rad_solve) {
-      fields.push_back(
-        {{"rad.G", "rad.kappa", "rad.emis"},
-         [this](int lev, amrex::MultiFab& a_plt, int a_comp) {
-           amrex::MultiFab::Copy(a_plt, rad_model->G()[lev], 0, a_comp, 1, 0);
-           amrex::MultiFab::Copy(
-             a_plt, rad_model->kappa()[lev], 0, a_comp + 1, 1, 0);
-           amrex::MultiFab::Copy(
-             a_plt, rad_model->emis()[lev], 0, a_comp + 2, 1, 0);
-         }});
+      addCopy(
+        {"rad.G"},
+        [this](int lev) -> const amrex::MultiFab& {
+          return rad_model->G()[lev];
+        },
+        0);
+      addCopy(
+        {"rad.kappa"},
+        [this](int lev) -> const amrex::MultiFab& {
+          return rad_model->kappa()[lev];
+        },
+        0);
+      addCopy(
+        {"rad.emis"},
+        [this](int lev) -> const amrex::MultiFab& {
+          return rad_model->emis()[lev];
+        },
+        0);
     }
 #endif
     if (m_has_divu != 0) {
@@ -1440,6 +1449,14 @@ PeleLM::findPltVariables(const amrex::Vector<std::string>& plt_vars) const
   }
   if (ids.Y < 0) {
     amrex::Abort("Couldn't find species mass fractions in pltfile");
+  }
+  // The species are read as one block starting at ids.Y
+  for (int iplt = ids.Y; iplt < ids.Y + ids.nSpec; ++iplt) {
+    if (plt_vars[iplt].substr(0, 2) != "Y(") {
+      amrex::Abort(
+        "Species mass fractions Y(...) in pltfile must be contiguous, found " +
+        plt_vars[iplt] + " among them");
+    }
   }
   if (ids.T < 0) {
     amrex::Abort("Couldn't find temperature (" + tempName + ") in pltfile");
