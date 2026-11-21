@@ -445,7 +445,9 @@ PeleLM::getExternalSources(
 
 // Spray advances its own particles (MKD), soot integrates its source over dt
 // internally and radiation needs a global solve, so these are only evaluated
-// once per step, from t^n. Returns whether any of them is active.
+// once per step, from t^n. With rad_SDC, radiation is re-evaluated in the SDC
+// iterations instead (see assembleExternalSources). Returns whether any of
+// them is active.
 bool
 PeleLM::addFrozenExternalSources(
   const int is_initIter, const PeleLM::TimeStamp a_timestamp)
@@ -465,7 +467,7 @@ PeleLM::addFrozenExternalSources(
   }
 #endif
 #ifdef PELE_USE_RADIATION
-  if (do_rad_solve) {
+  if (do_rad_solve && !m_rad_SDC) {
     BL_PROFILE_VAR("PeleLM::advance::rad", PLM_RAD);
     computeRadSource(a_timestamp);
     BL_PROFILE_VAR_STOP(PLM_RAD);
@@ -497,6 +499,16 @@ PeleLM::assembleExternalSources(
         m_extSource[lev]->nGrowVect());
     }
   }
+#ifdef PELE_USE_RADIATION
+  // rad_SDC: radiation is instantaneous in the state, so it is re-solved from
+  // the a_timestamp_eval state like the sources below. The P1 solve starts
+  // from the previous G, so re-solves from nearby states are cheap.
+  if (do_rad_solve && m_rad_SDC) {
+    BL_PROFILE_VAR("PeleLM::advance::rad", PLM_RAD);
+    computeRadSource(a_timestamp_eval);
+    BL_PROFILE_VAR_STOP(PLM_RAD);
+  }
+#endif
   addScalarVarianceSources(a_timestamp_eval);
 
   if (m_user_defined_ext_sources) {

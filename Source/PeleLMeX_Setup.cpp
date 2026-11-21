@@ -1031,6 +1031,8 @@ PeleLM::readParameters()
   if ((m_verbose != 0) && do_rad_solve) {
     amrex::Print() << "Simulation performed with radiation modeling \n";
   }
+  pp.query("rad_SDC", m_rad_SDC);
+  m_rad_SDC = m_rad_SDC && do_rad_solve;
 #endif
 
   // -----------------------------------------
@@ -1051,6 +1053,9 @@ PeleLM::readParameters()
 #ifdef USE_MANIFOLD_EOS
   has_sdc_sources = has_sdc_sources || m_add_variance_sources;
 #endif
+#ifdef PELE_USE_RADIATION
+  has_sdc_sources = has_sdc_sources || m_rad_SDC;
+#endif
   const bool sdc_capable = m_incompressible == 0 && m_nSDCmax >= 2;
   m_ext_sources_SDC = sdc_capable && has_sdc_sources;
   if (
@@ -1060,6 +1065,13 @@ PeleLM::readParameters()
                       "peleLM.sdc_iterMax >= 2 and a low Mach run\n";
     m_ext_sources_SDC = false;
   }
+#ifdef PELE_USE_RADIATION
+  if (m_rad_SDC && !m_ext_sources_SDC) {
+    amrex::Print() << "WARNING: peleLM.rad_SDC ignored: it needs "
+                      "peleLM.ext_sources_SDC\n";
+    m_rad_SDC = false;
+  }
+#endif
 }
 
 void

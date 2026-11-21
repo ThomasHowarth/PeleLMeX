@@ -2216,6 +2216,9 @@ public:
   // Radiation parameters
   std::unique_ptr<PeleRad::Radiation> rad_model;
   bool do_rad_solve;
+  // Re-solve radiation from t^{n+1,k} in each SDC iteration (needs
+  // ext_sources_SDC) instead of holding its t^n source over the step
+  bool m_rad_SDC{false};
 #endif
 
   // Active controller
