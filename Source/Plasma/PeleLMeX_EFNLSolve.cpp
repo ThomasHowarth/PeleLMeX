@@ -232,19 +232,7 @@ PeleLM::updateNLState(const amrex::Vector<amrex::MultiFab*>& a_update)
   }
 
   // AverageDown the new state
-  for (int lev = finest_level; lev > 0; --lev) {
-    auto ldataNLsFine_p = getLevelDataNLSolvePtr(lev);     // NL data
-    auto ldataNLsCrse_p = getLevelDataNLSolvePtr(lev - 1); // NL data
-#ifdef AMREX_USE_EB
-    EB_average_down(
-      ldataNLsFine_p->nlState, ldataNLsCrse_p->nlState, 0, 2,
-      refRatio(lev - 1));
-#else
-    average_down(
-      ldataNLsFine_p->nlState, ldataNLsCrse_p->nlState, 0, 2,
-      refRatio(lev - 1));
-#endif
-  }
+  averageDown(getNLstateVect(), 0, 2);
 
   // Need to fillpatch the NL state
   // First unscale NLState
@@ -468,14 +456,7 @@ PeleLM::nonLinearResidual(
   }
 
   // AverageDown the NLresiduals
-  for (int lev = finest_level; lev > 0; --lev) {
-#ifdef AMREX_USE_EB
-    EB_average_down(
-      *a_nlresid[lev], *a_nlresid[lev - 1], 0, 2, refRatio(lev - 1));
-#else
-    average_down(*a_nlresid[lev], *a_nlresid[lev - 1], 0, 2, refRatio(lev - 1));
-#endif
-  }
+  averageDown(a_nlresid, 0, 2);
 
   // Update the residual scale if necessary
   if (updateScaling) {
@@ -565,17 +546,7 @@ PeleLM::getAdvectionTerm(
   }
 
   // Average down the fluxes
-  for (int lev = finest_level; lev > 0; --lev) {
-#ifdef AMREX_USE_EB
-    EB_average_down_faces(
-      GetArrOfConstPtrs(fluxes[lev]), GetArrOfPtrs(fluxes[lev - 1]),
-      refRatio(lev - 1), geom[lev - 1]);
-#else
-    average_down_faces(
-      GetArrOfConstPtrs(fluxes[lev]), GetArrOfPtrs(fluxes[lev - 1]),
-      refRatio(lev - 1), geom[lev - 1]);
-#endif
-  }
+  averageDownFaces(fluxes);
 
   // Compute divergence
   constexpr int intensiveFluxes = 1;
