@@ -53,93 +53,23 @@ PeleLM::advanceChemistry(
 #endif
   for (amrex::MFIter mfi(ldataNew_p->state, mfi_info); mfi.isValid(); ++mfi) {
     const amrex::Box& bx = mfi.tilebox();
-    auto const& rhoY_o = ldataOld_p->state.const_array(mfi, FIRSTSPEC);
-    auto const& rhoH_o = ldataOld_p->state.const_array(mfi, RHOH);
-    auto const& temp_o = ldataOld_p->state.const_array(mfi, TEMP);
-    auto const& rhoY_n = ldataNew_p->state.array(mfi, FIRSTSPEC);
-    auto const& rhoH_n = ldataNew_p->state.array(mfi, RHOH);
-    auto const& temp_n = ldataNew_p->state.array(mfi, TEMP);
-    auto const& extF_rhoY = a_extForcing.array(mfi, 0);
-    auto const& extF_rhoH = a_extForcing.array(mfi, NUM_SPECIES);
-    auto const& fcl = ldataR_p->functC.array(mfi);
-    auto const& mask_arr = mask.array(mfi);
-
-    // Reset new to old and convert MKS -> CGS
-    amrex::ParallelFor(
-      bx, NUM_SPECIES,
-      [rhoY_o, rhoY_n,
-       extF_rhoY] AMREX_GPU_DEVICE(int i, int j, int k, int n) noexcept {
-        rhoY_n(i, j, k, n) = m2c::Rho(rhoY_o(i, j, k, n));
-        extF_rhoY(i, j, k, n) = m2c::Rho(extF_rhoY(i, j, k, n));
-        ;
-      });
-    amrex::ParallelFor(
-      bx, [temp_n, temp_o, rhoH_n, rhoH_o,
-           extF_rhoH] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-        temp_n(i, j, k) = temp_o(i, j, k);
-        rhoH_n(i, j, k) = m2c::RhoH(rhoH_o(i, j, k));
-        extF_rhoH(i, j, k) = m2c::RhoH(extF_rhoH(i, j, k));
-      });
-
+    auto const& stateOld = ldataOld_p->state;
+    auto& stateNew = ldataNew_p->state;
+    constexpr int do_react = 1;
+    constexpr bool restoreForcing = true;
+    reactChemBox(
+      bx, a_dt, do_react, restoreForcing, stateOld.const_array(mfi, FIRSTSPEC),
+      stateOld.const_array(mfi, RHOH), stateOld.const_array(mfi, TEMP),
+      stateNew.array(mfi, FIRSTSPEC), stateNew.array(mfi, RHOH),
+      stateNew.array(mfi, TEMP), a_extForcing.array(mfi, 0),
+      a_extForcing.array(mfi, NUM_SPECIES), ldataR_p->functC.array(mfi),
+      mask.array(mfi)
 #ifdef PELE_USE_PLASMA
-    // Pass nE -> rhoY_e & FnE -> FrhoY_e
-    auto const& nE_o = ldataOld_p->state.const_array(mfi, NE);
-    auto const& FnE = a_extForcing.array(mfi, NUM_SPECIES + 1);
-    auto const& rhoYe_n = ldataNew_p->state.array(mfi, FIRSTSPEC + E_ID);
-    auto const& FrhoYe = a_extForcing.array(mfi, E_ID);
-    auto eos = pele::physics::PhysicsType::eos(&eos_parms.host_parm());
-    amrex::Real mwt[NUM_SPECIES] = {0.0};
-    eos.molecular_weight(mwt);
-    amrex::ParallelFor(
-      bx, [rhoYe_n, nE_o, mwt, FrhoYe,
-           FnE] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-        rhoYe_n(i, j, k) = nE_o(i, j, k) / Na * mwt[E_ID] * 1.0e-6;
-        FrhoYe(i, j, k) = FnE(i, j, k) / Na * mwt[E_ID] * 1.0e-6;
-      });
-#endif
-
-    amrex::Real dt_incr = a_dt;
-    amrex::Real time_chem = 0;
-    /* Solve */
-    m_reactor->react(
-      bx, rhoY_n, extF_rhoY, temp_n, rhoH_n, extF_rhoH, fcl, mask_arr, dt_incr,
-      time_chem
-#ifdef AMREX_USE_GPU
-      ,
-      amrex::Gpu::gpuStream()
+        ,
+      stateOld.const_array(mfi, NE), stateNew.array(mfi, NE),
+      a_extForcing.array(mfi, NUM_SPECIES + 1)
 #endif
     );
-
-    // Convert CGS -> MKS
-    amrex::ParallelFor(
-      bx, NUM_SPECIES,
-      [rhoY_n,
-       extF_rhoY] AMREX_GPU_DEVICE(int i, int j, int k, int n) noexcept {
-        rhoY_n(i, j, k, n) = c2m::Rho(rhoY_n(i, j, k, n));
-        extF_rhoY(i, j, k, n) = c2m::Rho(extF_rhoY(i, j, k, n));
-      });
-    amrex::ParallelFor(
-      bx, [rhoH_n, extF_rhoH] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-        rhoH_n(i, j, k) = c2m::RhoH(rhoH_n(i, j, k));
-        extF_rhoH(i, j, k) = c2m::RhoH(extF_rhoH(i, j, k));
-      });
-#ifdef PELE_USE_PLASMA
-    // rhoY_e -> nE and set rhoY_e to zero
-    auto const& nE_n = ldataNew_p->state.array(mfi, NE);
-    amrex::Real invmwt[NUM_SPECIES] = {0.0};
-    eos.inv_molecular_weight(invmwt);
-    amrex::ParallelFor(
-      bx, [nE_n, rhoYe_n, invmwt,
-           extF_rhoY] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-        nE_n(i, j, k) = rhoYe_n(i, j, k) * Na * invmwt[E_ID] * 1.0e3;
-        rhoYe_n(i, j, k) = 0.0;
-        extF_rhoY(i, j, k, E_ID) = 0.0;
-      });
-#endif
-
-#ifdef AMREX_USE_GPU
-    amrex::Gpu::Device::streamSynchronize();
-#endif
   }
 
   // Set reaction term
@@ -221,94 +151,25 @@ PeleLM::advanceChemistryBAChem(
 #endif
   for (amrex::MFIter mfi(chemState, mfi_info); mfi.isValid(); ++mfi) {
     const amrex::Box& bx = mfi.tilebox();
-    auto const& rhoY_o = chemState.array(mfi, 0);
-    auto const& rhoH_o = chemState.array(mfi, NUM_SPECIES);
-    auto const& temp_o = chemState.array(mfi, NUM_SPECIES + 1);
-    auto const& extF_rhoY = chemForcing.array(mfi, 0);
-    auto const& extF_rhoH = chemForcing.array(mfi, NUM_SPECIES);
-    auto const& fcl = functC.array(mfi);
-    auto const& mask_arr = mask.array(mfi);
-
-    // Convert MKS -> CGS
-    amrex::ParallelFor(
-      bx, NUM_SPECIES,
-      [rhoY_o,
-       extF_rhoY] AMREX_GPU_DEVICE(int i, int j, int k, int n) noexcept {
-        rhoY_o(i, j, k, n) = m2c::Rho(rhoY_o(i, j, k, n));
-        extF_rhoY(i, j, k, n) = m2c::Rho(extF_rhoY(i, j, k, n));
-        ;
-      });
-    amrex::ParallelFor(
-      bx, [rhoH_o, extF_rhoH] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-        rhoH_o(i, j, k) = m2c::RhoH(rhoH_o(i, j, k));
-        extF_rhoH(i, j, k) = m2c::RhoH(extF_rhoH(i, j, k));
-      });
-#ifdef PELE_USE_PLASMA
-    // Pass nE -> rhoY_e & FnE -> FrhoY_e
-    auto const& nE_o = chemnE.array(mfi);
-    auto const& FnE = chemForcing.array(mfi, NUM_SPECIES + 1);
-    auto const& rhoYe_o = chemState.array(mfi, E_ID);
-    auto const& FrhoYe = chemForcing.array(mfi, E_ID);
-    auto eos = pele::physics::PhysicsType::eos(&eos_parms.host_parm());
-    amrex::Real mwt[NUM_SPECIES] = {0.0};
-    eos.molecular_weight(mwt);
-    amrex::ParallelFor(
-      bx, [rhoYe_o, nE_o, mwt, FrhoYe,
-           FnE] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-        rhoYe_o(i, j, k) = nE_o(i, j, k) / Na * mwt[E_ID] * 1.0e-6;
-        FrhoYe(i, j, k) = FnE(i, j, k) / Na * mwt[E_ID] * 1.0e-6;
-      });
-#endif
-
     // Do reaction only on uncovered box
     const int do_reactionBox = m_baChemFlag[lev][mfi.index()];
-
-    if (do_reactionBox != 0) {
-      // Do reaction as usual using PelePhysics chemistry integrator
-      amrex::Real dt_incr = a_dt;
-      amrex::Real time_chem = 0;
-      /* Solve */
-      m_reactor->react(
-        bx, rhoY_o, extF_rhoY, temp_o, rhoH_o, extF_rhoH, fcl, mask_arr,
-        dt_incr, time_chem
-#ifdef AMREX_USE_GPU
-        ,
-        amrex::Gpu::gpuStream()
-#endif
-      );
-    } else {
-      // Just set the function call to 0.0
-      amrex::ParallelFor(
-        bx, [fcl] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-          fcl(i, j, k) = 0.0;
-        });
-    }
-
-    // Convert CGS -> MKS
-    amrex::ParallelFor(
-      bx, NUM_SPECIES,
-      [rhoY_o] AMREX_GPU_DEVICE(int i, int j, int k, int n) noexcept {
-        rhoY_o(i, j, k, n) = c2m::Rho(rhoY_o(i, j, k, n));
-      });
-    amrex::ParallelFor(
-      bx, [rhoH_o] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-        rhoH_o(i, j, k) = c2m::RhoH(rhoH_o(i, j, k));
-      });
+    // chemForcing is a scratch copy: left in CGS
+    constexpr bool restoreForcing = false;
+    auto const& rhoY = chemState.array(mfi, 0);
+    auto const& rhoH = chemState.array(mfi, NUM_SPECIES);
+    auto const& temp = chemState.array(mfi, NUM_SPECIES + 1);
 #ifdef PELE_USE_PLASMA
-    // rhoY_e -> nE and set rhoY_e to zero
-    amrex::Real invmwt[NUM_SPECIES] = {0.0};
-    eos.inv_molecular_weight(invmwt);
-    ParallelFor(
-      bx,
-      [nE_o, rhoYe_o, invmwt] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-        nE_o(i, j, k) = rhoYe_o(i, j, k) * Na * invmwt[E_ID] * 1.0e3;
-        rhoYe_o(i, j, k) = 0.0;
-      });
+    auto const& nE = chemnE.array(mfi);
 #endif
-
-#ifdef AMREX_USE_GPU
-    amrex::Gpu::Device::streamSynchronize();
+    reactChemBox(
+      bx, a_dt, do_reactionBox, restoreForcing, rhoY, rhoH, temp, rhoY, rhoH,
+      temp, chemForcing.array(mfi, 0), chemForcing.array(mfi, NUM_SPECIES),
+      functC.array(mfi), mask.array(mfi)
+#ifdef PELE_USE_PLASMA
+                           ,
+      nE, nE, chemForcing.array(mfi, NUM_SPECIES + 1)
 #endif
+    );
   }
 
   // ParallelCopy into newstate MFs
@@ -364,6 +225,123 @@ PeleLM::advanceChemistryBAChem(
 #endif
     });
   amrex::Gpu::streamSynchronize();
+}
+
+// Integrate the chemistry over a_dt on one box: (rhoY, rhoH, T) from the
+// *_src arrays (MKS) into the *_dst arrays (may alias), with the external
+// forcing extF_*. The forcing is converted to CGS for the integrator; with
+// a_restoreForcing it is converted back to MKS (and the electron forcing
+// cleared under plasma), otherwise it is left in CGS. a_doReact = 0 skips
+// the integration and zeroes the function-call count.
+void
+PeleLM::reactChemBox(
+  const amrex::Box& bx,
+  const amrex::Real a_dt,
+  const int a_doReact,
+  const bool a_restoreForcing,
+  amrex::Array4<const amrex::Real> const& rhoY_src,
+  amrex::Array4<const amrex::Real> const& rhoH_src,
+  amrex::Array4<const amrex::Real> const& temp_src,
+  amrex::Array4<amrex::Real> const& rhoY,
+  amrex::Array4<amrex::Real> const& rhoH,
+  amrex::Array4<amrex::Real> const& temp,
+  amrex::Array4<amrex::Real> const& extF_rhoY,
+  amrex::Array4<amrex::Real> const& extF_rhoH,
+  amrex::Array4<amrex::Real> const& fcl,
+  amrex::Array4<int> const& mask_arr
+#ifdef PELE_USE_PLASMA
+  ,
+  amrex::Array4<const amrex::Real> const& nE_src,
+  amrex::Array4<amrex::Real> const& nE,
+  amrex::Array4<amrex::Real> const& FnE
+#endif
+)
+{
+  // Copy src to dst and convert MKS -> CGS
+  amrex::ParallelFor(
+    bx, NUM_SPECIES,
+    [rhoY_src, rhoY,
+     extF_rhoY] AMREX_GPU_DEVICE(int i, int j, int k, int n) noexcept {
+      rhoY(i, j, k, n) = m2c::Rho(rhoY_src(i, j, k, n));
+      extF_rhoY(i, j, k, n) = m2c::Rho(extF_rhoY(i, j, k, n));
+    });
+  amrex::ParallelFor(
+    bx, [temp, temp_src, rhoH, rhoH_src,
+         extF_rhoH] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+      temp(i, j, k) = temp_src(i, j, k);
+      rhoH(i, j, k) = m2c::RhoH(rhoH_src(i, j, k));
+      extF_rhoH(i, j, k) = m2c::RhoH(extF_rhoH(i, j, k));
+    });
+
+#ifdef PELE_USE_PLASMA
+  // Pass nE -> rhoY_e & FnE -> FrhoY_e
+  auto eos = pele::physics::PhysicsType::eos(&eos_parms.host_parm());
+  amrex::Real mwt[NUM_SPECIES] = {0.0};
+  eos.molecular_weight(mwt);
+  amrex::ParallelFor(
+    bx, [rhoY, nE_src, mwt, extF_rhoY,
+         FnE] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+      rhoY(i, j, k, E_ID) = nE_src(i, j, k) / Na * mwt[E_ID] * 1.0e-6;
+      extF_rhoY(i, j, k, E_ID) = FnE(i, j, k) / Na * mwt[E_ID] * 1.0e-6;
+    });
+#endif
+
+  if (a_doReact != 0) {
+    amrex::Real dt_incr = a_dt;
+    amrex::Real time_chem = 0;
+    /* Solve */
+    m_reactor->react(
+      bx, rhoY, extF_rhoY, temp, rhoH, extF_rhoH, fcl, mask_arr, dt_incr,
+      time_chem
+#ifdef AMREX_USE_GPU
+      ,
+      amrex::Gpu::gpuStream()
+#endif
+    );
+  } else {
+    // Just set the function call to 0.0
+    amrex::ParallelFor(
+      bx, [fcl] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+        fcl(i, j, k) = 0.0;
+      });
+  }
+
+  // Convert CGS -> MKS
+  amrex::ParallelFor(
+    bx, NUM_SPECIES,
+    [rhoY, extF_rhoY,
+     a_restoreForcing] AMREX_GPU_DEVICE(int i, int j, int k, int n) noexcept {
+      rhoY(i, j, k, n) = c2m::Rho(rhoY(i, j, k, n));
+      if (a_restoreForcing) {
+        extF_rhoY(i, j, k, n) = c2m::Rho(extF_rhoY(i, j, k, n));
+      }
+    });
+  amrex::ParallelFor(
+    bx, [rhoH, extF_rhoH,
+         a_restoreForcing] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+      rhoH(i, j, k) = c2m::RhoH(rhoH(i, j, k));
+      if (a_restoreForcing) {
+        extF_rhoH(i, j, k) = c2m::RhoH(extF_rhoH(i, j, k));
+      }
+    });
+#ifdef PELE_USE_PLASMA
+  // rhoY_e -> nE and set rhoY_e to zero
+  amrex::Real invmwt[NUM_SPECIES] = {0.0};
+  eos.inv_molecular_weight(invmwt);
+  amrex::ParallelFor(
+    bx, [nE, rhoY, invmwt, extF_rhoY,
+         a_restoreForcing] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+      nE(i, j, k) = rhoY(i, j, k, E_ID) * Na * invmwt[E_ID] * 1.0e3;
+      rhoY(i, j, k, E_ID) = 0.0;
+      if (a_restoreForcing) {
+        extF_rhoY(i, j, k, E_ID) = 0.0;
+      }
+    });
+#endif
+
+#ifdef AMREX_USE_GPU
+  amrex::Gpu::Device::streamSynchronize();
+#endif
 }
 
 void
