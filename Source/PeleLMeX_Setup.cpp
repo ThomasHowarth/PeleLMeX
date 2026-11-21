@@ -869,8 +869,8 @@ PeleLM::readParameters()
   ppnproj.query("atol", m_nodal_mg_atol);
   ppnproj.query("rtol", m_nodal_mg_rtol);
   ppnproj.query("hypre_namespace", m_hypre_namespace_nodal);
-  m_nproj_verbose = amrex::max<int>(m_verbose - 2, 0);
-  ppnproj.queryAdd("verbose", m_nproj_verbose);
+  int nproj_verbose = amrex::max<int>(m_verbose - 2, 0);
+  ppnproj.queryAdd("verbose", nproj_verbose);
 
   amrex::ParmParse ppmacproj("mac_proj");
   ppmacproj.query("mg_max_coarsening_level", m_mac_mg_max_coarsening_level);
@@ -2055,7 +2055,6 @@ PeleLM::resizeArray()
   m_leveldata_old.resize(max_level + 1);
   m_leveldata_new.resize(max_level + 1);
   m_leveldatareact.resize(max_level + 1);
-  m_halfTimeDensity.resize(max_level + 1);
   if (max_level > 0) {
     m_coveredMask.resize(max_level);
   }
@@ -2088,7 +2087,6 @@ PeleLM::resizeArray()
 
   // Load balancing
   m_costs.resize(max_level + 1);
-  m_loadBalanceEff.resize(max_level + 1);
 
   // Mesh mapping metric fields (if enabled; otherwise no-op)
   if (m_mesh_map) {

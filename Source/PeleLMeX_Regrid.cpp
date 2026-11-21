@@ -596,7 +596,6 @@ PeleLM::ClearLevel(const int lev)
   m_extSource[lev]->clear();
 
   m_costs[lev].reset();
-  m_loadBalanceEff[lev] = -1.0;
 
   // Mesh mapping metric fields (if enabled; otherwise no-op)
   if (m_mesh_map) {

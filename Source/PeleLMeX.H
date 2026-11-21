@@ -326,7 +326,8 @@ public:
   /**
    * \brief Fill the initial level data container
    * using the data from a pltfile
-   * \param a_pltFile path to PeleLMeX plot file
+   * \param a_lev level index
+   * \param a_dataPltFile path to PeleLMeX plot file
    */
   void initLevelDataFromPlt(const int a_lev, const std::string& a_dataPltFile);
 
@@ -449,9 +450,10 @@ public:
    * \param a_vel vector of velocity MultiFabs
    * \param a_sigma vector of variable coefficient
    * \param rhs_cc vector of cell-centered projection RHS (can be empty)
-   * \param rhs_cc vector of node-centered projection RHS (can be empty)
-   * \param increment_gp flag incremental projection (where vel is U^{np1*} -
-   * U^{n}) \param scaling_factor used for constant coefficient projection
+   * \param rhs_nd vector of node-centered projection RHS (can be empty)
+   * \param incremental flag incremental projection (where vel is U^{np1*} -
+   * U^{n})
+   * \param scaling_factor used for constant coefficient projection
    */
   void doNodalProject(
     const amrex::Vector<amrex::MultiFab*>& a_vel,
@@ -586,11 +588,11 @@ public:
    * to call user-defined zero_visc() function and possibly adding
    * a turbulent contribution
    * \param lev target level
-   * \param beta_comp first component to use in a_diff_cc MultiFab
+   * \param beta_comp first component to use in beta_cc
    * \param ncomp number of components of the outgoing data
    * \param doZeroVisc zero_visc() call trigger
-   * \param a_bcrec boundary conditions for the required components
-   * \param a_diff_cc cell-centered data
+   * \param bcrec boundary conditions for the required components
+   * \param beta_cc cell-centered data
    * \param addTurbContrib turbulent contribution increment trigger
    */
   amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> getDiffusivity(
@@ -650,11 +652,12 @@ public:
    * \brief Add the Wbar contribution to the face-centered species diffusion
    * fluxes on all levels optionally returning that contribution in a separate
    * container
-   * \param a_fluxes diffusion fluxes to be updated
-   * \param a_wbarfluxes optional container to return the Wbar contribution
+   * \param a_spfluxes species diffusion fluxes to be updated
+   * \param a_spwbarfluxes optional container to return the Wbar contribution
    * \param a_spec species rhoYs state data on all levels
    * \param a_rho density state data on all levels
    * \param a_beta cell-centered species diffusivity on all levels
+   * \param a_boundary species boundary data on all levels
    */
   void addWbarTerm(
     const amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>>&
@@ -669,10 +672,11 @@ public:
   /**
    * \brief Add the Soret contribution to the face-centered species diffusion
    * fluxes on all levels optionally returning that contribution in a separate
-   * container \param a_fluxes diffusion fluxes to be updated \param
-   * a_soretfluxes optional container to return the Soret contribution \param
-   * a_spec species rhoYs state data on all levels \param a_rho density state
-   * data on all levels \param a_temp temperature state data on all levels
+   * container
+   * \param a_spfluxes species diffusion fluxes to be updated
+   * \param a_spsoretfluxes optional container to return the Soret
+   * contribution
+   * \param a_temp temperature state data on all levels
    * \param a_beta cell-centered species diffusivity on all levels
    */
   void addSoretTerm(
@@ -685,8 +689,9 @@ public:
 
   /**
    * \brief Modify the species diffusion fluxes by computing a correction
-   * velocity, ensuring they sum up to zero. \param a_fluxes diffusion fluxes to
-   * be updated \param a_spec species rhoYs state data on all levels
+   * velocity, ensuring they sum up to zero.
+   * \param a_spfluxes species diffusion fluxes to be updated
+   * \param a_spec species rhoYs state data on all levels
    */
   template <typename EOSType>
   void adjustSpeciesFluxes(
@@ -747,14 +752,6 @@ public:
     const std::unique_ptr<AdvanceDiffData>& diffData,
     amrex::Real& a_deltaT_norm);
 
-  /**
-   * \brief Compute the viscous force term in the momentum equation using AMReX
-   * TensorOp
-   * \param a_time state time for velocity, density and viscosity, either Old or
-   * New \param a_divtau outgoing divTau term \param use_density flag to scale
-   * divTau by 1/rho \param scale prefactor of divTau, used to weight by num.
-   * scheme property (e.g. 0.5 for Crank Nicholson)
-   */
   //! Under mesh mapping, divide a Xi-space flux divergence by J so that it
   //! is in physical units (no-op without mapping).
   void unscaleMappedDivergence(
@@ -766,6 +763,16 @@ public:
   void scaleFaceDiffusivityMapped(
     int a_lev, amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& a_beta_ec);
 
+  /**
+   * \brief Compute the viscous force term in the momentum equation using AMReX
+   * TensorOp
+   * \param a_time state time for velocity, density and viscosity, either Old or
+   * New
+   * \param a_divtau outgoing divTau term
+   * \param use_density flag to scale divTau by 1/rho
+   * \param scale prefactor of divTau, used to weight by num. scheme property
+   * (e.g. 0.5 for Crank Nicholson)
+   */
   void computeDivTau(
     const PeleLM::TimeStamp a_time,
     const amrex::Vector<amrex::MultiFab*>& a_divtau,
@@ -936,9 +943,6 @@ public:
 
   // CleanupSootModel
   void cleanupSootModel();
-
-  // AddSootDerivePlotVars
-  // void addSootDerivePlotVars(PeleLMDeriveList& derive_lst);
 
   // Compute the soot source terms
   void computeSootSource(
@@ -1835,13 +1839,6 @@ public:
     const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_ueff,
     amrex::BCRec bcrec);
 
-  void getAdvectionFluxesMOL(
-    const int lev,
-    const amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>& a_fluxes,
-    const amrex::MultiFab& a_nE,
-    const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_ueff,
-    amrex::BCRec bcrec);
-
   void ionDriftVelocity(const std::unique_ptr<AdvanceAdvData>& advData);
   void ionDriftAddUmac(
     const int lev, const std::unique_ptr<AdvanceAdvData>& advData);
@@ -1996,7 +1993,6 @@ public:
   DiffusionTensorOp* getDiffusionTensorOp();
   //-----------------------------------------------------------------------------
 
-  // protected:
   //  Brief state descriptor
   std::list<std::tuple<int, std::string>> stateComponents;
   std::list<std::tuple<int, std::string>> reactComponents;
@@ -2008,7 +2004,6 @@ public:
 
   // Temporary holders for halftime data
   std::unique_ptr<LevelData> m_leveldata_floating;
-  amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_halfTimeDensity;
 
   // FAB factory
   amrex::Vector<std::unique_ptr<amrex::FabFactory<amrex::FArrayBox>>> m_factory;
@@ -2228,7 +2223,6 @@ public:
 
   int m_verbose = 0;
   int m_macproj_verbose = 0;
-  int m_nproj_verbose = 0;
   bool m_mlmg_fail_plt_residuals = false;
 
   // IO options
@@ -2392,7 +2386,6 @@ public:
   amrex::Real m_loadBalanceKSfactor{1.2};
   amrex::Real m_loadBalanceEffRatioThreshold{1.1};
   amrex::Vector<std::unique_ptr<amrex::LayoutData<amrex::Real>>> m_costs;
-  amrex::Vector<amrex::Real> m_loadBalanceEff;
 
   // SDC
   int m_nSDCmax = 1;

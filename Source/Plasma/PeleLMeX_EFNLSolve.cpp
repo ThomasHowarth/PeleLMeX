@@ -649,9 +649,6 @@ PeleLM::getAdvectionTerm(
     getAdvectionFluxes(
       lev, GetArrOfPtrs(fluxes[lev]), *a_nE[lev],
       GetArrOfConstPtrs(ldataNLs_p->uEffnE), bcRecnE[0]);
-    // getAdvectionFluxesMOL(lev, GetArrOfPtrs(fluxes[lev]), *a_nE[lev],
-    // GetArrOfConstPtrs(ldataNLs_p->uEffnE), bcRecnE[0]);
-    // amrex::VisMF::Write(fluxes[lev][1],"FluxYNewbefAvgDown_lev"+std::to_string(lev));
   }
 
   // Average down the fluxes
@@ -671,73 +668,6 @@ PeleLM::getAdvectionTerm(
   constexpr int intensiveFluxes = 1;
   fluxDivergence(
     a_advTerm, 0, GetVecOfArrOfPtrs(fluxes), 0, 1, intensiveFluxes, -1.0);
-}
-
-void
-PeleLM::getAdvectionFluxesMOL(
-  const int lev,
-  const amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>& a_fluxes,
-  const amrex::MultiFab& a_nE,
-  const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_ueff,
-  amrex::BCRec bcrec)
-{
-  auto bcRec_d = convertToDeviceVector(amrex::Vector<amrex::BCRec>(1, bcrec));
-  auto AdvType = fetchAdvTypeArray(FIRSTSPEC, 1);
-  auto AdvType_d = convertToDeviceVector(AdvType);
-
-#ifdef AMREX_USE_OMP
-#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
-#endif
-  {
-    amrex::FArrayBox edgstate[AMREX_SPACEDIM];
-    for (amrex::MFIter mfi(a_nE, amrex::TilingIfNotGPU()); mfi.isValid();
-         ++mfi) {
-
-      amrex::Box const& bx = mfi.tilebox();
-      AMREX_D_TERM(
-        const amrex::Box& xbx = mfi.grownnodaltilebox(0, 0);
-        , const amrex::Box& ybx = mfi.grownnodaltilebox(1, 0);
-        , const amrex::Box& zbx = mfi.grownnodaltilebox(2, 0));
-
-      AMREX_D_TERM(
-        auto const& fx = a_fluxes[0]->array(mfi, 0);
-        , auto const& fy = a_fluxes[1]->array(mfi, 0);
-        , auto const& fz = a_fluxes[2]->array(mfi, 0);)
-      AMREX_D_TERM(
-        auto const& ueff = a_ueff[0]->const_array(mfi);
-        , auto const& veff = a_ueff[1]->const_array(mfi);
-        , auto const& weff = a_ueff[2]->const_array(mfi);)
-      AMREX_D_TERM(
-        edgstate[0].resize(xbx, 1);, edgstate[1].resize(ybx, 1);
-        , edgstate[2].resize(zbx, 1));
-      AMREX_D_TERM(
-        amrex::Array4<amrex::Real> xstate = edgstate[0].array();
-        , amrex::Array4<amrex::Real> ystate = edgstate[1].array();
-        , amrex::Array4<amrex::Real> zstate = edgstate[2].array());
-      AMREX_D_TERM(
-        amrex::Elixir eli_edgex = edgstate[0].elixir();
-        , amrex::Elixir eli_edgey = edgstate[1].elixir();
-        , amrex::Elixir eli_edgez = edgstate[2].elixir());
-
-      auto const& nE_arr = a_nE.const_array(mfi);
-      auto const& divu_arr = a_nE.const_array(mfi);
-      auto const& force_arr = a_nE.const_array(mfi);
-
-      constexpr bool is_velocity = false;
-      constexpr bool fluxes_are_area_weighted = false;
-      constexpr bool knownEdgeState = false;
-      std::string mol = "MOL";
-      HydroUtils::ComputeFluxesOnBoxFromState(
-        bx, 1, mfi, nE_arr, AMREX_D_DECL(fx, fy, fz),
-        AMREX_D_DECL(xstate, ystate, zstate), knownEdgeState,
-        AMREX_D_DECL(ueff, veff, weff), divu_arr, force_arr, geom[lev], m_dt,
-        {bcrec}, bcRec_d.dataPtr(), AdvType_d.dataPtr(),
-#ifdef AMREX_USE_EB
-        EBFactory(lev),
-#endif
-        0, 0, is_velocity, fluxes_are_area_weighted, mol);
-    }
-  }
 }
 
 void
