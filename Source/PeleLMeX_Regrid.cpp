@@ -261,13 +261,8 @@ PeleLM::makeLevel(
 #endif
 
   // New leveldatas
-  std::unique_ptr<LevelData> n_leveldata_old(new LevelData(
-    ba, dm, *new_fact, m_incompressible, m_has_divu, m_nAux, m_nGrowState,
-    m_use_soret, static_cast<int>(m_do_les)));
-
-  std::unique_ptr<LevelData> n_leveldata_new(new LevelData(
-    ba, dm, *new_fact, m_incompressible, m_has_divu, m_nAux, m_nGrowState,
-    m_use_soret, static_cast<int>(m_do_les)));
+  auto n_leveldata_old = makeLevelData(ba, dm, *new_fact);
+  auto n_leveldata_new = makeLevelData(ba, dm, *new_fact);
 
   // Mesh-mapping metrics (and the mapping-aware interpolators) must exist
   // on the new ba/dm BEFORE the fill, so the level is prolonged

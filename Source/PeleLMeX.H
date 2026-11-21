@@ -229,6 +229,17 @@ public:
 #endif
   };
 
+  //! A LevelData with this run's state layout (aux, ghosts, Soret, LES)
+  std::unique_ptr<LevelData> makeLevelData(
+    const amrex::BoxArray& ba,
+    const amrex::DistributionMapping& dm,
+    const amrex::FabFactory<amrex::FArrayBox>& factory) const
+  {
+    return std::make_unique<LevelData>(
+      ba, dm, factory, m_incompressible, m_has_divu, m_nAux, m_nGrowState,
+      m_use_soret, static_cast<int>(m_do_les));
+  }
+
   /**
    * \brief Data container for reaction data
    */
