@@ -549,7 +549,11 @@ PeleLM::fillpatch_state(
       fetchBCRecArray(0, nCompState), 0);
   }
 
-  a_state.EnforcePeriodicity(geom[lev].periodicity());
+  // The fillpatch already fills the periodic ghost cells up to nGhost; only
+  // ghost cells beyond nGhost still need the periodic copy.
+  if (nGhost < a_state.nGrow()) {
+    a_state.EnforcePeriodicity(geom[lev].periodicity());
+  }
 }
 
 // Fill the density
@@ -765,7 +769,11 @@ PeleLM::fillpatch_aux(
       fetchBCRecAuxArray(0, m_nAux), 0);
   }
 
-  a_aux.EnforcePeriodicity(geom[lev].periodicity());
+  // The fillpatch already fills the periodic ghost cells up to nGhost; only
+  // ghost cells beyond nGhost still need the periodic copy.
+  if (nGhost < a_aux.nGrow()) {
+    a_aux.EnforcePeriodicity(geom[lev].periodicity());
+  }
 }
 
 #ifdef PELE_USE_PLASMA
