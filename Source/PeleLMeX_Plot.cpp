@@ -13,6 +13,7 @@
 #include <AMReX_FillPatchUtil.H>
 #include <memory>
 #include <fstream>
+#include <functional>
 #include <sundials/sundials_version.h>
 #ifdef AMREX_USE_HIP
 #include <hip/hip_version.h>
@@ -195,6 +196,31 @@ writePlotfileWithMapping(
   }
 }
 
+// Mean of the 2*AMREX_SPACEDIM face values around each cell, into
+// component a_comp of a_cc
+void
+faceToCellMean(
+  amrex::MultiFab& a_cc,
+  const int a_comp,
+  const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_fc)
+{
+  constexpr amrex::Real fact = 0.5 / static_cast<amrex::Real>(AMREX_SPACEDIM);
+  auto const& cc_arr = a_cc.arrays();
+  AMREX_D_TERM(
+    auto const& fx = a_fc[0]->const_arrays();
+    , auto const& fy = a_fc[1]->const_arrays();
+    , auto const& fz = a_fc[2]->const_arrays();)
+  amrex::ParallelFor(
+    a_cc, [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+      cc_arr[box_no](i, j, k, a_comp) =
+        fact * (AMREX_D_TERM(
+                 fx[box_no](i, j, k) + fx[box_no](i + 1, j, k),
+                 +fy[box_no](i, j, k) + fy[box_no](i, j + 1, k),
+                 +fz[box_no](i, j, k) + fz[box_no](i, j, k + 1)));
+    });
+  amrex::Gpu::streamSynchronize();
+}
+
 } // anonymous namespace
 
 void
@@ -257,82 +283,262 @@ PeleLM::WritePlotFile()
   }
 
   //----------------------------------------------------------------
-  // Number of components
-  int ncomp = 0;
+  // Plotted fields: each entry has its component names and fills those
+  // components of a level's plot MultiFab, in plotfile order
+  struct PlotField
+  {
+    amrex::Vector<std::string> names;
+    std::function<void(int lev, amrex::MultiFab& a_plt, int a_comp)> fill;
+  };
+  amrex::Vector<PlotField> fields;
+  // Copy names.size() components of the MultiFab a_src(lev) from a_scomp
+  const auto addCopy = [&fields](
+                         amrex::Vector<std::string> a_names,
+                         std::function<const amrex::MultiFab&(int)> a_src,
+                         const int a_scomp) {
+    const int ncomp = static_cast<int>(a_names.size());
+    fields.push_back(
+      {std::move(a_names), [a_src = std::move(a_src), a_scomp, ncomp](
+                             int lev, amrex::MultiFab& a_plt, int a_comp) {
+         amrex::MultiFab::Copy(a_plt, a_src(lev), a_scomp, a_comp, ncomp, 0);
+       }});
+  };
+  const auto newState = [this](int lev) -> const amrex::MultiFab& {
+    return m_leveldata_new[lev]->state;
+  };
+
+  amrex::Vector<std::string> names;
+  pele::physics::eos::speciesNames<pele::physics::PhysicsType::eos_type>(
+    names, &(eos_parms.host_parm()));
+  const auto prefixed = [](
+                          const std::string& a_pre,
+                          const amrex::Vector<std::string>& a_names,
+                          const std::string& a_post) {
+    amrex::Vector<std::string> r;
+    for (const auto& n : a_names) {
+      r.push_back(a_pre + n + a_post);
+    }
+    return r;
+  };
 
   // State, then pressure gradients if requested
+  amrex::Vector<std::string> velNames{
+    AMREX_D_DECL("x_velocity", "y_velocity", "z_velocity")};
   if (m_incompressible != 0) {
-    ncomp = AMREX_SPACEDIM;
+    addCopy(velNames, newState, VELX);
   } else {
-    ncomp = NVAR;
+    velNames.push_back("density");
+    addCopy(velNames, newState, VELX);
     // Make the plot lighter by dropping species by default
-    if (m_plotStateSpec == 0) {
-      ncomp -= NUM_SPECIES;
+    if (m_plotStateSpec != 0) {
+      addCopy(prefixed("rho.Y(", names, ")"), newState, FIRSTSPEC);
     }
+    addCopy({"rhoh", "temp", "RhoRT"}, newState, RHOH);
+#ifdef PELE_USE_PLASMA
+    addCopy({"nE", "phiV"}, newState, NE);
+#endif
+#ifdef PELE_USE_SOOT
+    amrex::Vector<std::string> sootNames;
+    for (int mom = 0; mom < NUMSOOTVAR; ++mom) {
+      sootNames.push_back(soot_model->sootVariableName(mom));
+    }
+    addCopy(sootNames, newState, FIRSTSOOT);
+#endif
+#ifdef PELE_USE_RADIATION
+    if (do_rad_solve) {
+      fields.push_back(
+        {{"rad.G", "rad.kappa", "rad.emis"},
+         [this](int lev, amrex::MultiFab& a_plt, int a_comp) {
+           amrex::MultiFab::Copy(a_plt, rad_model->G()[lev], 0, a_comp, 1, 0);
+           amrex::MultiFab::Copy(
+             a_plt, rad_model->kappa()[lev], 0, a_comp + 1, 1, 0);
+           amrex::MultiFab::Copy(
+             a_plt, rad_model->emis()[lev], 0, a_comp + 2, 1, 0);
+         }});
+    }
+#endif
     if (m_has_divu != 0) {
-      ncomp += 1;
+      addCopy(
+        {"divu"},
+        [this](int lev) -> const amrex::MultiFab& {
+          return m_leveldata_new[lev]->divu;
+        },
+        0);
     }
   }
   if (m_plot_grad_p != 0) {
-    ncomp += AMREX_SPACEDIM;
+    addCopy(
+      {AMREX_D_DECL("gradpx", "gradpy", "gradpz")},
+      [this](int lev) -> const amrex::MultiFab& {
+        return m_leveldata_new[lev]->gp;
+      },
+      0);
   }
 
-  ncomp += m_nAux;
+  if (m_nAux > 0) {
+    addCopy(
+      m_aux_names,
+      [this](int lev) -> const amrex::MultiFab& {
+        return m_leveldata_new[lev]->auxiliaries;
+      },
+      0);
+  }
 
   // Reactions
   if ((m_do_react != 0) && (m_skipInstantRR == 0) && (m_plot_react != 0)) {
     // Cons Rate
-    ncomp += nCompIR();
-    // FunctCall
-    ncomp += 1;
+    amrex::Vector<std::string> irNames = prefixed("I_R(", names, ")");
+#ifdef PELE_USE_PLASMA
+    irNames.push_back("I_R(nE)");
+#endif
+    addCopy(
+      irNames,
+      [this](int lev) -> const amrex::MultiFab& {
+        return m_leveldatareact[lev]->I_R;
+      },
+      0);
+    addCopy(
+      {"FunctCall"},
+      [this](int lev) -> const amrex::MultiFab& {
+        return m_leveldatareact[lev]->functC;
+      },
+      0);
     // Extras:
     if (m_plotHeatRelease != 0) {
-      ncomp += 1;
+      fields.push_back(
+        {{"HeatRelease"}, [this](int lev, amrex::MultiFab& a_plt, int a_comp) {
+           amrex::MultiFab hr(grids[lev], dmap[lev], 1, 0);
+           getHeatRelease(lev, &hr);
+           amrex::MultiFab::Copy(a_plt, hr, 0, a_comp, 1, 0);
+         }});
     }
   }
 
 #ifdef AMREX_USE_EB
   // Include volume fraction in plotfile
-  ncomp += 1;
-#endif
-
-#ifdef PELE_USE_RADIATION
-  if (do_rad_solve) {
-    ncomp += 3;
-  }
+  addCopy(
+    {"volFrac"},
+    [this](int lev) -> const amrex::MultiFab& {
+      return EBFactory(lev).getVolFrac();
+    },
+    0);
 #endif
 
   // Derive
-  int deriveEntryCount = 0;
   for (int ivar = 0; ivar < m_derivePlotVarCount; ++ivar) {
     const PeleLMDeriveRec* rec = derive_lst.get(m_derivePlotVars[ivar]);
-    deriveEntryCount += rec->numDerive();
-  }
-  ncomp += deriveEntryCount;
-#ifdef PELE_USE_SPRAY
-  if (do_spray_particles) {
-    ncomp += SprayParticleContainer::NumDeriveVars();
-    if (SprayParticleContainer::plot_spray_src) {
-      ncomp += AMREX_SPACEDIM + 2 + SPRAY_FUEL_NUM;
+    amrex::Vector<std::string> derNames;
+    for (int dvar = 0; dvar < rec->numDerive(); ++dvar) {
+      derNames.push_back(rec->variableName(dvar));
     }
+    fields.push_back(
+      {derNames, [this, ivar](int lev, amrex::MultiFab& a_plt, int a_comp) {
+         const auto mf = derive(m_derivePlotVars[ivar], m_cur_time, lev, 0);
+         amrex::MultiFab::Copy(a_plt, *mf, 0, a_comp, mf->nComp(), 0);
+       }});
+  }
+#ifdef PELE_USE_SPRAY
+  if (do_spray_particles && SprayParticleContainer::NumDeriveVars() > 0) {
+    // We need virtual particles for the lower levels
+    setupVirtualParticles(0);
+    amrex::Vector<std::string> sprayNames;
+    for (const auto& spray_derive_name :
+         SprayParticleContainer::DeriveVarNames()) {
+      sprayNames.push_back(spray_derive_name);
+    }
+    fields.push_back(
+      {sprayNames, [this](int lev, amrex::MultiFab& a_plt, int a_comp) {
+         const int num_spray_derive = SprayParticleContainer::NumDeriveVars();
+         a_plt.setVal(0., a_comp, num_spray_derive);
+         SprayPC->computeDerivedVars(a_plt, lev, a_comp);
+         if (lev < finest_level) {
+           amrex::MultiFab tmp_plt(
+             grids[lev], dmap[lev], num_spray_derive, 0, amrex::MFInfo(),
+             Factory(lev));
+           tmp_plt.setVal(0.);
+           VirtPC->computeDerivedVars(tmp_plt, lev, 0);
+           amrex::MultiFab::Add(a_plt, tmp_plt, 0, a_comp, num_spray_derive, 0);
+         }
+       }});
+  }
+  if (do_spray_particles && SprayParticleContainer::plot_spray_src) {
+    amrex::Vector<std::string> srcNames{
+      "spray_mass_src", "spray_energy_src",
+      AMREX_D_DECL(
+        "spray_momentumX_src", "spray_momentumY_src", "spray_momentumZ_src")};
+    for (const auto& spray_fuel_name :
+         SprayParticleContainer::m_sprayDepNames) {
+      srcNames.push_back("spray_" + spray_fuel_name + "_src");
+    }
+    fields.push_back(
+      {srcNames, [this](int lev, amrex::MultiFab& a_plt, int a_comp) {
+         SprayComps scomps = SprayParticleContainer::getSprayComps();
+         const auto& src = *m_spraysource[lev];
+         amrex::MultiFab::Copy(a_plt, src, scomps.rhoSrcIndx, a_comp, 1, 0);
+         amrex::MultiFab::Copy(a_plt, src, scomps.engSrcIndx, a_comp + 1, 1, 0);
+         amrex::MultiFab::Copy(
+           a_plt, src, scomps.momSrcIndx, a_comp + 2, AMREX_SPACEDIM, 0);
+         for (int spf = 0; spf < SPRAY_FUEL_NUM; ++spf) {
+           amrex::MultiFab::Copy(
+             a_plt, src, scomps.specSrcIndx + spf,
+             a_comp + 2 + AMREX_SPACEDIM + spf, 1, 0);
+         }
+       }});
   }
 #endif
 
 #ifdef PELE_USE_PLASMA
   if (m_do_extraEFdiags) {
-    ncomp += NUM_IONS * AMREX_SPACEDIM;
+    amrex::Vector<std::string> fluxNames;
+    for (int ivar = 0; ivar < NUM_IONS; ++ivar) {
+      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+        const std::string dir = (idim == 0) ? "X" : ((idim == 1) ? "Y" : "Z");
+        fluxNames.push_back(
+          "DriftFlux_" + names[NUM_SPECIES - NUM_IONS + ivar] + "_" + dir);
+      }
+    }
+    addCopy(
+      fluxNames,
+      [this](int lev) -> const amrex::MultiFab& { return *m_ionsFluxes[lev]; },
+      0);
   }
 #endif
 
   if (m_do_les && m_plot_les) {
     // Compute turbulent viscosity from current flow field at AmrNewTime
     calcTurbViscosity(AmrNewTime);
-    ncomp += 1;
+    fields.push_back(
+      {{"viscturb"}, [this](int lev, amrex::MultiFab& a_plt, int a_comp) {
+         faceToCellMean(
+           a_plt, a_comp,
+           {AMREX_D_DECL(
+             &m_leveldata_new[lev]->visc_turb_fc[0],
+             &m_leveldata_new[lev]->visc_turb_fc[1],
+             &m_leveldata_new[lev]->visc_turb_fc[2])});
+       }});
   }
 
+#if NUM_ODE > 0
+  addCopy(m_ode_names, newState, FIRSTODE);
+#endif
+
+  // External source terms
   if (m_plot_extSource) {
-    ncomp += NVAR;
+    amrex::Vector<std::string> extNames;
+    for (int ivar = 0; ivar < NVAR; ++ivar) {
+      extNames.push_back("extsource_" + stateVariableName(ivar));
+    }
+    addCopy(
+      extNames,
+      [this](int lev) -> const amrex::MultiFab& { return *m_extSource[lev]; },
+      0);
   }
+
+  amrex::Vector<std::string> plt_VarsName;
+  for (const auto& f : fields) {
+    plt_VarsName.insert(plt_VarsName.end(), f.names.begin(), f.names.end());
+  }
+  const int ncomp = static_cast<int>(plt_VarsName.size());
 
   //----------------------------------------------------------------
   // Plot MultiFabs
@@ -344,305 +550,12 @@ PeleLM::WritePlotFile()
   }
 
   //----------------------------------------------------------------
-  // Components names
-  amrex::Vector<std::string> names;
-  pele::physics::eos::speciesNames<pele::physics::PhysicsType::eos_type>(
-    names, &(eos_parms.host_parm()));
-
-  amrex::Vector<std::string> plt_VarsName;
-  AMREX_D_TERM(plt_VarsName.push_back("x_velocity");
-               , plt_VarsName.push_back("y_velocity");
-               , plt_VarsName.push_back("z_velocity"));
-  if (m_incompressible == 0) {
-    plt_VarsName.push_back("density");
-    if (m_plotStateSpec != 0) {
-      for (int n = 0; n < NUM_SPECIES; ++n) {
-        plt_VarsName.push_back("rho.Y(" + names[n] + ")");
-      }
-    }
-    plt_VarsName.push_back("rhoh");
-    plt_VarsName.push_back("temp");
-    plt_VarsName.push_back("RhoRT");
-#ifdef PELE_USE_PLASMA
-    plt_VarsName.push_back("nE");
-    plt_VarsName.push_back("phiV");
-#endif
-#ifdef PELE_USE_SOOT
-    for (int mom = 0; mom < NUMSOOTVAR; ++mom) {
-      const std::string sootname = soot_model->sootVariableName(mom);
-      plt_VarsName.push_back(sootname);
-    }
-#endif
-#ifdef PELE_USE_RADIATION
-    if (do_rad_solve) {
-      plt_VarsName.push_back("rad.G");
-      plt_VarsName.push_back("rad.kappa");
-      plt_VarsName.push_back("rad.emis");
-    }
-#endif
-    if (m_has_divu != 0) {
-      plt_VarsName.push_back("divu");
-    }
-  }
-
-  if (m_plot_grad_p != 0) {
-    AMREX_D_TERM(plt_VarsName.push_back("gradpx");
-                 , plt_VarsName.push_back("gradpy");
-                 , plt_VarsName.push_back("gradpz"));
-  }
-
-  for (int n = 0; n < m_nAux; ++n) {
-    plt_VarsName.push_back(m_aux_names[n]);
-  }
-
-  if ((m_do_react != 0) && (m_skipInstantRR == 0) && (m_plot_react != 0)) {
-    for (int n = 0; n < NUM_SPECIES; ++n) {
-      plt_VarsName.push_back("I_R(" + names[n] + ")");
-    }
-#ifdef PELE_USE_PLASMA
-    plt_VarsName.push_back("I_R(nE)");
-#endif
-    plt_VarsName.push_back("FunctCall");
-    // Extras:
-    if (m_plotHeatRelease != 0) {
-      plt_VarsName.push_back("HeatRelease");
-    }
-  }
-
-#ifdef AMREX_USE_EB
-  plt_VarsName.push_back("volFrac");
-#endif
-
-  for (int ivar = 0; ivar < m_derivePlotVarCount; ++ivar) {
-    const PeleLMDeriveRec* rec = derive_lst.get(m_derivePlotVars[ivar]);
-    for (int dvar = 0; dvar < rec->numDerive(); ++dvar) {
-      plt_VarsName.push_back(rec->variableName(dvar));
-    }
-  }
-#ifdef PELE_USE_SPRAY
-  if (SprayParticleContainer::NumDeriveVars() > 0) {
-    // We need virtual particles for the lower levels
-    setupVirtualParticles(0);
-    for (const auto& spray_derive_name :
-         SprayParticleContainer::DeriveVarNames()) {
-      plt_VarsName.push_back(spray_derive_name);
-    }
-  }
-  if (do_spray_particles && SprayParticleContainer::plot_spray_src) {
-    plt_VarsName.push_back("spray_mass_src");
-    plt_VarsName.push_back("spray_energy_src");
-    AMREX_D_TERM(plt_VarsName.push_back("spray_momentumX_src");
-                 , plt_VarsName.push_back("spray_momentumY_src");
-                 , plt_VarsName.push_back("spray_momentumZ_src"));
-    for (const auto& spray_fuel_name :
-         SprayParticleContainer::m_sprayDepNames) {
-      plt_VarsName.push_back("spray_" + spray_fuel_name + "_src");
-    }
-  }
-#endif
-
-#ifdef PELE_USE_PLASMA
-  if (m_do_extraEFdiags) {
-    for (int ivar = 0; ivar < NUM_IONS; ++ivar) {
-      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-        const std::string dir = (idim == 0) ? "X" : ((idim == 1) ? "Y" : "Z");
-        plt_VarsName.push_back(
-          "DriftFlux_" + names[NUM_SPECIES - NUM_IONS + ivar] + "_" + dir);
-      }
-    }
-  }
-#endif
-
-  if (m_do_les && m_plot_les) {
-    plt_VarsName.push_back("viscturb");
-  }
-
-#if NUM_ODE > 0
-  for (int n = 0; n < NUM_ODE; ++n) {
-    plt_VarsName.push_back(m_ode_names[n]);
-  }
-#endif
-
-  // External source terms
-  if (m_plot_extSource) {
-    for (int ivar = 0; ivar < NVAR; ++ivar) {
-      plt_VarsName.push_back("extsource_" + stateVariableName(ivar));
-    }
-  }
-
-  //----------------------------------------------------------------
   // Fill the plot MultiFabs
   for (int lev = 0; lev <= finest_level; ++lev) {
     int cnt = 0;
-    if (m_incompressible != 0) {
-      amrex::MultiFab::Copy(
-        mf_plt[lev], m_leveldata_new[lev]->state, 0, cnt, AMREX_SPACEDIM, 0);
-      cnt += AMREX_SPACEDIM;
-    } else {
-      // Velocity and density
-      amrex::MultiFab::Copy(
-        mf_plt[lev], m_leveldata_new[lev]->state, 0, cnt, AMREX_SPACEDIM + 1,
-        0);
-      cnt += AMREX_SPACEDIM + 1;
-      // Species only if requested
-      if (m_plotStateSpec != 0) {
-        amrex::MultiFab::Copy(
-          mf_plt[lev], m_leveldata_new[lev]->state, FIRSTSPEC, cnt, NUM_SPECIES,
-          0);
-        cnt += NUM_SPECIES;
-      }
-      amrex::MultiFab::Copy(
-        mf_plt[lev], m_leveldata_new[lev]->state, RHOH, cnt, 3, 0);
-      cnt += 3;
-#ifdef PELE_USE_PLASMA
-      amrex::MultiFab::Copy(
-        mf_plt[lev], m_leveldata_new[lev]->state, NE, cnt, 2, 0);
-      cnt += 2;
-#endif
-#ifdef PELE_USE_SOOT
-      amrex::MultiFab::Copy(
-        mf_plt[lev], m_leveldata_new[lev]->state, FIRSTSOOT, cnt, NUMSOOTVAR,
-        0);
-      cnt += NUMSOOTVAR;
-#endif
-#ifdef PELE_USE_RADIATION
-      if (do_rad_solve) {
-        amrex::MultiFab::Copy(mf_plt[lev], rad_model->G()[lev], 0, cnt, 1, 0);
-        cnt += 1;
-        amrex::MultiFab::Copy(
-          mf_plt[lev], rad_model->kappa()[lev], 0, cnt, 1, 0);
-        cnt += 1;
-        amrex::MultiFab::Copy(
-          mf_plt[lev], rad_model->emis()[lev], 0, cnt, 1, 0);
-        cnt += 1;
-      }
-#endif
-      if (m_has_divu != 0) {
-        amrex::MultiFab::Copy(
-          mf_plt[lev], m_leveldata_new[lev]->divu, 0, cnt, 1, 0);
-        cnt += 1;
-      }
-    }
-    if (m_plot_grad_p != 0) {
-      amrex::MultiFab::Copy(
-        mf_plt[lev], m_leveldata_new[lev]->gp, 0, cnt, AMREX_SPACEDIM, 0);
-      cnt += AMREX_SPACEDIM;
-    }
-
-    if (m_nAux > 0) {
-      amrex::MultiFab::Copy(
-        mf_plt[lev], m_leveldata_new[lev]->auxiliaries, 0, cnt, m_nAux, 0);
-      cnt += m_nAux;
-    }
-
-    if ((m_do_react != 0) && (m_skipInstantRR == 0) && (m_plot_react != 0)) {
-      amrex::MultiFab::Copy(
-        mf_plt[lev], m_leveldatareact[lev]->I_R, 0, cnt, nCompIR(), 0);
-      cnt += nCompIR();
-
-      amrex::MultiFab::Copy(
-        mf_plt[lev], m_leveldatareact[lev]->functC, 0, cnt, 1, 0);
-      cnt += 1;
-
-      if (m_plotHeatRelease != 0) {
-        std::unique_ptr<amrex::MultiFab> mf;
-        mf = std::make_unique<amrex::MultiFab>(grids[lev], dmap[lev], 1, 0);
-        getHeatRelease(lev, mf.get());
-        amrex::MultiFab::Copy(mf_plt[lev], *mf, 0, cnt, 1, 0);
-        cnt += 1;
-      }
-    }
-
-#ifdef AMREX_USE_EB
-    amrex::MultiFab::Copy(
-      mf_plt[lev], EBFactory(lev).getVolFrac(), 0, cnt, 1, 0);
-    cnt += 1;
-#endif
-
-    for (int ivar = 0; ivar < m_derivePlotVarCount; ++ivar) {
-      std::unique_ptr<amrex::MultiFab> mf;
-      mf = derive(m_derivePlotVars[ivar], m_cur_time, lev, 0);
-      amrex::MultiFab::Copy(mf_plt[lev], *mf, 0, cnt, mf->nComp(), 0);
-      cnt += mf->nComp();
-    }
-#ifdef PELE_USE_SPRAY
-    if (SprayParticleContainer::NumDeriveVars() > 0) {
-      const int num_spray_derive = SprayParticleContainer::NumDeriveVars();
-      mf_plt[lev].setVal(0., cnt, num_spray_derive);
-      SprayPC->computeDerivedVars(mf_plt[lev], lev, cnt);
-      if (lev < finest_level) {
-        amrex::MultiFab tmp_plt(
-          grids[lev], dmap[lev], num_spray_derive, 0, amrex::MFInfo(),
-          Factory(lev));
-        tmp_plt.setVal(0.);
-        VirtPC->computeDerivedVars(tmp_plt, lev, 0);
-        amrex::MultiFab::Add(mf_plt[lev], tmp_plt, 0, cnt, num_spray_derive, 0);
-      }
-      cnt += num_spray_derive;
-    }
-    if (do_spray_particles && SprayParticleContainer::plot_spray_src) {
-      SprayComps scomps = SprayParticleContainer::getSprayComps();
-      amrex::MultiFab::Copy(
-        mf_plt[lev], *m_spraysource[lev], scomps.rhoSrcIndx, cnt++, 1, 0);
-      amrex::MultiFab::Copy(
-        mf_plt[lev], *m_spraysource[lev], scomps.engSrcIndx, cnt++, 1, 0);
-      amrex::MultiFab::Copy(
-        mf_plt[lev], *m_spraysource[lev], scomps.momSrcIndx, cnt,
-        AMREX_SPACEDIM, 0);
-      cnt += AMREX_SPACEDIM;
-      for (int spf = 0; spf < SPRAY_FUEL_NUM; ++spf) {
-        amrex::MultiFab::Copy(
-          mf_plt[lev], *m_spraysource[lev], scomps.specSrcIndx + spf, cnt++, 1,
-          0);
-      }
-    }
-#endif
-#ifdef PELE_USE_PLASMA
-    if (m_do_extraEFdiags) {
-      amrex::MultiFab::Copy(
-        mf_plt[lev], *m_ionsFluxes[lev], 0, cnt, m_ionsFluxes[lev]->nComp(), 0);
-      cnt += m_ionsFluxes[lev]->nComp();
-    }
-#endif
-
-    if (m_do_les && m_plot_les) {
-      constexpr amrex::Real fact =
-        0.5 / static_cast<amrex::Real>(AMREX_SPACEDIM);
-      auto const& plot_arr = mf_plt[lev].arrays();
-      AMREX_D_TERM(
-        auto const& mut_arr_x =
-          m_leveldata_new[lev]->visc_turb_fc[0].const_arrays();
-        , auto const& mut_arr_y =
-            m_leveldata_new[lev]->visc_turb_fc[1].const_arrays();
-        , auto const& mut_arr_z =
-            m_leveldata_new[lev]->visc_turb_fc[2].const_arrays();)
-      // interpolate turbulent viscosity from faces to centers
-      amrex::ParallelFor(
-        mf_plt[lev], [plot_arr, cnt, mut_arr_x, mut_arr_y
-#if (AMREX_SPACEDIM == 3)
-                      ,
-                      mut_arr_z
-#endif
-      ] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
-          plot_arr[box_no](i, j, k, cnt) =
-            fact *
-            (AMREX_D_TERM(
-              mut_arr_x[box_no](i, j, k) + mut_arr_x[box_no](i + 1, j, k),
-              +mut_arr_y[box_no](i, j, k) + mut_arr_y[box_no](i, j + 1, k),
-              +mut_arr_z[box_no](i, j, k) + mut_arr_z[box_no](i, j, k + 1)));
-        });
-      amrex::Gpu::streamSynchronize();
-      cnt += 1;
-    }
-
-#if NUM_ODE > 0
-    amrex::MultiFab::Copy(
-      mf_plt[lev], m_leveldata_new[lev]->state, FIRSTODE, cnt, NUM_ODE, 0);
-    cnt += NUM_ODE;
-#endif
-
-    if (m_plot_extSource) {
-      amrex::MultiFab::Copy(mf_plt[lev], *m_extSource[lev], 0, cnt, NVAR, 0);
+    for (const auto& f : fields) {
+      f.fill(lev, mf_plt[lev], cnt);
+      cnt += static_cast<int>(f.names.size());
     }
 
 #ifdef AMREX_USE_EB
