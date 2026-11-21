@@ -1247,18 +1247,6 @@ public:
     amrex::MultiFab& a_density,
     const int rho_comp,
     const int nGhost);
-  void fillpatch_species(
-    const int lev,
-    const amrex::Real a_time,
-    amrex::MultiFab& a_species,
-    const int rhoY_comp,
-    const int nGhost);
-  void fillpatch_temp(
-    const int lev,
-    const amrex::Real a_time,
-    amrex::MultiFab& a_temp,
-    const int temp_comp,
-    const int nGhost);
   void fillpatch_aux(
     const int lev,
     const amrex::Real a_time,
@@ -1296,12 +1284,6 @@ public:
     amrex::MultiFab& a_fctC,
     const int nGhost);
 #ifdef PELE_USE_PLASMA
-  void fillpatch_phiV(
-    const int lev,
-    const amrex::Real a_time,
-    amrex::MultiFab& a_phiV,
-    const int phiV_comp,
-    const int nGhost);
   void fillPatchNLnE(
     const amrex::Real a_time,
     amrex::Vector<amrex::MultiFab*> const& a_nE,
