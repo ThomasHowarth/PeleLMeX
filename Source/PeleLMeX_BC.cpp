@@ -86,6 +86,56 @@ constexpr int soot_bc[] = {
   amrex::BCType::ext_dir,      amrex::BCType::ext_dir};
 #endif
 
+namespace {
+// Number of velocity components whose BC is ext_dir on the given side of
+// direction a_dir. Recycling needs all of them (AMREX_SPACEDIM) to agree.
+int
+countVelExtDir(
+  const amrex::Vector<amrex::BCRec>& a_velBC,
+  const int a_dir,
+  const amrex::Orientation::Side a_side)
+{
+  int n_extdir = 0;
+  for (const auto& bc : a_velBC) {
+    const int bctype =
+      (a_side == amrex::Orientation::low) ? bc.lo(a_dir) : bc.hi(a_dir);
+    if (bctype == amrex::BCType::ext_dir) {
+      ++n_extdir;
+    }
+  }
+  return n_extdir;
+}
+
+#ifdef AMREX_USE_EB
+// 0/1 mask on (a_ba, a_dm) at the resolution of a_geom: 0 = EB-covered,
+// 1 = regular or cut. Builds a fresh EB factory to obtain the cell flags.
+std::unique_ptr<amrex::iMultiFab>
+makeEBFluidMask(
+  const amrex::Geometry& a_geom,
+  const amrex::BoxArray& a_ba,
+  const amrex::DistributionMapping& a_dm)
+{
+  auto factory = amrex::makeEBFabFactory(
+    a_geom, a_ba, a_dm, {AMREX_D_DECL(0, 0, 0)}, amrex::EBSupport::basic);
+  const auto& flags = factory->getMultiEBCellFlagFab();
+  auto mask = std::make_unique<amrex::iMultiFab>(a_ba, a_dm, 1, 0);
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+  for (amrex::MFIter mfi(*mask, amrex::TilingIfNotGPU()); mfi.isValid();
+       ++mfi) {
+    const amrex::Box& bx = mfi.tilebox();
+    const auto& flagarr = flags.const_array(mfi);
+    auto const& mask_arr = mask->array(mfi);
+    amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+      mask_arr(i, j, k) = flagarr(i, j, k).isCovered() ? 0 : 1;
+    });
+  }
+  return mask;
+}
+#endif
+} // namespace
+
 amrex::InterpBase*
 PeleLM::
   getInterpolator( // NOLINT(readability-convert-member-functions-to-static)
@@ -162,76 +212,41 @@ PeleLM::setBoundaryConditions()
     }
   }
 
+  // Set every direction of a BCRec from a physical-BC -> BCType table
+  const auto setFromTable = [lo_bc, hi_bc](amrex::BCRec& bc, const int* table) {
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+      bc.setLo(idim, table[lo_bc[idim]]);
+      bc.setHi(idim, table[hi_bc[idim]]);
+    }
+  };
+
   // General forces: use int_dir in interior and foextrap otherwise
   for (int i = 0; i < sizeForceBC; ++i) {
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      m_bcrec_force[i].setLo(idim, force_bc[lo_bc[idim]]);
-      m_bcrec_force[i].setHi(idim, force_bc[hi_bc[idim]]);
-    }
+    setFromTable(m_bcrec_force[i], force_bc);
   }
 
   if (m_incompressible == 0) {
-    // Density
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      m_bcrec_state[DENSITY].setLo(idim, density_bc[lo_bc[idim]]);
-      m_bcrec_state[DENSITY].setHi(idim, density_bc[hi_bc[idim]]);
+    setFromTable(m_bcrec_state[DENSITY], density_bc);
+    for (int n = 0; n < NUM_SPECIES; ++n) {
+      setFromTable(m_bcrec_state[FIRSTSPEC + n], species_bc);
     }
-
-    // Species
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      for (int n = 0; n < NUM_SPECIES; ++n) {
-        m_bcrec_state[FIRSTSPEC + n].setLo(idim, species_bc[lo_bc[idim]]);
-        m_bcrec_state[FIRSTSPEC + n].setHi(idim, species_bc[hi_bc[idim]]);
-      }
-    }
-
-    // Enthalpy
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      m_bcrec_state[RHOH].setLo(idim, rhoh_bc[lo_bc[idim]]);
-      m_bcrec_state[RHOH].setHi(idim, rhoh_bc[hi_bc[idim]]);
-    }
-
-    // Temperature
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      m_bcrec_state[TEMP].setLo(idim, temp_bc[lo_bc[idim]]);
-      m_bcrec_state[TEMP].setHi(idim, temp_bc[hi_bc[idim]]);
-    }
-
+    setFromTable(m_bcrec_state[RHOH], rhoh_bc);
+    setFromTable(m_bcrec_state[TEMP], temp_bc);
     // rhoRT: reflect even on all but interior bndy
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      m_bcrec_state[RHORT].setLo(idim, divu_bc[lo_bc[idim]]);
-      m_bcrec_state[RHORT].setHi(idim, divu_bc[hi_bc[idim]]);
+    setFromTable(m_bcrec_state[RHORT], divu_bc);
+    for (int n = 0; n < NUM_ODE; ++n) {
+      setFromTable(m_bcrec_state[FIRSTODE + n], ode_bc);
     }
-
-    // ODEs
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      for (int n = 0; n < NUM_ODE; ++n) {
-        m_bcrec_state[FIRSTODE + n].setLo(idim, ode_bc[lo_bc[idim]]);
-        m_bcrec_state[FIRSTODE + n].setHi(idim, ode_bc[hi_bc[idim]]);
-      }
-    }
-
-    // divU
     if (m_has_divu != 0) {
-      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-        m_bcrec_divu.setLo(idim, divu_bc[lo_bc[idim]]);
-        m_bcrec_divu.setHi(idim, divu_bc[hi_bc[idim]]);
-      }
+      setFromTable(m_bcrec_divu, divu_bc);
     }
     // auxiliaries - assumed to be the same as temperature
     for (int n = 0; n < m_nAux; ++n) {
-      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-        m_bcrec_aux[n].setLo(idim, aux_bc[lo_bc[idim]]);
-        m_bcrec_aux[n].setHi(idim, aux_bc[hi_bc[idim]]);
-      }
+      setFromTable(m_bcrec_aux[n], aux_bc);
     }
 
 #ifdef PELE_USE_PLASMA
-    // nE
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      m_bcrec_state[NE].setLo(idim, nE_bc[lo_bc[idim]]);
-      m_bcrec_state[NE].setHi(idim, nE_bc[hi_bc[idim]]);
-    }
+    setFromTable(m_bcrec_state[NE], nE_bc);
 
     // Get m_phiV_bc
     const int* lo_phibc = m_phiV_bc.lo();
@@ -252,11 +267,8 @@ PeleLM::setBoundaryConditions()
     m_bcrec_state[NE] = hackBCChargedParticle(-1.0, m_bcrec_state[NE]);
 #endif
 #ifdef PELE_USE_SOOT
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      for (int mom = 0; mom < NUMSOOTVAR; ++mom) {
-        m_bcrec_state[FIRSTSOOT + mom].setLo(idim, soot_bc[lo_bc[idim]]);
-        m_bcrec_state[FIRSTSOOT + mom].setHi(idim, soot_bc[hi_bc[idim]]);
-      }
+    for (int mom = 0; mom < NUMSOOTVAR; ++mom) {
+      setFromTable(m_bcrec_state[FIRSTSOOT + mom], soot_bc);
     }
 #endif
   }
@@ -348,7 +360,10 @@ PeleLM::fillPatchSpecies(const TimeStamp a_time)
   for (int lev = 0; lev <= finest_level; ++lev) {
     auto* ldata_p = getLevelDataPtr(lev, a_time);
     const amrex::Real time = getTime(lev, a_time);
-    fillpatch_species(lev, time, ldata_p->state, FIRSTSPEC, m_nGrowState);
+    fillpatchLevel(
+      lev, time, ldata_p->state, m_nGrowState, &LevelData::state, FIRSTSPEC,
+      FIRSTSPEC, NUM_SPECIES, fetchBCRecArray(FIRSTSPEC, NUM_SPECIES),
+      makeBCFill<PeleLMCCFillExtDirSpec>(), getInterpolator());
   }
 }
 
@@ -359,7 +374,10 @@ PeleLM::fillPatchTemp(const TimeStamp a_time)
   for (int lev = 0; lev <= finest_level; ++lev) {
     auto* ldata_p = getLevelDataPtr(lev, a_time);
     const amrex::Real time = getTime(lev, a_time);
-    fillpatch_temp(lev, time, ldata_p->state, TEMP, m_nGrowState);
+    fillpatchLevel(
+      lev, time, ldata_p->state, m_nGrowState, &LevelData::state, TEMP, TEMP, 1,
+      fetchBCRecArray(TEMP, 1), makeBCFill<PeleLMCCFillExtDirTemp>(),
+      getInterpolator());
   }
 }
 
@@ -382,7 +400,10 @@ PeleLM::fillPatchPhiV(const TimeStamp a_time)
   for (int lev = 0; lev <= finest_level; ++lev) {
     auto ldata_p = getLevelDataPtr(lev, a_time);
     const amrex::Real time = getTime(lev, a_time);
-    fillpatch_phiV(lev, time, ldata_p->state, PHIV, m_nGrowState);
+    fillpatchLevel(
+      lev, time, ldata_p->state, m_nGrowState, &LevelData::state, PHIV, PHIV, 1,
+      fetchBCRecArray(PHIV, 1), makeBCFill<PeleLMCCFillExtDirPhiV>(),
+      getInterpolator());
   }
 }
 #endif
@@ -428,18 +449,10 @@ PeleLM::fillpatch_state(
     const auto bcrec = fetchBCRecArray(VELX, AMREX_SPACEDIM);
     const auto domain = geom[lev].Domain();
     const int idir = m_inlet_plane_dir;
-    auto face_is_recycling_inflow = [=](int is_hi) -> bool {
-      for (int n = 0; n < AMREX_SPACEDIM; ++n) {
-        const auto& vbc = bcrec[n];
-        const int bctype = (is_hi != 0) ? vbc.hi(idir) : vbc.lo(idir);
-        if (bctype != amrex::BCType::ext_dir) {
-          return false;
-        }
-      }
-      return true;
-    };
-    const bool zero_lo = face_is_recycling_inflow(0);
-    const bool zero_hi = face_is_recycling_inflow(1);
+    const bool zero_lo =
+      countVelExtDir(bcrec, idir, amrex::Orientation::low) == AMREX_SPACEDIM;
+    const bool zero_hi =
+      countVelExtDir(bcrec, idir, amrex::Orientation::high) == AMREX_SPACEDIM;
     if (zero_lo || zero_hi) {
 
 #ifdef AMREX_USE_OMP
@@ -502,36 +515,6 @@ PeleLM::fillpatch_density(
     getInterpolator());
 }
 
-// Fill the mass fractions
-void
-PeleLM::fillpatch_species(
-  const int lev,
-  const amrex::Real a_time,
-  amrex::MultiFab& a_species,
-  const int rhoY_comp,
-  const int nGhost)
-{
-  fillpatchLevel(
-    lev, a_time, a_species, nGhost, &LevelData::state, FIRSTSPEC, rhoY_comp,
-    NUM_SPECIES, fetchBCRecArray(FIRSTSPEC, NUM_SPECIES),
-    makeBCFill<PeleLMCCFillExtDirSpec>(), getInterpolator());
-}
-
-// Fill temperature
-void
-PeleLM::fillpatch_temp(
-  const int lev,
-  const amrex::Real a_time,
-  amrex::MultiFab& a_temp,
-  const int temp_comp,
-  const int nGhost)
-{
-  fillpatchLevel(
-    lev, a_time, a_temp, nGhost, &LevelData::state, TEMP, temp_comp, 1,
-    fetchBCRecArray(TEMP, 1), makeBCFill<PeleLMCCFillExtDirTemp>(),
-    getInterpolator());
-}
-
 // Fill the auxiliaries
 void
 PeleLM::fillpatch_aux(
@@ -547,23 +530,6 @@ PeleLM::fillpatch_aux(
 
   a_aux.EnforcePeriodicity(geom[lev].periodicity());
 }
-
-#ifdef PELE_USE_PLASMA
-// Fill electro-static potential
-void
-PeleLM::fillpatch_phiV(
-  const int lev,
-  const amrex::Real a_time,
-  amrex::MultiFab& a_phiV,
-  const int phiV_comp,
-  const int nGhost)
-{
-  fillpatchLevel(
-    lev, a_time, a_phiV, nGhost, &LevelData::state, PHIV, phiV_comp, 1,
-    fetchBCRecArray(PHIV, 1), makeBCFill<PeleLMCCFillExtDirPhiV>(),
-    getInterpolator());
-}
-#endif
 
 // Fill the divU
 void
@@ -833,7 +799,9 @@ PeleLM::fillTurbInflow(
     ProbParm* probparmDH = PeleLM::prob_parm;
 
     // Velocity BCs
-    auto velBCRec = fetchBCRecArray(VELX, AMREX_SPACEDIM);
+    const auto velBCRec = fetchBCRecArray(VELX, AMREX_SPACEDIM);
+    const amrex::Box& domain = geom[lev].Domain();
+    constexpr int Grow = 4; // Being conservative
 
     // Copy problem parameter structs to host
     amrex::Gpu::copy(
@@ -860,58 +828,28 @@ PeleLM::fillTurbInflow(
       amrex::FArrayBox& data = a_vel[mfi];
 
       for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
-        // A turbulent inflow face has every velocity component ext_dir. On
-        // a slip wall only the normal one is, and zeroing there wipes the
-        // tangential ghost cells, which setInflowBoundaryVel never refills.
-        bool lo_inflow = true;
-        bool hi_inflow = true;
-        for (int n = 0; n < AMREX_SPACEDIM; ++n) {
-          lo_inflow =
-            lo_inflow && velBCRec[n].lo(dir) == amrex::BCType::ext_dir;
-          hi_inflow =
-            hi_inflow && velBCRec[n].hi(dir) == amrex::BCType::ext_dir;
-        }
-
-        auto bndryBoxLO =
-          amrex::Box(amrex::adjCellLo(geom[lev].Domain(), dir, 4) & bx);
-        if (lo_inflow && bndryBoxLO.ok()) {
-          // Create box with ghost cells and set them to zero
-          amrex::IntVect growVect(amrex::IntVect::TheUnitVector());
-          constexpr int Grow = 4; // Being conservative
-          for (int n = 0; n < AMREX_SPACEDIM; ++n) {
-            growVect[n] = Grow;
+        // Domain grown in the tangential directions, so the zeroed ghost
+        // slab also covers the corners
+        amrex::IntVect growVect(Grow);
+        growVect[dir] = 0;
+        const amrex::Box modDom = amrex::grow(domain, growVect);
+        for (const auto side :
+             {amrex::Orientation::low, amrex::Orientation::high}) {
+          const amrex::Orientation face(dir, side);
+          // A turbulent inflow face has every velocity component ext_dir.
+          // On a slip wall only the normal one is, and zeroing there wipes
+          // the tangential ghost cells, which setInflowBoundaryVel never
+          // refills.
+          const bool inflow =
+            countVelExtDir(velBCRec, dir, side) == AMREX_SPACEDIM;
+          const amrex::Box bndryBox = amrex::adjCell(domain, face, Grow) & bx;
+          if (inflow && bndryBox.ok()) {
+            // Set the ghost cells to zero, then add the inflow
+            data.setVal<amrex::RunOn::Device>(
+              0.0, amrex::adjCell(modDom, face, Grow) & bx, vel_comp,
+              AMREX_SPACEDIM);
+            addTurbInflowToBox(bndryBox, data, lev, dir, side, a_time);
           }
-          growVect[dir] = 0;
-          amrex::Box modDom = geom[lev].Domain();
-          modDom.grow(growVect);
-          auto bndryBoxLO_ghost =
-            amrex::Box(amrex::adjCellLo(modDom, dir, Grow) & bx);
-          data.setVal<amrex::RunOn::Device>(
-            0.0, bndryBoxLO_ghost, vel_comp, AMREX_SPACEDIM);
-
-          addTurbInflowToBox(
-            bndryBoxLO, data, lev, dir, amrex::Orientation::low, a_time);
-        }
-
-        auto bndryBoxHI =
-          amrex::Box(amrex::adjCellHi(geom[lev].Domain(), dir, 4) & bx);
-        if (hi_inflow && bndryBoxHI.ok()) {
-          // Create box with ghost cells and set them to zero
-          amrex::IntVect growVect(amrex::IntVect::TheUnitVector());
-          constexpr int Grow = 4;
-          for (int n = 0; n < AMREX_SPACEDIM; ++n) {
-            growVect[n] = Grow;
-          }
-          growVect[dir] = 0;
-          amrex::Box modDom = geom[lev].Domain();
-          modDom.grow(growVect);
-          auto bndryBoxHI_ghost =
-            amrex::Box(amrex::adjCellHi(modDom, dir, Grow) & bx);
-          data.setVal<amrex::RunOn::Device>(
-            0.0, bndryBoxHI_ghost, vel_comp, AMREX_SPACEDIM);
-
-          addTurbInflowToBox(
-            bndryBoxHI, data, lev, dir, amrex::Orientation::high, a_time);
         }
       }
     }
@@ -1122,32 +1060,9 @@ PeleLM::buildRecyclingPlaneStorage()
     m_inlet_recycling.fluct_src[lev]->setVal(0.0);
 
 #ifdef AMREX_USE_EB
-    // Build a fresh EB factory at the slab's BoxArray to obtain per-cell
-    // flags at this level's resolution, then translate to a 0/1 mask:
-    // 0 = EB-covered (excluded from the running mean; zero fluctuation),
-    // 1 = regular or cut (included).
-    auto slab_eb_factory = amrex::makeEBFabFactory(
-      geom[lev], slab_ba, slab_dm, {AMREX_D_DECL(0, 0, 0)},
-      amrex::EBSupport::basic);
-    const auto& flags = slab_eb_factory->getMultiEBCellFlagFab();
-
-    m_inlet_recycling.mask[lev] =
-      std::make_unique<amrex::iMultiFab>(slab_ba, slab_dm, 1, 0);
-    auto& mask_lev = *m_inlet_recycling.mask[lev];
-
-#ifdef AMREX_USE_OMP
-#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
-#endif
-    for (amrex::MFIter mfi(mask_lev, amrex::TilingIfNotGPU()); mfi.isValid();
-         ++mfi) {
-      const amrex::Box& bx = mfi.tilebox();
-      const auto& flagarr = flags.const_array(mfi);
-      auto const& mask_arr = mask_lev.array(mfi);
-      amrex::ParallelFor(
-        bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-          mask_arr(i, j, k) = flagarr(i, j, k).isCovered() ? 0 : 1;
-        });
-    }
+    // Mask for the running mean: 0 = EB-covered (excluded; zero
+    // fluctuation), 1 = regular or cut (included).
+    m_inlet_recycling.mask[lev] = makeEBFluidMask(geom[lev], slab_ba, slab_dm);
 #endif
 
     if (
@@ -1460,18 +1375,9 @@ PeleLM::applyRecyclingFluxControl()
   // Which side(s) of planeDir carry an ext_dir (inflow) velocity BC. Same
   // convention as fillFromRecyclingPlane: all velocity components on a face
   // must agree on ext_dir.
-  auto velBCRec = fetchBCRecArray(VELX, AMREX_SPACEDIM);
+  const auto velBCRec = fetchBCRecArray(VELX, AMREX_SPACEDIM);
   auto faceIsExtDir = [&](amrex::Orientation::Side side) {
-    int n_extdir = 0;
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      const int bc = (side == amrex::Orientation::low)
-                       ? velBCRec[idim].lo()[planeDir]
-                       : velBCRec[idim].hi()[planeDir];
-      if (bc == amrex::BCType::ext_dir) {
-        ++n_extdir;
-      }
-    }
-    return n_extdir == AMREX_SPACEDIM;
+    return countVelExtDir(velBCRec, planeDir, side) == AMREX_SPACEDIM;
   };
   const bool is_lo = faceIsExtDir(amrex::Orientation::low);
   const bool is_hi = faceIsExtDir(amrex::Orientation::high);
@@ -1504,28 +1410,12 @@ PeleLM::applyRecyclingFluxControl()
     const int srcIndex0 = computeRecyclingSrcIndex(0);
     amrex::BoxArray inlet_ba(slab0.boxArray());
     inlet_ba.shift(amrex::BASISV(planeDir) * (inletIdx - srcIndex0));
+#ifdef AMREX_USE_EB
+    m_recycling_inlet_mask =
+      makeEBFluidMask(geom[0], inlet_ba, slab0.DistributionMap());
+#else
     m_recycling_inlet_mask = std::make_unique<amrex::iMultiFab>(
       inlet_ba, slab0.DistributionMap(), 1, 0);
-#ifdef AMREX_USE_EB
-    auto inlet_eb_factory = amrex::makeEBFabFactory(
-      geom[0], inlet_ba, slab0.DistributionMap(), {AMREX_D_DECL(0, 0, 0)},
-      amrex::EBSupport::basic);
-    const auto& inlet_flags = inlet_eb_factory->getMultiEBCellFlagFab();
-    auto& inlet_mask = *m_recycling_inlet_mask;
-#ifdef AMREX_USE_OMP
-#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
-#endif
-    for (amrex::MFIter mfi(inlet_mask, amrex::TilingIfNotGPU()); mfi.isValid();
-         ++mfi) {
-      const amrex::Box& bx = mfi.tilebox();
-      const auto& flagarr = inlet_flags.const_array(mfi);
-      auto const& mask_arr = inlet_mask.array(mfi);
-      amrex::ParallelFor(
-        bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-          mask_arr(i, j, k) = flagarr(i, j, k).isCovered() ? 0 : 1;
-        });
-    }
-#else
     m_recycling_inlet_mask->setVal(1);
 #endif
     const amrex::Long n_fluid = m_recycling_inlet_mask->sum(0);
@@ -1638,15 +1528,7 @@ PeleLM::fillFromRecyclingPlane(amrex::MultiFab& a_vel, int vel_comp, int lev)
   // affected face is ext_dir. Disagreement is almost certainly a malformed
   // input, so abort rather than silently picking a side.
   auto faceIsExtDir = [&](amrex::Orientation::Side side) {
-    int n_extdir = 0;
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      const int bc = (side == amrex::Orientation::low)
-                       ? velBCRec[idim].lo()[planeDir]
-                       : velBCRec[idim].hi()[planeDir];
-      if (bc == amrex::BCType::ext_dir) {
-        ++n_extdir;
-      }
-    }
+    const int n_extdir = countVelExtDir(velBCRec, planeDir, side);
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
       n_extdir == 0 || n_extdir == AMREX_SPACEDIM,
       "fillFromRecyclingPlane: velocity components disagree on ext_dir for "
@@ -1745,13 +1627,8 @@ PeleLM::fillFromRecyclingPlane(amrex::MultiFab& a_vel, int vel_comp, int lev)
         amrex::FArrayBox& dst_fab = shifted_fluct[mfi];
         const amrex::Box& src_bx = src_fab.box();
         const amrex::Box dst_bx = amrex::shift(src_bx, shift_iv);
-        if (amrex::Gpu::inLaunchRegion()) {
-          dst_fab.copy<amrex::RunOn::Gpu>(
-            src_fab, src_bx, 0, dst_bx, 0, fluct.nComp());
-        } else {
-          dst_fab.copy<amrex::RunOn::Host>(
-            src_fab, src_bx, 0, dst_bx, 0, fluct.nComp());
-        }
+        dst_fab.copy<amrex::RunOn::Device>(
+          src_fab, src_bx, 0, dst_bx, 0, fluct.nComp());
       }
 
       // (2) Single collective: populates a_vel's innermost grow layer on
@@ -1789,13 +1666,8 @@ PeleLM::fillFromRecyclingPlane(amrex::MultiFab& a_vel, int vel_comp, int lev)
             amrex::Box dst_slice = src_slice;
             dst_slice.setSmall(planeDir, target);
             dst_slice.setBig(planeDir, target);
-            if (amrex::Gpu::inLaunchRegion()) {
-              fab.copy<amrex::RunOn::Gpu>(
-                fab, src_slice, vel_comp, dst_slice, vel_comp, AMREX_SPACEDIM);
-            } else {
-              fab.copy<amrex::RunOn::Host>(
-                fab, src_slice, vel_comp, dst_slice, vel_comp, AMREX_SPACEDIM);
-            }
+            fab.copy<amrex::RunOn::Device>(
+              fab, src_slice, vel_comp, dst_slice, vel_comp, AMREX_SPACEDIM);
           }
         }
       }
