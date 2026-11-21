@@ -112,47 +112,10 @@ PeleLM::ionDriftVelocity(const std::unique_ptr<AdvanceAdvData>& advData)
   // FillPatch Udrift on levels > 0
   for (int lev = 0; lev <= finest_level; ++lev) {
     if (lev > 0) {
-      amrex::IntVect rr =
-        geom[lev].Domain().size() / geom[lev - 1].Domain().size();
-      amrex::Interpolater* mapper = &amrex::face_linear_interp;
-
-      // Set BCRec for Umac
-      amrex::Vector<amrex::BCRec> bcrec(NUM_IONS);
-      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-        for (int ion = 0; ion < NUM_IONS; ++ion) {
-          if (geom[lev - 1].isPeriodic(idim)) {
-            bcrec[ion].setLo(idim, amrex::BCType::int_dir);
-            bcrec[ion].setHi(idim, amrex::BCType::int_dir);
-          } else {
-            bcrec[ion].setLo(idim, amrex::BCType::foextrap);
-            bcrec[ion].setHi(idim, amrex::BCType::foextrap);
-          }
-        }
-      }
-      amrex::Array<amrex::Vector<amrex::BCRec>, AMREX_SPACEDIM> bcrecArr = {
-        AMREX_D_DECL(bcrec, bcrec, bcrec)};
-
-      amrex::PhysBCFunct<amrex::GpuBndryFuncFab<umacFill>> crse_bndry_func(
-        geom[lev - 1], bcrec, umacFill{});
-      amrex::Array<
-        amrex::PhysBCFunct<amrex::GpuBndryFuncFab<umacFill>>, AMREX_SPACEDIM>
-        cbndyFuncArr = {
-          AMREX_D_DECL(crse_bndry_func, crse_bndry_func, crse_bndry_func)};
-
-      amrex::PhysBCFunct<amrex::GpuBndryFuncFab<umacFill>> fine_bndry_func(
-        geom[lev], bcrec, umacFill{});
-      amrex::Array<
-        amrex::PhysBCFunct<amrex::GpuBndryFuncFab<umacFill>>, AMREX_SPACEDIM>
-        fbndyFuncArr = {
-          AMREX_D_DECL(fine_bndry_func, fine_bndry_func, fine_bndry_func)};
-
-      amrex::Real dummy = 0.0;
-      FillPatchTwoLevels(
-        GetArrOfPtrs(advData->uDrift[lev]), amrex::IntVect(1), dummy,
-        {GetArrOfPtrs(advData->uDrift[lev - 1])}, {dummy},
-        {GetArrOfPtrs(advData->uDrift[lev])}, {dummy}, 0, 0, NUM_IONS,
-        geom[lev - 1], geom[lev], cbndyFuncArr, 0, fbndyFuncArr, 0, rr, mapper,
-        bcrecArr, 0);
+      fillpatchFaces(
+        lev, GetArrOfPtrs(advData->uDrift[lev - 1]),
+        GetArrOfPtrs(advData->uDrift[lev]), NUM_IONS, 1,
+        &amrex::face_linear_interp);
     } else {
       AMREX_D_TERM(
         advData->uDrift[lev][0].FillBoundary(geom[lev].periodicity());

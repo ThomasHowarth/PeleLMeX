@@ -476,62 +476,50 @@ PeleLM::macProject(
   for (int lev = 1; lev <= finest_level; ++lev) {
     // We need to fill the MAC velocities outside the fine region so we can
     // use them in the Godunov method
-    const amrex::IntVect rr =
-      geom[lev].Domain().size() / geom[lev - 1].Domain().size();
-    create_constrained_umac_grown(
-      m_nGrowMAC, &geom[lev - 1], &geom[lev],
-      GetArrOfPtrs(advData->umac[lev - 1]), GetArrOfPtrs(advData->umac[lev]),
-      rr);
+    // (divergence-preserving interpolation)
+    fillpatchFaces(
+      lev, GetArrOfPtrs(advData->umac[lev - 1]),
+      GetArrOfPtrs(advData->umac[lev]), 1, m_nGrowMAC,
+      &amrex::face_divfree_interp);
   }
 }
 
 void
-PeleLM::create_constrained_umac_grown(
-  const int a_nGrow,
-  const amrex::Geometry* crse_geom,
-  const amrex::Geometry* fine_geom,
-  const amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>& u_mac_crse,
-  const amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>& u_mac_fine,
-  const amrex::IntVect& crse_ratio)
+PeleLM::fillpatchFaces(
+  const int lev,
+  const amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>& a_crse,
+  const amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>& a_fine,
+  const int ncomp,
+  const int nGrow,
+  amrex::Interpolater* a_mapper)
 {
-  // Divergence preserving interp
-  amrex::Interpolater* mapper = &amrex::face_divfree_interp;
-
-  // Set BCRec for Umac
-  amrex::Vector<amrex::BCRec> bcrec(1);
+  AMREX_ASSERT(lev > 0);
+  amrex::BCRec bc;
   for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-    if (crse_geom->isPeriodic(idim)) {
-      bcrec[0].setLo(idim, amrex::BCType::int_dir);
-      bcrec[0].setHi(idim, amrex::BCType::int_dir);
-    } else {
-      bcrec[0].setLo(idim, amrex::BCType::foextrap);
-      bcrec[0].setHi(idim, amrex::BCType::foextrap);
-    }
+    const auto bctype = geom[lev - 1].isPeriodic(idim)
+                          ? amrex::BCType::int_dir
+                          : amrex::BCType::foextrap;
+    bc.setLo(idim, bctype);
+    bc.setHi(idim, bctype);
   }
+  const amrex::Vector<amrex::BCRec> bcrec(ncomp, bc);
   amrex::Array<amrex::Vector<amrex::BCRec>, AMREX_SPACEDIM> bcrecArr = {
     AMREX_D_DECL(bcrec, bcrec, bcrec)};
 
-  amrex::PhysBCFunct<amrex::GpuBndryFuncFab<umacFill>> crse_bndry_func(
-    *crse_geom, bcrec, umacFill{});
-  amrex::Array<
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<umacFill>>, AMREX_SPACEDIM>
-    cbndyFuncArr = {
-      AMREX_D_DECL(crse_bndry_func, crse_bndry_func, crse_bndry_func)};
+  using PhysBC = amrex::PhysBCFunct<amrex::GpuBndryFuncFab<umacFill>>;
+  PhysBC crse_bndry_func(geom[lev - 1], bcrec, umacFill{});
+  PhysBC fine_bndry_func(geom[lev], bcrec, umacFill{});
+  amrex::Array<PhysBC, AMREX_SPACEDIM> cbndyFuncArr = {
+    AMREX_D_DECL(crse_bndry_func, crse_bndry_func, crse_bndry_func)};
+  amrex::Array<PhysBC, AMREX_SPACEDIM> fbndyFuncArr = {
+    AMREX_D_DECL(fine_bndry_func, fine_bndry_func, fine_bndry_func)};
 
-  amrex::PhysBCFunct<amrex::GpuBndryFuncFab<umacFill>> fine_bndry_func(
-    *fine_geom, bcrec, umacFill{});
-  amrex::Array<
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<umacFill>>, AMREX_SPACEDIM>
-    fbndyFuncArr = {
-      AMREX_D_DECL(fine_bndry_func, fine_bndry_func, fine_bndry_func)};
-
-  // Use piecewise constant interpolation in time, so create dummy variable for
-  // time
+  // Piecewise constant interpolation in time, so use a dummy time
   constexpr amrex::Real dummy = 0.;
   FillPatchTwoLevels(
-    u_mac_fine, amrex::IntVect(a_nGrow), dummy, {u_mac_crse}, {dummy},
-    {u_mac_fine}, {dummy}, 0, 0, 1, *crse_geom, *fine_geom, cbndyFuncArr, 0,
-    fbndyFuncArr, 0, crse_ratio, mapper, bcrecArr, 0);
+    a_fine, amrex::IntVect(nGrow), dummy, {a_crse}, {dummy}, {a_fine}, {dummy},
+    0, 0, ncomp, geom[lev - 1], geom[lev], cbndyFuncArr, 0, fbndyFuncArr, 0,
+    refRatio(lev - 1), a_mapper, bcrecArr, 0);
 }
 
 amrex::Array<amrex::LinOpBCType, AMREX_SPACEDIM>
