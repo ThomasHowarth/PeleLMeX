@@ -2130,11 +2130,9 @@ public:
   };
   RecyclingPlaneData m_inlet_recycling;
 
-  // Advection/Diffusion types
+  // Advection types
   amrex::Vector<int>
     m_AdvTypeState; // Tag Conservative/NonConservative state components
-  amrex::Vector<int>
-    m_DiffTypeState; // Tag Diffusive/NonDiffusive state components
 
   // Derived quantities
   PeleLMDeriveList derive_lst;

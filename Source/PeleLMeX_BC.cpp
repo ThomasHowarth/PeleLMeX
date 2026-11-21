@@ -423,8 +423,7 @@ PeleLM::fillPatchReact(const int lev, const amrex::Real a_time, const int nGrow)
 {
   BL_PROFILE("PeleLMeX::fillPatchReact()");
 
-  std::unique_ptr<amrex::MultiFab> mf;
-  mf = std::make_unique<amrex::MultiFab>(
+  auto mf = std::make_unique<amrex::MultiFab>(
     grids[lev], dmap[lev], nCompIR(), nGrow, amrex::MFInfo(), Factory(lev));
   fillpatch_reaction(lev, a_time, *mf, nGrow);
 
