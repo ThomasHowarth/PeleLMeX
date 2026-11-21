@@ -313,9 +313,39 @@ PeleLM::MakeNewLevelFromCoarse(
   const amrex::DistributionMapping& dm)
 {
   BL_PROFILE("PeleLMeX::MakeNewLevelFromCoarse()");
+  constexpr bool fromCoarse = true;
+  makeLevel(lev, time, ba, dm, fromCoarse);
+}
 
+void
+PeleLM::RemakeLevel(
+  const int lev,
+  const amrex::Real time,
+  const amrex::BoxArray& ba,
+  const amrex::DistributionMapping& dm)
+{
+  BL_PROFILE("PeleLMeX::RemakeLevel()");
+  constexpr bool fromCoarse = false;
+  makeLevel(lev, time, ba, dm, fromCoarse);
+}
+
+// (Re)build level lev on ba/dm, filling it from the coarse level only
+// (a_fromCoarse, new level) or from the existing level data and the coarse
+// level (remade level).
+void
+PeleLM::makeLevel(
+  const int lev,
+  const amrex::Real time,
+  const amrex::BoxArray& ba,
+  const amrex::DistributionMapping& dm,
+  const bool a_fromCoarse)
+{
   if (m_verbose > 0) {
-    amrex::Print() << " Making new level " << lev << " from coarse\n";
+    if (a_fromCoarse) {
+      amrex::Print() << " Making new level " << lev << " from coarse\n";
+    } else {
+      amrex::Print() << " Remaking level " << lev << "\n";
+    }
     if (m_verbose > 1) {
       auto const dx = geom[lev].CellSizeArray();
       amrex::Real vol = AMREX_D_TERM(dx[0], *dx[1], *dx[2]);
@@ -350,8 +380,9 @@ PeleLM::MakeNewLevelFromCoarse(
     m_use_soret, static_cast<int>(m_do_les)));
 
   // Mesh-mapping metrics (and the mapping-aware interpolators) must exist
-  // BEFORE the coarse->fine fill so the new level is prolonged
-  // conservatively.  Use *new_fact since m_factory[lev] is assigned below.
+  // on the new ba/dm BEFORE the fill, so the level is prolonged
+  // conservatively with matching metrics.  Use *new_fact since
+  // m_factory[lev] is assigned below.
   if (m_mesh_map) {
     m_mesh_map->define(lev, ba, dm, *new_fact, m_nGrowState);
     m_mesh_map->create_map(lev, geom[lev]);
@@ -361,149 +392,27 @@ PeleLM::MakeNewLevelFromCoarse(
   defineCellVolume(lev, ba, dm, *new_fact);
 
   // Fill the leveldata_new
-  fillcoarsepatch_state(lev, time, n_leveldata_new->state, m_nGrowState);
-  if (m_nAux > 0) {
-    fillcoarsepatch_aux(lev, time, n_leveldata_new->auxiliaries, m_nGrowState);
-  }
-  fillcoarsepatch_gradp(lev, time, n_leveldata_new->gp, 0);
-  n_leveldata_new->press.setVal(0.0);
-
-  if (m_incompressible == 0) {
-    if (m_has_divu != 0) {
+  if (a_fromCoarse) {
+    fillcoarsepatch_state(lev, time, n_leveldata_new->state, m_nGrowState);
+    if (m_nAux > 0) {
+      fillcoarsepatch_aux(
+        lev, time, n_leveldata_new->auxiliaries, m_nGrowState);
+    }
+    fillcoarsepatch_gradp(lev, time, n_leveldata_new->gp, 0);
+    if ((m_incompressible == 0) && (m_has_divu != 0)) {
       fillcoarsepatch_divu(lev, time, n_leveldata_new->divu, 0);
     }
-  }
-
-  // Move std::unique_ptr into the PeleLM vector
-  m_leveldata_old[lev] = std::move(n_leveldata_old);
-  m_leveldata_new[lev] = std::move(n_leveldata_new);
-  m_factory[lev] = std::move(new_fact);
-
-  if (m_do_react != 0) {
-    std::unique_ptr<LevelDataReact> n_leveldatareact(
-      new LevelDataReact(ba, dm, *m_factory[lev]));
-    fillcoarsepatch_reaction(lev, time, n_leveldatareact->I_R, 0);
-    n_leveldatareact->functC.setVal(0.0);
-    m_leveldatareact[lev] = std::move(n_leveldatareact);
-  }
-
-  if (m_incompressible == 0) {
-    // Enforce density / species density consistency
-    // only useful when using cell cons interp
-    if (m_regrid_interp_method == 1) {
-      setRhoToSumRhoY(lev, AmrNewTime);
+  } else {
+    fillpatch_state(lev, time, n_leveldata_new->state, m_nGrowState);
+    if (m_nAux > 0) {
+      fillpatch_aux(lev, time, n_leveldata_new->auxiliaries, m_nGrowState);
     }
-
-    // Recompute temperature from interpolated rhoYs and rhoH
-    setTemperature(lev, AmrNewTime);
-
-    // Initialize thermodynamic pressure
-    setThermoPress(lev, AmrNewTime);
-  }
-
-  if (max_level > 0 && lev != max_level) {
-    m_coveredMask[lev] = std::make_unique<amrex::iMultiFab>(ba, dm, 1, 0);
-  }
-  m_resetCoveredMask = 1;
-
-#ifdef PELE_USE_PLASMA
-  m_leveldatanlsolve[lev].reset(
-    new LevelDataNLSolve(ba, dm, *m_factory[lev], m_nGrowState));
-  if (m_do_extraEFdiags) {
-    m_ionsFluxes[lev].reset(
-      new amrex::MultiFab(ba, dm, NUM_IONS * AMREX_SPACEDIM, 0));
-  }
-  m_precond_op.reset();
-#endif
-
-  // Load balance
-  m_costs[lev] = std::make_unique<amrex::LayoutData<amrex::Real>>(ba, dm);
-
-  // DiffusionOp will be recreated
-  m_diffusion_op.reset();
-  m_mcdiffusion_op.reset();
-  m_diffusionTensor_op.reset();
-
-  // Trigger MacProj reset
-  m_macProjNeedReset = 1;
-  m_extSource[lev] = std::make_unique<amrex::MultiFab>(
-    ba, dm, NVAR, amrex::max<int>(m_nGrowAdv, m_nGrowMAC), amrex::MFInfo(),
-    *m_factory[lev]);
-  m_extSource[lev]->setVal(0.);
-
-  // Recycling-plane storage spans whatever set of AMR levels currently exists
-  // and must be rebuilt whenever that changes.
-  m_recycling_needs_rebuild = true;
-}
-
-void
-PeleLM::RemakeLevel(
-  const int lev,
-  const amrex::Real time,
-  const amrex::BoxArray& ba,
-  const amrex::DistributionMapping& dm)
-{
-  BL_PROFILE("PeleLMeX::RemakeLevel()");
-
-  if (m_verbose > 0) {
-    amrex::Print() << " Remaking level " << lev << "\n";
-    if (m_verbose > 1) {
-      auto const dx = geom[lev].CellSizeArray();
-      amrex::Real vol = AMREX_D_TERM(dx[0], *dx[1], *dx[2]);
-      amrex::Print() << " with " << ba.numPts() << " cells," << ba.size()
-                     << " boxes,"
-                     << " over "
-                     << static_cast<amrex::Real>(ba.numPts()) * vol /
-                          geom[0].ProbSize() * 100
-                     << "% of the domain \n";
-    }
-    if (m_verbose > 3) {
-      amrex::Print() << " with BoxArray " << ba << "\n";
-    }
-  }
-
-  // New level factory
-#ifdef AMREX_USE_EB
-  std::unique_ptr<amrex::FabFactory<amrex::FArrayBox>> new_fact =
-    makeEBFabFactory(geom[lev], ba, dm, {6, 6, 6}, amrex::EBSupport::full);
-#else
-  std::unique_ptr<amrex::FabFactory<amrex::FArrayBox>> new_fact(
-    new amrex::FArrayBoxFactory());
-#endif
-
-  // New leveldatas
-  std::unique_ptr<LevelData> n_leveldata_old(new LevelData(
-    ba, dm, *new_fact, m_incompressible, m_has_divu, m_nAux, m_nGrowState,
-    m_use_soret, static_cast<int>(m_do_les)));
-
-  std::unique_ptr<LevelData> n_leveldata_new(new LevelData(
-    ba, dm, *new_fact, m_incompressible, m_has_divu, m_nAux, m_nGrowState,
-    m_use_soret, static_cast<int>(m_do_les)));
-
-  // Re-define the mesh-mapping metrics on the new ba/dm and rebuild the
-  // interpolators BEFORE the fill, so the remade level uses the current,
-  // matching metrics.  Use *new_fact since m_factory[lev] is assigned below.
-  if (m_mesh_map) {
-    m_mesh_map->define(lev, ba, dm, *new_fact, m_nGrowState);
-    m_mesh_map->create_map(lev, geom[lev]);
-    m_map_eval = m_mesh_map->make_evaluator();
-    rebuildMappedInterps();
-  }
-  defineCellVolume(lev, ba, dm, *new_fact);
-
-  // Fill the leveldata_new
-  fillpatch_state(lev, time, n_leveldata_new->state, m_nGrowState);
-  if (m_nAux > 0) {
-    fillpatch_aux(lev, time, n_leveldata_new->auxiliaries, m_nGrowState);
-  }
-  fillpatch_gradp(lev, time, n_leveldata_new->gp, 0);
-  n_leveldata_new->press.setVal(0.0);
-
-  if (m_incompressible == 0) {
-    if (m_has_divu != 0) {
+    fillpatch_gradp(lev, time, n_leveldata_new->gp, 0);
+    if ((m_incompressible == 0) && (m_has_divu != 0)) {
       fillpatch_divu(lev, time, n_leveldata_new->divu, 1);
     }
   }
+  n_leveldata_new->press.setVal(0.0);
 
   // Move std::unique_ptr into the PeleLM vector
   m_leveldata_old[lev] = std::move(n_leveldata_old);
@@ -513,15 +422,14 @@ PeleLM::RemakeLevel(
   if (m_do_react != 0) {
     std::unique_ptr<LevelDataReact> n_leveldatareact(
       new LevelDataReact(ba, dm, *m_factory[lev]));
-    fillpatch_reaction(lev, time, n_leveldatareact->I_R, 0);
+    if (a_fromCoarse) {
+      fillcoarsepatch_reaction(lev, time, n_leveldatareact->I_R, 0);
+    } else {
+      fillpatch_reaction(lev, time, n_leveldatareact->I_R, 0);
+    }
     n_leveldatareact->functC.setVal(0.0);
     m_leveldatareact[lev] = std::move(n_leveldatareact);
   }
-
-  if (max_level > 0 && lev != max_level) {
-    m_coveredMask[lev] = std::make_unique<amrex::iMultiFab>(ba, dm, 1, 0);
-  }
-  m_resetCoveredMask = 1;
 
   if (m_incompressible == 0) {
     // Enforce density / species density consistency
@@ -536,6 +444,11 @@ PeleLM::RemakeLevel(
     // Initialize thermodynamic pressure
     setThermoPress(lev, AmrNewTime);
   }
+
+  if (max_level > 0 && lev != max_level) {
+    m_coveredMask[lev] = std::make_unique<amrex::iMultiFab>(ba, dm, 1, 0);
+  }
+  m_resetCoveredMask = 1;
 
 #ifdef PELE_USE_PLASMA
   m_leveldatanlsolve[lev].reset(
