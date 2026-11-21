@@ -35,20 +35,7 @@ PeleLM::getNLBGChargeVect()
 void
 PeleLM::getNLStateScaling(amrex::Real& nEScale, amrex::Real& phiVScale)
 {
-  amrex::Array<amrex::Real, 2> r = {0.0, 0.0};
-  for (int comp = 0; comp < 2; ++comp) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      if (lev != finest_level) {
-        r[comp] = amrex::max<amrex::Real>(
-          r[comp], m_leveldatanlsolve[lev]->nlState.norm0(
-                     *m_coveredMask[lev], comp, 0, true));
-      } else {
-        r[comp] = amrex::max<amrex::Real>(
-          r[comp], m_leveldatanlsolve[lev]->nlState.norm0(comp, 0, true, true));
-      }
-    }
-    amrex::ParallelDescriptor::ReduceRealMax(r[comp]);
-  }
+  const auto r = MLNorm0(GetVecOfConstPtrs(getNLstateVect()), 0, 2);
   nEScale = r[0];
   phiVScale = r[1];
 }
@@ -56,27 +43,13 @@ PeleLM::getNLStateScaling(amrex::Real& nEScale, amrex::Real& phiVScale)
 void
 PeleLM::getNLResidScaling(amrex::Real& nEScale, amrex::Real& phiVScale)
 {
-  amrex::Array<amrex::Real, 2> r = {0.0, 0.0};
-  for (int comp = 0; comp < 2; ++comp) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      if (lev != finest_level) {
-        r[comp] = amrex::max<amrex::Real>(
-          r[comp], m_leveldatanlsolve[lev]->nlResid.norm0(
-                     *m_coveredMask[lev], comp, 0, true));
-      } else {
-        r[comp] = amrex::max<amrex::Real>(
-          r[comp], m_leveldatanlsolve[lev]->nlResid.norm0(comp, 0, true));
-      }
-    }
-    amrex::ParallelDescriptor::ReduceRealMax(r[comp]);
-  }
+  const auto r = MLNorm0(GetVecOfConstPtrs(getNLresidVect()), 0, 2);
   nEScale = r[0];
   phiVScale = r[1];
 }
 
 void
-PeleLM::scaleNLState(
-  const amrex::Real /*nEScale*/, const amrex::Real /*phiVScale*/)
+PeleLM::scaleNLState()
 {
   for (int lev = 0; lev <= finest_level; ++lev) {
     m_leveldatanlsolve[lev]->nlState.mult(1.0 / nE_scale, 0, 1, m_nGrowState);
@@ -85,10 +58,16 @@ PeleLM::scaleNLState(
 }
 
 void
-PeleLM::scaleNLResid(
-  const amrex::Vector<amrex::MultiFab*>& a_resid,
-  const amrex::Real /*nEScale*/,
-  const amrex::Real /*phiVScale*/)
+PeleLM::unscaleNLState(const int a_nGrow)
+{
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    m_leveldatanlsolve[lev]->nlState.mult(nE_scale, 0, 1, a_nGrow);
+    m_leveldatanlsolve[lev]->nlState.mult(phiV_scale, 1, 1, a_nGrow);
+  }
+}
+
+void
+PeleLM::scaleNLResid(const amrex::Vector<amrex::MultiFab*>& a_resid)
 {
   for (int lev = 0; lev <= finest_level; ++lev) {
     a_resid[lev]->mult(1.0 / FnE_scale, 0, 1, 1);

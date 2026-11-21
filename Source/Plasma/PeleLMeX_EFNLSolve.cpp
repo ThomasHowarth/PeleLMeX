@@ -6,6 +6,18 @@
 #include <PeleLMeX_Utils.H>
 #include <hydro_utils.H>
 
+namespace {
+// Coefficient of the phiV Laplacian in the Poisson residual
+constexpr amrex::Real scalLap = eps0 * epsr / elemCharge;
+
+// A vanishing scale is replaced by 1
+amrex::Real
+nonZeroScale(const amrex::Real a_scale)
+{
+  return (a_scale > 1.0e-12) ? a_scale : 1.0;
+}
+} // namespace
+
 PrecondOp*
 PeleLM::getPrecondOp()
 {
@@ -82,13 +94,13 @@ PeleLM::implicitNonLinearSolve(
   // Pre-Newton
   // Set up the NL state scaling
   getNLStateScaling(nE_scale, phiV_scale);
-  nE_scale = (nE_scale > 1.0e-12) ? nE_scale : 1.0;
-  phiV_scale = (phiV_scale > 1.0e-12) ? phiV_scale : 1.0;
+  nE_scale = nonZeroScale(nE_scale);
+  phiV_scale = nonZeroScale(phiV_scale);
   if (ef_verbose) {
     amrex::Print() << " ne scaling: " << nE_scale << "\n";
     amrex::Print() << " phiV scaling: " << phiV_scale << "\n";
   }
-  scaleNLState(nE_scale, phiV_scale);
+  scaleNLState();
 
   // Compute the background charge distribution at the new time
   computeBGcharge(newTime, diffData, advData);
@@ -164,10 +176,7 @@ PeleLM::implicitNonLinearSolve(
   // Increment the forcing term
   incrementElectronForcing(advData);
   // Unscale nl_state
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    m_leveldatanlsolve[lev]->nlState.mult(nE_scale, 0, 1, 0);
-    m_leveldatanlsolve[lev]->nlState.mult(phiV_scale, 1, 1, 0);
-  }
+  unscaleNLState(0);
 
   // Update the state
   for (int lev = 0; lev <= finest_level; ++lev) {
@@ -236,11 +245,7 @@ PeleLM::updateNLState(const amrex::Vector<amrex::MultiFab*>& a_update)
 
   // Need to fillpatch the NL state
   // First unscale NLState
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    auto ldataNLs_p = getLevelDataNLSolvePtr(lev); // NL data
-    ldataNLs_p->nlState.mult(nE_scale, 0, 1, m_nGrowState);
-    ldataNLs_p->nlState.mult(phiV_scale, 1, 1, m_nGrowState);
-  }
+  unscaleNLState(m_nGrowState);
 
   // FillPatch
   amrex::Vector<amrex::MultiFab> nEState;
@@ -254,7 +259,7 @@ PeleLM::updateNLState(const amrex::Vector<amrex::MultiFab*>& a_update)
   fillPatchNLphiV(m_cur_time, GetVecOfPtrs(phiVState), m_nGrowState);
 
   // Rescale
-  scaleNLState(nE_scale, phiV_scale);
+  scaleNLState();
 }
 
 void
@@ -444,7 +449,6 @@ PeleLM::nonLinearResidual(
         res_nE(i, j, k) = ne_old(i, j, k) - ne_curr_ma[box_no](i, j, k) +
                           a_dt * (ne_diff_ma[box_no](i, j, k) +
                                   ne_adv_ma[box_no](i, j, k) + I_R_nE(i, j, k));
-        constexpr amrex::Real scalLap = eps0 * epsr / elemCharge;
         res_phiV(i, j, k) = lapPhiV_ma[box_no](i, j, k) * scalLap -
                             ne_curr_ma[box_no](i, j, k) +
                             charge_ma[box_no](i, j, k);
@@ -461,8 +465,8 @@ PeleLM::nonLinearResidual(
   // Update the residual scale if necessary
   if (updateScaling) {
     getNLResidScaling(FnE_scale, FphiV_scale);
-    FnE_scale = (FnE_scale > 1.0e-12) ? FnE_scale : 1.0;
-    FphiV_scale = (FphiV_scale > 1.0e-12) ? FphiV_scale : 1.0;
+    FnE_scale = nonZeroScale(FnE_scale);
+    FphiV_scale = nonZeroScale(FphiV_scale);
     if (ef_verbose) {
       amrex::Print() << "    F(ne) scaling: " << FnE_scale << "\n";
       amrex::Print() << "    F(PhiV) scaling: " << FphiV_scale << "\n";
@@ -470,7 +474,7 @@ PeleLM::nonLinearResidual(
   }
 
   // Apply scaling
-  scaleNLResid(a_nlresid, FnE_scale, FphiV_scale);
+  scaleNLResid(a_nlresid);
 
   // Update the preconditioning LinOps
   if (updatePrecond) {
@@ -726,7 +730,6 @@ PeleLM::setUpPrecond(
     // Set Stilda Op coefficients
     if (m_ef_PC_approx == 1) { // Assuming identity of the inverse of DiffOp
       // Add Stilda pieces
-      amrex::Real scalLap = eps0 * epsr / elemCharge;
       for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
         neKe_ec[idim].mult(0.5 * a_dt, 0, 1);
         neKe_ec[idim].plus(scalLap, 0, 1);
@@ -738,7 +741,6 @@ PeleLM::setUpPrecond(
         getUpwindedEdge(
           lev, 0, 1, bcRecnE, Schur_nEKe,
           GetArrOfConstPtrs(ldataNLs_p->uEffnE));
-      amrex::Real scalLap = eps0 * epsr / elemCharge;
       for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
         Schur_neKe_ec[idim].plus(scalLap, 0, 1);
       }
@@ -825,7 +827,8 @@ PeleLM::jTimesV(
   amrex::Real delta_pert =
     m_ef_lambda_jfnk * (m_ef_lambda_jfnk + nl_stateNorm / vNorm);
 
-  if (m_ef_diffT_jfnk == 1) {
+  // Residual of the state perturbed by a_eps * v
+  auto perturbedResid = [&](const amrex::Real a_eps) {
     amrex::Vector<amrex::MultiFab> statePert;
     statePert.reserve(finest_level + 1);
     amrex::Vector<amrex::MultiFab> residPert;
@@ -838,15 +841,18 @@ PeleLM::jTimesV(
         grids[lev], dmap[lev], 2, m_nGrowState, amrex::MFInfo(), Factory(lev));
       amrex::MultiFab::Copy(
         statePert[lev], ldataNLs_p->nlState, 0, 0, 2, m_nGrowState);
-      amrex::MultiFab::Saxpy(statePert[lev], delta_pert, *a_v[lev], 0, 0, 2, 0);
+      amrex::MultiFab::Saxpy(statePert[lev], a_eps, *a_v[lev], 0, 0, 2, 0);
     }
-
     constexpr int update_scaling = 0;
     constexpr int update_precond = 0;
     nonLinearResidual(
       dtsub, GetVecOfPtrs(statePert), GetVecOfPtrs(residPert), update_scaling,
       update_precond);
+    return residPert;
+  };
 
+  if (m_ef_diffT_jfnk == 1) {
+    const auto residPert = perturbedResid(delta_pert);
     for (int lev = 0; lev <= finest_level; ++lev) {
       auto ldataNLs_p = getLevelDataNLSolvePtr(lev);
       amrex::MultiFab::LinComb(
@@ -855,43 +861,8 @@ PeleLM::jTimesV(
       a_Jv[lev]->mult(-1.0 / delta_pert);
     }
   } else if (m_ef_diffT_jfnk == 2) {
-    amrex::Vector<amrex::MultiFab> statePertPls;
-    statePertPls.reserve(finest_level + 1);
-    amrex::Vector<amrex::MultiFab> residPertPls;
-    residPertPls.reserve(finest_level + 1);
-    amrex::Vector<amrex::MultiFab> statePertMns;
-    statePertMns.reserve(finest_level + 1);
-    amrex::Vector<amrex::MultiFab> residPertMns;
-    residPertMns.reserve(finest_level + 1);
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto ldataNLs_p = getLevelDataNLSolvePtr(lev);
-      statePertPls.emplace_back(
-        grids[lev], dmap[lev], 2, m_nGrowState, amrex::MFInfo(), Factory(lev));
-      residPertPls.emplace_back(
-        grids[lev], dmap[lev], 2, m_nGrowState, amrex::MFInfo(), Factory(lev));
-      statePertMns.emplace_back(
-        grids[lev], dmap[lev], 2, m_nGrowState, amrex::MFInfo(), Factory(lev));
-      residPertMns.emplace_back(
-        grids[lev], dmap[lev], 2, m_nGrowState, amrex::MFInfo(), Factory(lev));
-      amrex::MultiFab::Copy(
-        statePertPls[lev], ldataNLs_p->nlState, 0, 0, 2, m_nGrowState);
-      amrex::MultiFab::Copy(
-        statePertMns[lev], ldataNLs_p->nlState, 0, 0, 2, m_nGrowState);
-      amrex::MultiFab::Saxpy(
-        statePertPls[lev], delta_pert, *a_v[lev], 0, 0, 2, 0);
-      amrex::MultiFab::Saxpy(
-        statePertMns[lev], -delta_pert, *a_v[lev], 0, 0, 2, 0);
-    }
-
-    constexpr int update_scaling = 0;
-    constexpr int update_precond = 0;
-    nonLinearResidual(
-      dtsub, GetVecOfPtrs(statePertPls), GetVecOfPtrs(residPertPls),
-      update_scaling, update_precond);
-    nonLinearResidual(
-      dtsub, GetVecOfPtrs(statePertMns), GetVecOfPtrs(residPertMns),
-      update_scaling, update_precond);
-
+    const auto residPertPls = perturbedResid(delta_pert);
+    const auto residPertMns = perturbedResid(-delta_pert);
     for (int lev = 0; lev <= finest_level; ++lev) {
       amrex::MultiFab::LinComb(
         *a_Jv[lev], 1.0, residPertPls[lev], 0, -1.0, residPertMns[lev], 0, 0, 2,

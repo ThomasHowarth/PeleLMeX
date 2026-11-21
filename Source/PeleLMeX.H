@@ -2050,11 +2050,11 @@ public:
 
   void getNLStateScaling(amrex::Real& nEScale, amrex::Real& phiVScale);
   void getNLResidScaling(amrex::Real& nEScale, amrex::Real& phiVScale);
-  void scaleNLState(const amrex::Real nEScale, const amrex::Real phiVScale);
-  void scaleNLResid(
-    const amrex::Vector<amrex::MultiFab*>& a_resid,
-    const amrex::Real nEScale,
-    const amrex::Real phiVScale);
+  // Divide the NL state (resp. residual) by nE_scale/phiV_scale (resp.
+  // FnE_scale/FphiV_scale); unscaleNLState multiplies it back
+  void scaleNLState();
+  void unscaleNLState(int a_nGrow);
+  void scaleNLResid(const amrex::Vector<amrex::MultiFab*>& a_resid);
 
   // get upwinded edge-centered MF from cc MF and ec Vel
   amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> getUpwindedEdge(
