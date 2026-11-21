@@ -558,6 +558,9 @@ PeleLM::updateExternalSourcesSDC(
 #ifdef PELE_USE_SOOT
   soot_SDC = m_soot_SDC;
   if (soot_SDC) {
+    // The soot integration and rate need the viscosity at t^{n+1,k}, which
+    // the advance only computes for the velocity solve
+    calcViscosity(AmrNewTime);
     if (a_inSDC) {
       computeSootSourceSDC(diffData, true);
     }

@@ -100,6 +100,7 @@ PeleLM::computeSootSourceSDC(
       if (a_withForcing) {
         sf.forcing = forcing.const_array(mfi, DENSITY);
         sf.Qstate_end = ldataNew_p->state.const_array(mfi, DENSITY);
+        sf.coeff_mu_end = ldataNew_p->visc_cc.const_array(mfi, 0);
       }
       soot_model->computeSootSourceTerm(
         gbx, state_arr, mu, source_arr, getTime(lev, AmrOldTime), m_dt,
