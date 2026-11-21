@@ -551,14 +551,11 @@ PeleLM::writeTemporals()
   tmpStateFile.flush();
 
   // Get min/max for state components
-  auto stateMax =
-    (m_incompressible) != 0
-      ? MLmax(GetVecOfConstPtrs(getStateVect(AmrNewTime)), 0, AMREX_SPACEDIM)
-      : MLmax(GetVecOfConstPtrs(getStateVect(AmrNewTime)), 0, NVAR);
-  auto stateMin =
-    (m_incompressible) != 0
-      ? MLmin(GetVecOfConstPtrs(getStateVect(AmrNewTime)), 0, AMREX_SPACEDIM)
-      : MLmin(GetVecOfConstPtrs(getStateVect(AmrNewTime)), 0, NVAR);
+  const int nstate = (m_incompressible != 0) ? AMREX_SPACEDIM : NVAR;
+  // getStateVect returns aliases: keep them alive while reducing
+  const auto stateVect = getStateVect(AmrNewTime);
+  auto stateMax = MLmax(GetVecOfConstPtrs(stateVect), 0, nstate);
+  auto stateMin = MLmin(GetVecOfConstPtrs(stateVect), 0, nstate);
 
   tmpExtremasFile << m_nstep << "," << m_cur_time; // Time
   for (int n = 0; n < stateMax.size();
