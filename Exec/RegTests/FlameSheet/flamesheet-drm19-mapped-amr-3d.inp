@@ -6,7 +6,7 @@
 # Purpose: exercise the mapping-aware conservative coarse/fine machinery
 # on a *reacting, variable-density* state (the incompressible cavity /
 # channel cases only cover velocity).  Specifically this stresses:
-#   - averageDownConservedDensities (detJ-weighted restriction of
+#   - averageDownMetricWeighted (detJ-weighted restriction of
 #     rho, rhoY, rhoH), and
 #   - the volume-weighted scalar branch of MeshMappedCellConsInterp
 #     (coarse->fine prolongation on regrid),
