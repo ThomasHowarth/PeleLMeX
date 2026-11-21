@@ -128,6 +128,13 @@ public:
     const amrex::BoxArray& ba,
     const amrex::DistributionMapping& dm) override;
 
+  void makeLevel(
+    int lev,
+    amrex::Real time,
+    const amrex::BoxArray& ba,
+    const amrex::DistributionMapping& dm,
+    bool a_fromCoarse);
+
   void ClearLevel(const int lev) override;
   //-----------------------------------------------------------------------------
 
