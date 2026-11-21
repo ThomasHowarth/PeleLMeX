@@ -546,7 +546,7 @@ PeleLM::intFluxDivergenceLevelEB(
 }
 
 void
-PeleLM::advFluxDivergence(
+PeleLM::advFluxDivergenceImpl(
   const int a_lev,
   amrex::MultiFab& a_divergence,
   const int div_comp,
@@ -559,13 +559,17 @@ PeleLM::advFluxDivergence(
   int const* l_conserv_d,
   const amrex::Geometry& a_geom,
   const amrex::Real scale,
-  const bool fluxes_are_area_weighted) const
+  const bool fluxes_are_area_weighted,
+  const amrex::MultiFab* a_EBvelocity,
+  const amrex::MultiFab* a_EBvalue) const
 {
   BL_PROFILE("PeleLMeX::advFluxDivergence()");
 
   AMREX_ASSERT(a_divergence.nComp() >= div_comp + ncomp);
   AMREX_ASSERT(a_fluxes[0]->nComp() >= flux_comp + ncomp);
   AMREX_ASSERT(a_faceState[0]->nComp() >= face_comp + ncomp);
+  // The EB wall velocity and value are given together or not at all
+  AMREX_ASSERT((a_EBvelocity == nullptr) == (a_EBvalue == nullptr));
 
 #if (AMREX_SPACEDIM == 2)
   amrex::MultiFab mf_ax, mf_ay;
@@ -575,6 +579,9 @@ PeleLM::advFluxDivergence(
   }
 #else
   amrex::ignore_unused(a_lev);
+#endif
+#ifndef AMREX_USE_EB
+  amrex::ignore_unused(a_EBvelocity, a_EBvalue);
 #endif
 
 #ifdef AMREX_USE_EB
@@ -599,7 +606,18 @@ PeleLM::advFluxDivergence(
 #ifdef AMREX_USE_EB
     auto const& flagfab = ebfact.getMultiEBCellFlagFab()[mfi];
     auto const& vfrac_arr = ebfact.getVolFrac().const_array(mfi);
-    if (flagfab.getType(bx) == amrex::FabType::singlevalued) {
+    if (
+      flagfab.getType(bx) == amrex::FabType::singlevalued &&
+      (a_EBvelocity != nullptr)) {
+      // Cut cells with an EB velocity (moving/porous walls)
+      HydroUtils::EB_ComputeDivergence(
+        bx, div_arr, AMREX_D_DECL(fx, fy, fz), vfrac_arr, ncomp, a_geom, scale,
+        fluxes_are_area_weighted, a_EBvelocity->const_array(mfi),
+        a_EBvalue->const_array(mfi),
+        ebfact.getMultiEBCellFlagFab().const_array(mfi),
+        ebfact.getBndryArea().const_array(mfi),
+        ebfact.getBndryNormal().const_array(mfi));
+    } else if (flagfab.getType(bx) == amrex::FabType::singlevalued) {
       HydroUtils::EB_ComputeDivergence(
         bx, div_arr, AMREX_D_DECL(fx, fy, fz), vfrac_arr, ncomp, a_geom, scale,
         fluxes_are_area_weighted);
@@ -706,6 +724,28 @@ PeleLM::advFluxDivergence(
   }
 }
 
+void
+PeleLM::advFluxDivergence(
+  const int a_lev,
+  amrex::MultiFab& a_divergence,
+  const int div_comp,
+  amrex::MultiFab& a_divu,
+  const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_fluxes,
+  const int flux_comp,
+  const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_faceState,
+  const int face_comp,
+  const int ncomp,
+  int const* l_conserv_d,
+  const amrex::Geometry& a_geom,
+  const amrex::Real scale,
+  const bool fluxes_are_area_weighted) const
+{
+  advFluxDivergenceImpl(
+    a_lev, a_divergence, div_comp, a_divu, a_fluxes, flux_comp, a_faceState,
+    face_comp, ncomp, l_conserv_d, a_geom, scale, fluxes_are_area_weighted,
+    nullptr, nullptr);
+}
+
 #ifdef AMREX_USE_EB
 void
 PeleLM::advFluxDivergence(
@@ -725,110 +765,10 @@ PeleLM::advFluxDivergence(
   const amrex::Real scale,
   const bool fluxes_are_area_weighted) const
 {
-  BL_PROFILE("PeleLM::advFluxDivergence()");
-
-  AMREX_ASSERT(a_divergence.nComp() >= div_comp + ncomp);
-  AMREX_ASSERT(a_fluxes[0]->nComp() >= flux_comp + ncomp);
-  AMREX_ASSERT(a_faceState[0]->nComp() >= face_comp + ncomp);
-
-  auto const& ebfact = EBFactory(a_lev);
-
-#ifdef AMREX_USE_OMP
-#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
-#endif
-  for (amrex::MFIter mfi(a_divergence, amrex::TilingIfNotGPU()); mfi.isValid();
-       ++mfi) {
-
-    amrex::Box const& bx = mfi.tilebox();
-
-    // Get the divergence
-    auto const& div_arr = a_divergence.array(mfi, div_comp);
-    AMREX_D_TERM(
-      auto const& fx = a_fluxes[0]->const_array(mfi, flux_comp);
-      , auto const& fy = a_fluxes[1]->const_array(mfi, flux_comp);
-      , auto const& fz = a_fluxes[2]->const_array(mfi, flux_comp);)
-
-    auto const& flagfab = ebfact.getMultiEBCellFlagFab()[mfi];
-    auto const& vfrac_arr = ebfact.getVolFrac().const_array(mfi);
-    auto const& ebvel_arr = a_EBvelocity->const_array(mfi);
-    auto const& ebval_arr = a_EBvalue->const_array(mfi);
-    if (flagfab.getType(bx) == amrex::FabType::singlevalued) {
-      HydroUtils::EB_ComputeDivergence(
-        bx, div_arr, AMREX_D_DECL(fx, fy, fz), vfrac_arr, ncomp, a_geom, scale,
-        fluxes_are_area_weighted, ebvel_arr, ebval_arr,
-        ebfact.getMultiEBCellFlagFab().const_array(mfi),
-        ebfact.getBndryArea().const_array(mfi),
-        ebfact.getBndryNormal().const_array(mfi));
-    } else if (flagfab.getType(bx) == amrex::FabType::regular) {
-      HydroUtils::ComputeDivergence(
-        bx, div_arr, AMREX_D_DECL(fx, fy, fz), ncomp, a_geom, scale,
-        fluxes_are_area_weighted);
-    }
-
-    // If convective, we define u dot grad q = div (u q) - q div(u)
-    // averaging face and t^{n+1/2} q to the cell center
-    auto const& divu_arr = a_divu.const_array(mfi);
-    AMREX_D_TERM(
-      auto const& facex = a_faceState[0]->const_array(mfi, face_comp);
-      , auto const& facey = a_faceState[1]->const_array(mfi, face_comp);
-      , auto const& facez = a_faceState[2]->const_array(mfi, face_comp);)
-
-    if (flagfab.getType(bx) == amrex::FabType::covered) {
-      AMREX_PARALLEL_FOR_4D(
-        bx, ncomp, i, j, k, n, { div_arr(i, j, k, n) = 0.0; });
-    } else if (flagfab.getType(bx) == amrex::FabType::singlevalued) {
-      AMREX_D_TERM(
-        auto const& apx_arr = ebfact.getAreaFrac()[0]->const_array(mfi);
-        , auto const& apy_arr = ebfact.getAreaFrac()[1]->const_array(mfi);
-        , auto const& apz_arr = ebfact.getAreaFrac()[2]->const_array(mfi););
-      amrex::ParallelFor(
-        bx, ncomp,
-        [l_conserv_d, vfrac_arr, div_arr, divu_arr, facex, apx_arr, facey,
-         apy_arr
-#if (AMREX_SPACEDIM == 3)
-         ,
-         facez, apz_arr
-#endif
-      ] AMREX_GPU_DEVICE(int i, int j, int k, int n) noexcept {
-          if (l_conserv_d[n] == 0 && vfrac_arr(i, j, k) > 0.) {
-            const amrex::Real qwsum = AMREX_D_TERM(
-              apx_arr(i, j, k) * facex(i, j, k, n) +
-                apx_arr(i + 1, j, k) * facex(i + 1, j, k, n),
-              +apy_arr(i, j, k) * facey(i, j, k, n) +
-                apy_arr(i, j + 1, k) * facey(i, j + 1, k, n),
-              +apz_arr(i, j, k) * facez(i, j, k, n) +
-                apz_arr(i, j, k + 1) * facez(i, j, k + 1, n));
-            const amrex::Real areasum = AMREX_D_TERM(
-              apx_arr(i, j, k) + apx_arr(i + 1, j, k),
-              +apy_arr(i, j, k) + apy_arr(i, j + 1, k),
-              +apz_arr(i, j, k) + apz_arr(i, j, k + 1));
-            // Note that because we define adv update as MINUS div(u q), here we
-            // add q div (u)
-            div_arr(i, j, k, n) += qwsum / areasum * divu_arr(i, j, k);
-          }
-        });
-    } else {
-      amrex::ParallelFor(
-        bx, ncomp,
-        [l_conserv_d, div_arr, divu_arr, facex, facey
-#if (AMREX_SPACEDIM == 3)
-         ,
-         facez
-#endif
-      ] AMREX_GPU_DEVICE(int i, int j, int k, int n) noexcept {
-          if (l_conserv_d[n] == 0) {
-            amrex::Real qavg = AMREX_D_TERM(
-              facex(i, j, k, n) + facex(i + 1, j, k, n),
-              +facey(i, j, k, n) + facey(i, j + 1, k, n),
-              +facez(i, j, k, n) + facez(i, j, k + 1, n));
-            AMREX_D_PICK(qavg *= 0.5;, qavg *= 0.25;, qavg /= 6.0;)
-            // Note that because we define adv update as MINUS div(u q), here we
-            // add q div (u)
-            div_arr(i, j, k, n) += qavg * divu_arr(i, j, k);
-          }
-        });
-    }
-  }
+  advFluxDivergenceImpl(
+    a_lev, a_divergence, div_comp, a_divu, a_fluxes, flux_comp, a_faceState,
+    face_comp, ncomp, l_conserv_d, a_geom, scale, fluxes_are_area_weighted,
+    a_EBvelocity, a_EBvalue);
 }
 #endif
 

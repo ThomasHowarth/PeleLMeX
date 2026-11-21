@@ -1533,6 +1533,24 @@ public:
     const amrex::Geometry& a_geom,
     const amrex::Real scale,
     const bool fluxes_are_area_weighted) const;
+  // Shared body of the advFluxDivergence overloads; a_EBvelocity and
+  // a_EBvalue (EB builds) may be null
+  void advFluxDivergenceImpl(
+    const int a_lev,
+    amrex::MultiFab& a_divergence,
+    const int div_comp,
+    amrex::MultiFab& a_divu,
+    const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_fluxes,
+    const int flux_comp,
+    const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_faceState,
+    const int face_comp,
+    const int ncomp,
+    int const* l_conserv_d,
+    const amrex::Geometry& a_geom,
+    const amrex::Real scale,
+    const bool fluxes_are_area_weighted,
+    const amrex::MultiFab* a_EBvelocity,
+    const amrex::MultiFab* a_EBvalue) const;
 
 #ifdef AMREX_USE_EB
   void advFluxDivergence(
