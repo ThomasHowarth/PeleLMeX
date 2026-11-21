@@ -362,6 +362,22 @@ PeleLM::getScalarAdvForce(
 }
 
 void
+PeleLM::fillOldDivu(const int lev, amrex::MultiFab& a_divu)
+{
+  if (m_incompressible != 0) {
+    a_divu.setVal(0.0);
+  } else if (m_has_divu != 0) {
+    // Old-time divu and its ghosts were filled by fillPatchState(AmrOldTime)
+    // at the start of the step and do not change during it.
+    amrex::MultiFab::Copy(
+      a_divu, getLevelDataPtr(lev, AmrOldTime)->divu, 0, 0, 1, m_nGrowdivu);
+  } else {
+    const amrex::Real time = getTime(lev, AmrOldTime);
+    fillpatch_divu(lev, time, a_divu, m_nGrowdivu);
+  }
+}
+
+void
 PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
 {
 
@@ -871,17 +887,7 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
   for (int lev = 0; lev <= finest_level; ++lev) {
     amrex::MultiFab divu(
       grids[lev], dmap[lev], 1, m_nGrowdivu, amrex::MFInfo(), Factory(lev));
-    if (m_incompressible != 0) {
-      divu.setVal(0.0);
-    } else if (m_has_divu != 0) {
-      // Old-time divu and its ghosts were filled by fillPatchState(AmrOldTime)
-      // at the start of the step and do not change during it.
-      amrex::MultiFab::Copy(
-        divu, getLevelDataPtr(lev, AmrOldTime)->divu, 0, 0, 1, m_nGrowdivu);
-    } else {
-      const amrex::Real time = getTime(lev, AmrOldTime);
-      fillpatch_divu(lev, time, divu, m_nGrowdivu);
-    }
+    fillOldDivu(lev, divu);
     if (m_mesh_mapping) {
       amrex::MultiFab::Multiply(
         divu, m_mesh_map->detJ_cc(lev), 0, 0, 1, m_nGrowdivu);
@@ -1154,17 +1160,7 @@ PeleLM::computePassiveAdvTerms(
 
     amrex::MultiFab divu(
       grids[lev], dmap[lev], 1, m_nGrowdivu, amrex::MFInfo(), Factory(lev));
-    if (m_incompressible != 0) {
-      divu.setVal(0.0);
-    } else if (m_has_divu != 0) {
-      // Old-time divu and its ghosts were filled by fillPatchState(AmrOldTime)
-      // at the start of the step and do not change during it.
-      amrex::MultiFab::Copy(
-        divu, getLevelDataPtr(lev, AmrOldTime)->divu, 0, 0, 1, m_nGrowdivu);
-    } else {
-      const amrex::Real time = getTime(lev, AmrOldTime);
-      fillpatch_divu(lev, time, divu, m_nGrowdivu);
-    }
+    fillOldDivu(lev, divu);
     // Fluxes are J.u~.q: the non-conservative correction needs J.divU
     if (m_mesh_mapping) {
       amrex::MultiFab::Multiply(
