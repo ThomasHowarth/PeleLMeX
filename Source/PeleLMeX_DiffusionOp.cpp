@@ -5,8 +5,6 @@
 #include <AMReX_ParmParse.H>
 #include <AMReX_VisMF.H>
 #include <AMReX_GMRES_MLMG.H>
-#ifdef AMREX_USE_HYPRE
-#endif
 
 #ifdef AMREX_USE_EB
 #include <AMReX_EB_Redistribution.H>
@@ -14,6 +12,81 @@
 #endif
 
 namespace {
+// Copy components [phi_comp, phi_comp + ncomp) of a_phi, with one ghost
+// cell, into new MultiFabs; divide by the density when one is given.
+template <typename PhiVec>
+amrex::Vector<amrex::MultiFab>
+copyOverDensity(
+  PhiVec const& a_phi,
+  const int phi_comp,
+  amrex::Vector<amrex::MultiFab const*> const& a_density,
+  const int ncomp,
+  const int finest_level)
+{
+  amrex::Vector<amrex::MultiFab> phi;
+  phi.reserve(finest_level + 1);
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    phi.emplace_back(
+      a_phi[lev]->boxArray(), a_phi[lev]->DistributionMap(), ncomp, 1,
+      amrex::MFInfo(), a_phi[lev]->Factory());
+  }
+  if (a_density.empty()) {
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      amrex::MultiFab::Copy(
+        phi[lev], *a_phi[lev], phi_comp, 0, ncomp, phi[lev].nGrowVect());
+    }
+  } else {
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      auto const& a_phi_ma = a_phi[lev]->const_arrays();
+      auto const& a_rho_ma = a_density[lev]->const_arrays();
+      auto const& phi_ma = phi[lev].arrays();
+      amrex::ParallelFor(
+        phi[lev], phi[lev].nGrowVect(), ncomp,
+        [a_phi_ma, a_rho_ma, phi_ma, phi_comp] AMREX_GPU_DEVICE(
+          int box_no, int i, int j, int k, int n) noexcept {
+          amrex::Array4<amrex::Real const> a_phi_arr(
+            a_phi_ma[box_no], phi_comp);
+          phi_ma[box_no](i, j, k, n) =
+            a_phi_arr(i, j, k, n) / a_rho_ma[box_no](i, j, k);
+        });
+    }
+    amrex::Gpu::streamSynchronize();
+  }
+  return phi;
+}
+
+// Store the valid cells of phi into a_phi at phi_comp, times the density
+// when one is given (the inverse of copyOverDensity).
+void
+storeTimesDensity(
+  amrex::Vector<amrex::MultiFab*> const& a_phi,
+  const int phi_comp,
+  amrex::Vector<amrex::MultiFab> const& phi,
+  amrex::Vector<amrex::MultiFab const*> const& a_density,
+  const int ncomp,
+  const int finest_level)
+{
+  if (a_density.empty()) {
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      amrex::MultiFab::Copy(*a_phi[lev], phi[lev], 0, phi_comp, ncomp, 0);
+    }
+  } else {
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      auto const& a_phi_ma = a_phi[lev]->arrays();
+      auto const& phi_ma = phi[lev].const_arrays();
+      auto const& a_rho_ma = a_density[lev]->const_arrays();
+      amrex::ParallelFor(
+        phi[lev], amrex::IntVect(0), ncomp,
+        [a_phi_ma, a_rho_ma, phi_ma, phi_comp] AMREX_GPU_DEVICE(
+          int box_no, int i, int j, int k, int n) noexcept {
+          a_phi_ma[box_no](i, j, k, phi_comp + n) =
+            phi_ma[box_no](i, j, k, n) * a_rho_ma[box_no](i, j, k);
+        });
+    }
+    amrex::Gpu::streamSynchronize();
+  }
+}
+
 // Map an input bottom_solver name onto MLMG's BottomSolver; aborts on an
 // unknown name so that typos are not silently ignored.
 amrex::MLMG::BottomSolver
@@ -127,57 +200,32 @@ DiffusionOp::DiffusionOp(PeleLM* a_pelelm, const int ncomp)
   }
 #endif
 
-  // Scalar apply op.
-#ifdef AMREX_USE_EB
-  m_scal_apply_op = std::make_unique<amrex::MLEBABecLap>(
-    m_pelelm->Geom(0, m_pelelm->finestLevel()),
-    m_pelelm->boxArray(0, m_pelelm->finestLevel()),
-    m_pelelm->DistributionMap(0, m_pelelm->finestLevel()), info_apply,
-    ebfactVec, m_ncomp);
-#else
+  // Scalar operator on all levels, with the EB factories in EB builds
+  const int finest_level = m_pelelm->finestLevel();
+#ifndef AMREX_USE_EB
   const amrex::Vector<amrex::FabFactory<amrex::FArrayBox> const*>&
     empty_factory = {};
-  m_scal_apply_op = std::make_unique<amrex::MLABecLaplacian>(
-    m_pelelm->Geom(0, m_pelelm->finestLevel()),
-    m_pelelm->boxArray(0, m_pelelm->finestLevel()),
-    m_pelelm->DistributionMap(0, m_pelelm->finestLevel()), info_apply,
-    empty_factory, m_ncomp);
 #endif
-  m_scal_apply_op->setMaxOrder(m_mg_maxorder);
-
-  // Scalar solve op.
+  auto makeOp = [&](const amrex::LPInfo& info, const int ncomp_op) {
 #ifdef AMREX_USE_EB
-  m_scal_solve_op = std::make_unique<amrex::MLEBABecLap>(
-    m_pelelm->Geom(0, m_pelelm->finestLevel()),
-    m_pelelm->boxArray(0, m_pelelm->finestLevel()),
-    m_pelelm->DistributionMap(0, m_pelelm->finestLevel()), info_solve,
-    ebfactVec, m_ncomp_solve);
+    auto op = std::make_unique<amrex::MLEBABecLap>(
+      m_pelelm->Geom(0, finest_level), m_pelelm->boxArray(0, finest_level),
+      m_pelelm->DistributionMap(0, finest_level), info, ebfactVec, ncomp_op);
 #else
-  m_scal_solve_op = std::make_unique<amrex::MLABecLaplacian>(
-    m_pelelm->Geom(0, m_pelelm->finestLevel()),
-    m_pelelm->boxArray(0, m_pelelm->finestLevel()),
-    m_pelelm->DistributionMap(0, m_pelelm->finestLevel()), info_solve,
-    empty_factory, m_ncomp_solve);
+    auto op = std::make_unique<amrex::MLABecLaplacian>(
+      m_pelelm->Geom(0, finest_level), m_pelelm->boxArray(0, finest_level),
+      m_pelelm->DistributionMap(0, finest_level), info, empty_factory,
+      ncomp_op);
 #endif
-  m_scal_solve_op->setMaxOrder(m_mg_maxorder);
-
+    op->setMaxOrder(m_mg_maxorder);
+    return op;
+  };
+  m_scal_apply_op = makeOp(info_apply, m_ncomp);
+  m_scal_solve_op = makeOp(info_solve, m_ncomp_solve);
   // Gradient op. : scalar/coefficient already preset
-#ifdef AMREX_USE_EB
-  m_gradient_op = std::make_unique<amrex::MLEBABecLap>(
-    m_pelelm->Geom(0, m_pelelm->finestLevel()),
-    m_pelelm->boxArray(0, m_pelelm->finestLevel()),
-    m_pelelm->DistributionMap(0, m_pelelm->finestLevel()), info_apply,
-    ebfactVec, m_ncomp);
-#else
-  m_gradient_op = std::make_unique<amrex::MLABecLaplacian>(
-    m_pelelm->Geom(0, m_pelelm->finestLevel()),
-    m_pelelm->boxArray(0, m_pelelm->finestLevel()),
-    m_pelelm->DistributionMap(0, m_pelelm->finestLevel()), info_apply,
-    empty_factory, m_ncomp);
-#endif
-  m_gradient_op->setMaxOrder(m_mg_maxorder);
+  m_gradient_op = makeOp(info_apply, m_ncomp);
   m_gradient_op->setScalars(0.0, 1.0);
-  for (int lev = 0; lev <= m_pelelm->finestLevel(); ++lev) {
+  for (int lev = 0; lev <= finest_level; ++lev) {
     m_gradient_op->setBCoeffs(lev, -1.0);
   }
 }
@@ -233,35 +281,8 @@ DiffusionOp::diffuse_scalar(
   // after adv., when we divide by \rho, it is inconsistent. But it only matters
   // if it screws up the ghost cell values 'cause interiors are just an initial
   // solution for the solve.
-  amrex::Vector<amrex::MultiFab> phi;
-  phi.reserve(finest_level + 1);
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    phi.emplace_back(
-      a_phi[lev]->boxArray(), a_phi[lev]->DistributionMap(), ncomp, 1,
-      amrex::MFInfo(), a_phi[lev]->Factory());
-  }
-  if (have_density == 0) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      amrex::MultiFab::Copy(
-        phi[lev], *a_phi[lev], phi_comp, 0, ncomp, phi[lev].nGrowVect());
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto const& a_phi_ma = a_phi[lev]->const_arrays();
-      auto const& a_rho_ma = a_density[lev]->const_arrays();
-      auto const& phi_ma = phi[lev].arrays();
-      amrex::ParallelFor(
-        phi[lev], phi[lev].nGrowVect(), ncomp,
-        [a_phi_ma, a_rho_ma, phi_ma, phi_comp] AMREX_GPU_DEVICE(
-          int box_no, int i, int j, int k, int n) noexcept {
-          amrex::Array4<amrex::Real const> a_phi_arr(
-            a_phi_ma[box_no], phi_comp);
-          phi_ma[box_no](i, j, k, n) =
-            a_phi_arr(i, j, k, n) / a_rho_ma[box_no](i, j, k);
-        });
-    }
-    amrex::Gpu::streamSynchronize();
-  }
+  amrex::Vector<amrex::MultiFab> phi =
+    copyOverDensity(a_phi, phi_comp, a_density, ncomp, finest_level);
   //----------------------------------------------------------------
   // Setup solve LinearOp coefficients
   // LinOp is \alpha A \phi - \beta \nabla \cdot B \nabla \phi = rhs
@@ -312,7 +333,7 @@ DiffusionOp::diffuse_scalar(
   for (int comp = 0; comp < ncomp; comp += m_ncomp_solve) {
 
     // Aliases
-    amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>> fluxes(
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> fluxes(
       finest_level + 1);
     amrex::Vector<amrex::MultiFab> component;
     amrex::Vector<amrex::MultiFab> rhs;
@@ -330,7 +351,7 @@ DiffusionOp::diffuse_scalar(
     for (int lev = 0; lev <= finest_level; ++lev) {
       if (have_fluxes != 0) {
         for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-          fluxes[lev][idim] = new amrex::MultiFab(
+          fluxes[lev][idim] = amrex::MultiFab(
             *a_flux[lev][idim], amrex::make_alias, flux_comp + comp,
             m_ncomp_solve);
         }
@@ -599,50 +620,27 @@ DiffusionOp::diffuse_scalar(
 #ifdef AMREX_USE_EB
       if (m_use_gmres) {
         mlmg.getFluxes(
-          fluxes, GetVecOfPtrs(component), amrex::MLMG::Location::FaceCentroid);
+          GetVecOfArrOfPtrs(fluxes), GetVecOfPtrs(component),
+          amrex::MLMG::Location::FaceCentroid);
       } else {
-        mlmg.getFluxes(fluxes, amrex::MLMG::Location::FaceCentroid);
+        mlmg.getFluxes(
+          GetVecOfArrOfPtrs(fluxes), amrex::MLMG::Location::FaceCentroid);
       }
 #else
       if (m_use_gmres || use_composite) {
         mlmg.getFluxes(
-          fluxes, GetVecOfPtrs(component), amrex::MLMG::Location::FaceCenter);
+          GetVecOfArrOfPtrs(fluxes), GetVecOfPtrs(component),
+          amrex::MLMG::Location::FaceCenter);
       } else {
-        mlmg.getFluxes(fluxes, amrex::MLMG::Location::FaceCenter);
+        mlmg.getFluxes(
+          GetVecOfArrOfPtrs(fluxes), amrex::MLMG::Location::FaceCenter);
       }
 #endif
-
-      for (int lev = 0; lev <= finest_level; ++lev) {
-        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-          delete fluxes[lev][idim];
-        }
-      }
     }
   }
 
   //----------------------------------------------------------------
-  // Copy the results of the solve back into a_phi
-  // Times rho{np1,kp1} if needed
-  // Don't touch the ghost cells
-  if (have_density == 0) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      amrex::MultiFab::Copy(*a_phi[lev], phi[lev], 0, phi_comp, ncomp, 0);
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto const& a_phi_ma = a_phi[lev]->arrays();
-      auto const& phi_ma = phi[lev].const_arrays();
-      auto const& a_rho_ma = a_density[lev]->const_arrays();
-      amrex::ParallelFor(
-        phi[lev], amrex::IntVect(0), ncomp,
-        [a_phi_ma, a_rho_ma, phi_ma, phi_comp] AMREX_GPU_DEVICE(
-          int box_no, int i, int j, int k, int n) noexcept {
-          a_phi_ma[box_no](i, j, k, phi_comp + n) =
-            phi_ma[box_no](i, j, k, n) * a_rho_ma[box_no](i, j, k);
-        });
-    }
-    amrex::Gpu::streamSynchronize();
-  }
+  storeTimesDensity(a_phi, phi_comp, phi, a_density, ncomp, finest_level);
 }
 
 #ifdef AMREX_USE_EB
@@ -699,35 +697,8 @@ DiffusionOp::diffuse_scalar(
   // after adv., when we divide by \rho, it is inconsistent. But it only matters
   // if it screws up the ghost cell values 'cause interiors are just an initial
   // solution for the solve.
-  amrex::Vector<amrex::MultiFab> phi;
-  phi.reserve(finest_level + 1);
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    phi.emplace_back(
-      a_phi[lev]->boxArray(), a_phi[lev]->DistributionMap(), ncomp, 1,
-      amrex::MFInfo(), a_phi[lev]->Factory());
-  }
-  if (have_density == 0) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      amrex::MultiFab::Copy(
-        phi[lev], *a_phi[lev], phi_comp, 0, ncomp, phi[lev].nGrowVect());
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto const& a_phi_ma = a_phi[lev]->const_arrays();
-      auto const& a_rho_ma = a_density[lev]->const_arrays();
-      auto const& phi_ma = phi[lev].arrays();
-      amrex::ParallelFor(
-        phi[lev], phi[lev].nGrowVect(), ncomp,
-        [a_phi_ma, a_rho_ma, phi_ma, phi_comp] AMREX_GPU_DEVICE(
-          int box_no, int i, int j, int k, int n) noexcept {
-          amrex::Array4<amrex::Real const> a_phi_arr(
-            a_phi_ma[box_no], phi_comp);
-          phi_ma[box_no](i, j, k, n) =
-            a_phi_arr(i, j, k, n) / a_rho_ma[box_no](i, j, k);
-        });
-    }
-    amrex::Gpu::streamSynchronize();
-  }
+  amrex::Vector<amrex::MultiFab> phi =
+    copyOverDensity(a_phi, phi_comp, a_density, ncomp, finest_level);
   //----------------------------------------------------------------
   // Setup solve LinearOp coefficients
   // LinOp is \alpha A \phi - \beta \nabla \cdot B \nabla \phi = rhs
@@ -752,7 +723,7 @@ DiffusionOp::diffuse_scalar(
   for (int comp = 0; comp < ncomp; comp += m_ncomp_solve) {
 
     // Aliases
-    amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>> fluxes(
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> fluxes(
       finest_level + 1);
     amrex::Vector<amrex::MultiFab> component;
     amrex::Vector<amrex::MultiFab> rhs;
@@ -767,7 +738,7 @@ DiffusionOp::diffuse_scalar(
     for (int lev = 0; lev <= finest_level; ++lev) {
       if (have_fluxes != 0) {
         for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-          fluxes[lev][idim] = new amrex::MultiFab(
+          fluxes[lev][idim] = amrex::MultiFab(
             *a_flux[lev][idim], amrex::make_alias, flux_comp + comp,
             m_ncomp_solve);
         }
@@ -930,42 +901,17 @@ DiffusionOp::diffuse_scalar(
     if (have_fluxes != 0) {
       if (m_use_gmres) {
         mlmg.getFluxes(
-          fluxes, GetVecOfPtrs(component), amrex::MLMG::Location::FaceCentroid);
+          GetVecOfArrOfPtrs(fluxes), GetVecOfPtrs(component),
+          amrex::MLMG::Location::FaceCentroid);
       } else {
-        mlmg.getFluxes(fluxes, amrex::MLMG::Location::FaceCentroid);
-      }
-
-      for (int lev = 0; lev <= finest_level; ++lev) {
-        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-          delete fluxes[lev][idim];
-        }
+        mlmg.getFluxes(
+          GetVecOfArrOfPtrs(fluxes), amrex::MLMG::Location::FaceCentroid);
       }
     }
   }
 
   //----------------------------------------------------------------
-  // Copy the results of the solve back into a_phi
-  // Times rho{np1,kp1} if needed
-  // Don't touch the ghost cells
-  if (have_density == 0) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      amrex::MultiFab::Copy(*a_phi[lev], phi[lev], 0, phi_comp, ncomp, 0);
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto const& a_phi_ma = a_phi[lev]->arrays();
-      auto const& phi_ma = phi[lev].const_arrays();
-      auto const& a_rho_ma = a_density[lev]->const_arrays();
-      amrex::ParallelFor(
-        phi[lev], amrex::IntVect(0), ncomp,
-        [a_phi_ma, a_rho_ma, phi_ma, phi_comp] AMREX_GPU_DEVICE(
-          int box_no, int i, int j, int k, int n) noexcept {
-          a_phi_ma[box_no](i, j, k, phi_comp + n) =
-            phi_ma[box_no](i, j, k, n) * a_rho_ma[box_no](i, j, k);
-        });
-    }
-    amrex::Gpu::streamSynchronize();
-  }
+  storeTimesDensity(a_phi, phi_comp, phi, a_density, ncomp, finest_level);
 }
 #endif
 
@@ -1095,35 +1041,8 @@ DiffusionOp::computeDiffFluxes(
 
   // Duplicate phi since it is modified by the LinOp
   // and if have_density -> divide by density
-  amrex::Vector<amrex::MultiFab> phi;
-  phi.reserve(finest_level + 1);
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    phi.emplace_back(
-      a_phi[lev]->boxArray(), a_phi[lev]->DistributionMap(), ncomp, 1,
-      amrex::MFInfo(), a_phi[lev]->Factory());
-  }
-  if (have_density == 0) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      amrex::MultiFab::Copy(
-        phi[lev], *a_phi[lev], phi_comp, 0, ncomp, phi[lev].nGrowVect());
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto const& a_phi_ma = a_phi[lev]->const_arrays();
-      auto const& a_rho_ma = a_density[lev]->const_arrays();
-      auto const& phi_ma = phi[lev].arrays();
-      amrex::ParallelFor(
-        phi[lev], phi[lev].nGrowVect(), ncomp,
-        [a_phi_ma, a_rho_ma, phi_ma, phi_comp] AMREX_GPU_DEVICE(
-          int box_no, int i, int j, int k, int n) noexcept {
-          amrex::Array4<amrex::Real const> a_phi_arr(
-            a_phi_ma[box_no], phi_comp);
-          phi_ma[box_no](i, j, k, n) =
-            a_phi_arr(i, j, k, n) / a_rho_ma[box_no](i, j, k);
-        });
-    }
-    amrex::Gpu::streamSynchronize();
-  }
+  amrex::Vector<amrex::MultiFab> phi =
+    copyOverDensity(a_phi, phi_comp, a_density, ncomp, finest_level);
 
   // LinOp is \alpha A \phi - \beta \nabla \cdot B \nabla \phi
   // => \alpha = 0, A doesn't matter
@@ -1138,7 +1057,7 @@ DiffusionOp::computeDiffFluxes(
   for (int comp = 0; comp < ncomp; comp += m_ncomp) {
 
     // Component based vector of data
-    amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>> fluxes(
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> fluxes(
       finest_level + 1);
     amrex::Vector<amrex::MultiFab> component;
     amrex::Vector<amrex::MultiFab> laps;
@@ -1151,7 +1070,7 @@ DiffusionOp::computeDiffFluxes(
 
     for (int lev = 0; lev <= finest_level; ++lev) {
       for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-        fluxes[lev][idim] = new amrex::MultiFab(
+        fluxes[lev][idim] = amrex::MultiFab(
           *a_flux[lev][idim], amrex::make_alias, flux_comp + comp, m_ncomp);
       }
       component.emplace_back(phi[lev], amrex::make_alias, comp, m_ncomp);
@@ -1192,16 +1111,13 @@ DiffusionOp::computeDiffFluxes(
     mlmg.apply(GetVecOfPtrs(laps), GetVecOfPtrs(component));
 #ifdef AMREX_USE_EB
     mlmg.getFluxes(
-      fluxes, GetVecOfPtrs(component), amrex::MLMG::Location::FaceCentroid);
+      GetVecOfArrOfPtrs(fluxes), GetVecOfPtrs(component),
+      amrex::MLMG::Location::FaceCentroid);
 #else
     mlmg.getFluxes(
-      fluxes, GetVecOfPtrs(component), amrex::MLMG::Location::FaceCenter);
+      GetVecOfArrOfPtrs(fluxes), GetVecOfPtrs(component),
+      amrex::MLMG::Location::FaceCenter);
 #endif
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-        delete fluxes[lev][idim];
-      }
-    }
   }
 
   // Average down if requested
@@ -1246,35 +1162,8 @@ DiffusionOp::computeDiffFluxes(
 
   // Duplicate phi since it is modified by the LinOp
   // and if have_density -> divide by density
-  amrex::Vector<amrex::MultiFab> phi;
-  phi.reserve(finest_level + 1);
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    phi.emplace_back(
-      a_phi[lev]->boxArray(), a_phi[lev]->DistributionMap(), ncomp, 1,
-      amrex::MFInfo(), a_phi[lev]->Factory());
-  }
-  if (have_density == 0) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      amrex::MultiFab::Copy(
-        phi[lev], *a_phi[lev], phi_comp, 0, ncomp, phi[lev].nGrowVect());
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto const& a_phi_ma = a_phi[lev]->const_arrays();
-      auto const& a_rho_ma = a_density[lev]->const_arrays();
-      auto const& phi_ma = phi[lev].arrays();
-      amrex::ParallelFor(
-        phi[lev], phi[lev].nGrowVect(), ncomp,
-        [a_phi_ma, a_rho_ma, phi_ma, phi_comp] AMREX_GPU_DEVICE(
-          int box_no, int i, int j, int k, int n) noexcept {
-          amrex::Array4<amrex::Real const> a_phi_arr(
-            a_phi_ma[box_no], phi_comp);
-          phi_ma[box_no](i, j, k, n) =
-            a_phi_arr(i, j, k, n) / a_rho_ma[box_no](i, j, k);
-        });
-    }
-    amrex::Gpu::streamSynchronize();
-  }
+  amrex::Vector<amrex::MultiFab> phi =
+    copyOverDensity(a_phi, phi_comp, a_density, ncomp, finest_level);
 
   // LinOp is \alpha A \phi - \beta \nabla \cdot B \nabla \phi
   // => \alpha = 0, A doesn't matter
@@ -1437,21 +1326,17 @@ DiffusionOp::avgDownFluxes(
 
   for (int lev = finest_level; lev > 0; --lev) {
     // Get the requested components only
-    amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM> flux_fine;
-    amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM> flux_crse;
+    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> flux_fine;
+    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> flux_crse;
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      flux_fine[idim] = new amrex::MultiFab(
+      flux_fine[idim] = amrex::MultiFab(
         *a_fluxes[lev][idim], amrex::make_alias, flux_comp, ncomp);
-      flux_crse[idim] = new amrex::MultiFab(
+      flux_crse[idim] = amrex::MultiFab(
         *a_fluxes[lev - 1][idim], amrex::make_alias, flux_comp, ncomp);
     }
     eb_average_down_faces(
-      GetArrOfConstPtrs(flux_fine), flux_crse, m_pelelm->refRatio(lev - 1),
-      flux_crse[0]->nGrow());
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      delete flux_fine[idim];
-      delete flux_crse[idim];
-    }
+      GetArrOfConstPtrs(flux_fine), GetArrOfPtrs(flux_crse),
+      m_pelelm->refRatio(lev - 1), flux_crse[0].nGrow());
   }
 }
 
