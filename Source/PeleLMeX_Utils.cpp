@@ -171,7 +171,8 @@ PeleLM::fluxDivergenceRD(
     amrex::MultiFab divTmp(
       grids[lev], dmap[lev], ncomp, nGrow_divTmp, amrex::MFInfo(),
       EBFactory(lev));
-    divTmp.setVal(0.0);
+    // The divergence below writes every valid cell: only zero the ghosts
+    divTmp.setBndry(0.0);
     if (intensiveFluxes != 0) { // Fluxes are intensive -> need area scaling in
                                 // div
       if (have_ebfluxes != 0) {
@@ -873,7 +874,6 @@ PeleLM::floorSpecies(const TimeStamp a_time)
           h_cgs * 1.0e-4 * sma[box_no](i, j, k, DENSITY);
       });
   }
-  amrex::Gpu::streamSynchronize();
 }
 
 void
