@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <array>
 #include <limits>
+#include <map>
 #include <string>
 #include <AMReX_Algorithm.H>
 #include <AMReX_ParmParse.H>
@@ -452,59 +454,41 @@ PeleLM::readParameters()
 #ifdef PELE_USE_PLASMA
   amrex::ParmParse ppef("ef");
 
-  // Get the phiV bc
-  amrex::Vector<std::string> lo_bc_char(AMREX_SPACEDIM);
-  amrex::Vector<std::string> hi_bc_char(AMREX_SPACEDIM);
-  ppef.getarr("phiV_lo_bc", lo_bc_char, 0, AMREX_SPACEDIM);
-  ppef.getarr("phiV_hi_bc", hi_bc_char, 0, AMREX_SPACEDIM);
-  for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-    if (lo_bc_char[idim] == "Interior") {
-      m_phiV_bc.setLo(idim, 0);
-    } else if (lo_bc_char[idim] == "Dirichlet") {
-      m_phiV_bc.setLo(idim, 1);
-    } else if (lo_bc_char[idim] == "Neumann") {
-      m_phiV_bc.setLo(idim, 2);
-    } else {
-      amrex::Abort("Wrong PhiV bc. Should be : Interior, Dirichlet or Neumann");
+  // Get the phiV bc and the polarity of each domain face
+  const std::map<std::string, int> phiV_bc_names{
+    {"Interior", 0}, {"Dirichlet", 1}, {"Neumann", 2}};
+  const std::map<std::string, int> phiV_pol_names{
+    {"Neutral", 0}, {"Anode", 1}, {"Cathode", 2}}; // Anode: pos., Cathode: neg.
+  auto phiV_lookup = [](
+                       const std::map<std::string, int>& names,
+                       const std::string& name, const char* msg) {
+    const auto it = names.find(name);
+    if (it == names.end()) {
+      amrex::Abort(msg);
     }
-    if (hi_bc_char[idim] == "Interior") {
-      m_phiV_bc.setHi(idim, 0);
-    } else if (hi_bc_char[idim] == "Dirichlet") {
-      m_phiV_bc.setHi(idim, 1);
-    } else if (hi_bc_char[idim] == "Neumann") {
-      m_phiV_bc.setHi(idim, 2);
-    } else {
-      amrex::Abort("Wrong PhiV bc. Should be : Interior, Dirichlet or Neumann");
-    }
-  }
-
-  // Get the polarity of BCs
-  ppef.getarr("phiV_polarity_lo", lo_bc_char, 0, AMREX_SPACEDIM);
-  ppef.getarr("phiV_polarity_hi", hi_bc_char, 0, AMREX_SPACEDIM);
-  for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-    if (lo_bc_char[idim] == "Neutral") {
-      m_phiV_bcpol.setLo(idim, 0);
-    } else if (lo_bc_char[idim] == "Anode") { // Pos. elec = 1
-      m_phiV_bcpol.setLo(idim, 1);
-      AMREX_ALWAYS_ASSERT(m_phiV_bc.lo(idim) == 1);
-    } else if (lo_bc_char[idim] == "Cathode") { // Neg. elec = 2
-      m_phiV_bcpol.setLo(idim, 2);
-      AMREX_ALWAYS_ASSERT(m_phiV_bc.lo(idim) == 1);
-    } else {
-      amrex::Abort(
+    return it->second;
+  };
+  for (const std::string side : {"lo", "hi"}) {
+    amrex::Vector<std::string> bc_char(AMREX_SPACEDIM);
+    amrex::Vector<std::string> pol_char(AMREX_SPACEDIM);
+    ppef.getarr(("phiV_" + side + "_bc").c_str(), bc_char, 0, AMREX_SPACEDIM);
+    ppef.getarr(("phiV_polarity_" + side).c_str(), pol_char, 0, AMREX_SPACEDIM);
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+      const int bc = phiV_lookup(
+        phiV_bc_names, bc_char[idim],
+        "Wrong PhiV bc. Should be : Interior, Dirichlet or Neumann");
+      const int pol = phiV_lookup(
+        phiV_pol_names, pol_char[idim],
         "Wrong PhiV polarity. Should be : Neutral, Anode or Cathode");
-    }
-    if (hi_bc_char[idim] == "Neutral") {
-      m_phiV_bcpol.setHi(idim, 0);
-    } else if (hi_bc_char[idim] == "Anode") { // Pos. elec = 1
-      m_phiV_bcpol.setHi(idim, 1);
-      AMREX_ALWAYS_ASSERT(m_phiV_bc.hi(idim) == 1);
-    } else if (hi_bc_char[idim] == "Cathode") { // Neg. elec = 2
-      m_phiV_bcpol.setHi(idim, 2);
-      AMREX_ALWAYS_ASSERT(m_phiV_bc.hi(idim) == 1);
-    } else {
-      amrex::Abort(
-        "Wrong PhiV polarity. Should be : Neutral, Anode or Cathode");
+      // An electrode needs a Dirichlet potential
+      AMREX_ALWAYS_ASSERT(pol == 0 || bc == 1);
+      if (side == "lo") {
+        m_phiV_bc.setLo(idim, bc);
+        m_phiV_bcpol.setLo(idim, pol);
+      } else {
+        m_phiV_bc.setHi(idim, bc);
+        m_phiV_bcpol.setHi(idim, pol);
+      }
     }
   }
 #endif
@@ -761,24 +745,16 @@ PeleLM::readParameters()
     pp.query("plot_heatRelease", m_plotHeatRelease);
   }
   // Enable the chemistry BA to have smaller grid size
-  int mgsc_size = pp.countval("max_grid_size_chem");
-  if (mgsc_size > 0) {
-    if (mgsc_size == 1) {
-      int mgsc;
-      pp.query("max_grid_size_chem", mgsc);
-      AMREX_D_TERM(
-        m_max_grid_size_chem[0] = mgsc;, m_max_grid_size_chem[1] = mgsc;
-        , m_max_grid_size_chem[2] = mgsc);
-    } else if (mgsc_size == AMREX_SPACEDIM) {
-      amrex::Vector<int> mgsc;
-      pp.getarr("max_grid_size_chem", mgsc, 0, AMREX_SPACEDIM);
-      AMREX_D_TERM(
-        m_max_grid_size_chem[0] = mgsc[0];, m_max_grid_size_chem[1] = mgsc[1];
-        , m_max_grid_size_chem[2] = mgsc[2]);
-    } else {
-      amrex::Abort(
-        "peleLM.max_grid_size_chem should have 1 or AMREX_SPACEDIM values");
+  const int mgsc_size = pp.countval("max_grid_size_chem");
+  if (mgsc_size == 1 || mgsc_size == AMREX_SPACEDIM) {
+    amrex::Vector<int> mgsc;
+    pp.getarr("max_grid_size_chem", mgsc);
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+      m_max_grid_size_chem[idim] = mgsc[(mgsc_size == 1) ? 0 : idim];
     }
+  } else if (mgsc_size > 0) {
+    amrex::Abort(
+      "peleLM.max_grid_size_chem should have 1 or AMREX_SPACEDIM values");
   }
 
   // -----------------------------------------
@@ -822,36 +798,38 @@ PeleLM::readParameters()
   // Advection
   // -----------------------------------------
   pp.query("advection_scheme", m_advection_key);
-  if (m_advection_key == "Godunov_PLM") {
-    m_advection_type = "Godunov";
-    m_Godunov_ppm = 0;
-    amrex::ParmParse ppg("godunov");
-    ppg.query("use_forceInTrans", m_Godunov_ForceInTrans);
-  } else if (m_advection_key == "Godunov_PPM") {
-    m_advection_type = "Godunov";
-    m_Godunov_ppm = 1;
-    m_Godunov_ppm_limiter = PPM::VanLeer;
-    amrex::ParmParse ppg("godunov");
-    ppg.query("use_forceInTrans", m_Godunov_ForceInTrans);
-  } else if (m_advection_key == "Godunov_PPM_WENOZ") {
-    m_advection_type = "Godunov";
-    m_Godunov_ppm = 1;
-    m_Godunov_ppm_limiter = PPM::WENOZ;
-    amrex::ParmParse ppg("godunov");
-    ppg.query("use_forceInTrans", m_Godunov_ForceInTrans);
-  } else if (m_advection_key == "Godunov_PPM_NOLIM") {
-    m_advection_type = "Godunov";
-    m_Godunov_ppm = 1;
-    m_Godunov_ppm_limiter = PPM::NoLimiter;
-    amrex::ParmParse ppg("godunov");
-    ppg.query("use_forceInTrans", m_Godunov_ForceInTrans);
-  } else if (m_advection_key == "Godunov_BDS") {
-    m_advection_type = "BDS";
-    m_Godunov_ppm = 0;
-  } else {
-    amrex::Abort(
-      "Unknown 'advection_scheme'. Recognized options are: Godunov_PLM, "
-      "Godunov_PPM or Godunov_BDS");
+  {
+    struct AdvectionScheme
+    {
+      const char* key;
+      const char* type;
+      int ppm;
+      int ppm_limiter; // < 0: keep the default
+    };
+    const std::array<AdvectionScheme, 5> schemes{{
+      {"Godunov_PLM", "Godunov", 0, -1},
+      {"Godunov_PPM", "Godunov", 1, PPM::VanLeer},
+      {"Godunov_PPM_WENOZ", "Godunov", 1, PPM::WENOZ},
+      {"Godunov_PPM_NOLIM", "Godunov", 1, PPM::NoLimiter},
+      {"Godunov_BDS", "BDS", 0, -1},
+    }};
+    const auto* scheme = std::find_if(
+      schemes.begin(), schemes.end(),
+      [&](const AdvectionScheme& a) { return m_advection_key == a.key; });
+    if (scheme == schemes.end()) {
+      amrex::Abort(
+        "Unknown 'advection_scheme'. Recognized options are: Godunov_PLM, "
+        "Godunov_PPM, Godunov_PPM_WENOZ, Godunov_PPM_NOLIM or Godunov_BDS");
+    }
+    m_advection_type = scheme->type;
+    m_Godunov_ppm = scheme->ppm;
+    if (scheme->ppm_limiter >= 0) {
+      m_Godunov_ppm_limiter = scheme->ppm_limiter;
+    }
+    if (m_advection_type == "Godunov") {
+      amrex::ParmParse ppg("godunov");
+      ppg.query("use_forceInTrans", m_Godunov_ForceInTrans);
+    }
   }
   m_predict_advection_type =
     "Godunov"; // Only option at this point. This will disappear when
@@ -1618,23 +1596,18 @@ PeleLM::derivedSetup()
         var_names_elemfrac, pelelmex_derelementfrac, the_same_box);
     }
 
-    // Species diffusion coefficients
+    // Species diffusion coefficients, and thermal diffusion ratios with Soret
+    const int ndiffc = (m_use_soret != 0) ? 2 * NUM_SPECIES : NUM_SPECIES;
+    var_names_massfrac.resize(ndiffc);
     for (int n = 0; n < NUM_SPECIES; ++n) {
       var_names_massfrac[n] = "D_" + spec_names[n];
-    }
-    if (m_use_soret != 0) {
-      var_names_massfrac.resize(2 * NUM_SPECIES);
-      for (int n = 0; n < NUM_SPECIES; ++n) {
+      if (m_use_soret != 0) {
         var_names_massfrac[n + NUM_SPECIES] = "theta_" + spec_names[n];
       }
-      derive_lst.add(
-        "diffcoeff", amrex::IndexType::TheCellType(), 2 * NUM_SPECIES,
-        var_names_massfrac, pelelmex_derdiffc, the_same_box);
-    } else {
-      derive_lst.add(
-        "diffcoeff", amrex::IndexType::TheCellType(), NUM_SPECIES,
-        var_names_massfrac, pelelmex_derdiffc, the_same_box);
     }
+    derive_lst.add(
+      "diffcoeff", amrex::IndexType::TheCellType(), ndiffc, var_names_massfrac,
+      pelelmex_derdiffc, the_same_box);
 
     // Rho - sum rhoYs
     derive_lst.add(
@@ -1965,40 +1938,31 @@ PeleLM::taggingSetup()
       info.SetMaxLevel(tag_max_level);
     }
 
+    // Field criteria, in priority order; vorticity tags mag_vort
+    struct FieldCriterion
+    {
+      const char* key;
+      amrex::AMRErrorTag::TEST test;
+    };
+    const std::array<FieldCriterion, 4> criteria{{
+      {"value_greater", amrex::AMRErrorTag::GREATER},
+      {"value_less", amrex::AMRErrorTag::LESS},
+      {"vorticity_greater", amrex::AMRErrorTag::VORT},
+      {"adjacent_difference_greater", amrex::AMRErrorTag::GRAD},
+    }};
+    const auto* crit = std::find_if(
+      criteria.begin(), criteria.end(),
+      [&](const FieldCriterion& c) { return ppr.countval(c.key) != 0; });
+
     bool itexists = false;
-    if (ppr.countval("value_greater") != 0) {
+    if (crit != criteria.end()) {
       amrex::Real value;
-      ppr.get("value_greater", value);
-      std::string field;
-      ppr.get("field_name", field);
-      errTags.push_back(
-        amrex::AMRErrorTag(value, amrex::AMRErrorTag::GREATER, field, info));
-      itexists = derive_lst.canDerive(field) || isStateVariable(field) ||
-                 isReactVariable(field);
-    } else if (ppr.countval("value_less") != 0) {
-      amrex::Real value;
-      ppr.get("value_less", value);
-      std::string field;
-      ppr.get("field_name", field);
-      errTags.push_back(
-        amrex::AMRErrorTag(value, amrex::AMRErrorTag::LESS, field, info));
-      itexists = derive_lst.canDerive(field) || isStateVariable(field) ||
-                 isReactVariable(field);
-    } else if (ppr.countval("vorticity_greater") != 0) {
-      amrex::Real value;
-      ppr.get("vorticity_greater", value);
-      const std::string field = "mag_vort";
-      errTags.push_back(
-        amrex::AMRErrorTag(value, amrex::AMRErrorTag::VORT, field, info));
-      itexists = derive_lst.canDerive(field) || isStateVariable(field) ||
-                 isReactVariable(field);
-    } else if (ppr.countval("adjacent_difference_greater") != 0) {
-      amrex::Real value;
-      ppr.get("adjacent_difference_greater", value);
-      std::string field;
-      ppr.get("field_name", field);
-      errTags.push_back(
-        amrex::AMRErrorTag(value, amrex::AMRErrorTag::GRAD, field, info));
+      ppr.get(crit->key, value);
+      std::string field = "mag_vort";
+      if (crit->test != amrex::AMRErrorTag::VORT) {
+        ppr.get("field_name", field);
+      }
+      errTags.push_back(amrex::AMRErrorTag(value, crit->test, field, info));
       itexists = derive_lst.canDerive(field) || isStateVariable(field) ||
                  isReactVariable(field);
     } else if (realbox.ok()) {
