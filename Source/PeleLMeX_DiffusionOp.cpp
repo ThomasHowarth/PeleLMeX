@@ -348,21 +348,7 @@ DiffusionOp::diffuse_scalar(
         auto& bcoeff_ec = bcoeff_lev[lev];
         if (mesh_mapping) {
           // bcoeff_i -> (J/fac_i^2) . bcoeff on face i
-          for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-            const auto& fac_ma = mm->fac_fc(lev, idim).const_arrays();
-            const auto& detJ_ma = mm->detJ_fc(lev, idim).const_arrays();
-            const auto& b_ma = bcoeff_ec[idim].arrays();
-            const int nc = idim;
-            amrex::ParallelFor(
-              bcoeff_ec[idim], amrex::IntVect(0), m_ncomp_solve,
-              [=] AMREX_GPU_DEVICE(
-                int box_no, int i, int j, int k, int n) noexcept {
-                const amrex::Real f = fac_ma[box_no](i, j, k, nc);
-                const amrex::Real dJ = detJ_ma[box_no](i, j, k);
-                b_ma[box_no](i, j, k, n) *= dJ / (f * f);
-              });
-          }
-          amrex::Gpu::streamSynchronize();
+          m_pelelm->scaleFaceDiffusivityMapped(lev, bcoeff_ec);
         }
 #ifdef AMREX_USE_EB
         m_scal_solve_op->setBCoeffs(
@@ -384,9 +370,7 @@ DiffusionOp::diffuse_scalar(
           0, amrex::MFInfo(), a_rhs[lev]->Factory());
         amrex::MultiFab::Copy(
           rhs.back(), *a_rhs[lev], rhs_comp + comp, 0, m_ncomp_solve, 0);
-        for (int n = 0; n < m_ncomp_solve; ++n) {
-          amrex::MultiFab::Multiply(rhs.back(), mm->detJ_cc(lev), 0, n, 1, 0);
-        }
+        mm->multiply_by_detJ_cc(lev, rhs.back(), 0, m_ncomp_solve);
       } else {
         rhs.emplace_back(
           *a_rhs[lev], amrex::make_alias, rhs_comp + comp, m_ncomp_solve);
@@ -1055,21 +1039,7 @@ DiffusionOp::computeDiffLap(
           *a_bcoeff[lev], addTurbContrib);
       if (mesh_mapping) {
         // bcoeff_i -> (J/fac_i^2) . bcoeff on face i
-        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-          const auto& fac_ma = mm->fac_fc(lev, idim).const_arrays();
-          const auto& detJ_ma = mm->detJ_fc(lev, idim).const_arrays();
-          const auto& b_ma = bcoeff_ec[idim].arrays();
-          const int nc = idim;
-          amrex::ParallelFor(
-            bcoeff_ec[idim], amrex::IntVect(0), m_ncomp,
-            [=] AMREX_GPU_DEVICE(
-              int box_no, int i, int j, int k, int n) noexcept {
-              const amrex::Real f = fac_ma[box_no](i, j, k, nc);
-              const amrex::Real dJ = detJ_ma[box_no](i, j, k);
-              b_ma[box_no](i, j, k, n) *= dJ / (f * f);
-            });
-        }
-        amrex::Gpu::streamSynchronize();
+        m_pelelm->scaleFaceDiffusivityMapped(lev, bcoeff_ec);
       }
 
 #ifdef AMREX_USE_EB
@@ -1088,9 +1058,7 @@ DiffusionOp::computeDiffLap(
     // Divide by J so the returned laps is in physical-space units.
     if (mesh_mapping) {
       for (int lev = 0; lev <= finest_level; ++lev) {
-        for (int n = 0; n < m_ncomp; ++n) {
-          amrex::MultiFab::Divide(laps[lev], mm->detJ_cc(lev), 0, n, 1, 0);
-        }
+        mm->divide_by_detJ_cc(lev, laps[lev], 0, m_ncomp);
       }
     }
   }
@@ -1122,7 +1090,6 @@ DiffusionOp::computeDiffFluxes(
 
   const int finest_level = m_pelelm->finestLevel();
   const bool mesh_mapping = m_pelelm->hasMeshMapping();
-  auto* mm = mesh_mapping ? m_pelelm->meshMap() : nullptr;
 
   const int have_density = (a_density.empty()) ? 0 : 1;
   const int have_boundary = (a_boundary.empty()) ? 0 : 1;
@@ -1208,21 +1175,7 @@ DiffusionOp::computeDiffFluxes(
         // bcoeff_i -> (J/fac_i^2) . bcoeff on face i; returned fluxes
         // live in Xi-space (consumers apply their own /J on the
         // divergence to recover physical-space terms).
-        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-          const auto& fac_ma = mm->fac_fc(lev, idim).const_arrays();
-          const auto& detJ_ma = mm->detJ_fc(lev, idim).const_arrays();
-          const auto& b_ma = bcoeff_ec[idim].arrays();
-          const int nc = idim;
-          amrex::ParallelFor(
-            bcoeff_ec[idim], amrex::IntVect(0), m_ncomp,
-            [=] AMREX_GPU_DEVICE(
-              int box_no, int i, int j, int k, int n) noexcept {
-              const amrex::Real f = fac_ma[box_no](i, j, k, nc);
-              const amrex::Real dJ = detJ_ma[box_no](i, j, k);
-              b_ma[box_no](i, j, k, n) *= dJ / (f * f);
-            });
-        }
-        amrex::Gpu::streamSynchronize();
+        m_pelelm->scaleFaceDiffusivityMapped(lev, bcoeff_ec);
       }
       laps.emplace_back(
         a_phi[lev]->boxArray(), a_phi[lev]->DistributionMap(), m_ncomp, 1,
@@ -1776,22 +1729,9 @@ DiffusionTensorOp::compute_divtau(
         lev, 0, 1, doZeroVisc, {a_bcrec}, *a_beta[lev], addTurbContrib);
     if (mesh_mapping) {
       // beta_i -> (J/fac_i^2) . beta on face i
-      auto* mm = m_pelelm->meshMap();
-      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-        const auto& fac_ma = mm->fac_fc(lev, idim).const_arrays();
-        const auto& detJ_ma = mm->detJ_fc(lev, idim).const_arrays();
-        const auto& b_ma = beta_ec[idim].arrays();
-        const int nc = idim;
-        amrex::ParallelFor(
-          beta_ec[idim],
-          [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
-            const amrex::Real f = fac_ma[box_no](i, j, k, nc);
-            const amrex::Real dJ = detJ_ma[box_no](i, j, k);
-            b_ma[box_no](i, j, k) *= dJ / (f * f);
-          });
-      }
-      amrex::Gpu::streamSynchronize();
+      m_pelelm->scaleFaceDiffusivityMapped(lev, beta_ec);
 #ifdef AMREX_MLTENSOROP_HAS_MAPPING_FACTORS
+      auto* mm = m_pelelm->meshMap();
       // The scaled face viscosity handles the normal-derivative part; the
       // transpose and bulk (cross) terms need the per-direction factors.
       m_apply_op->setMappingFactors(
@@ -1812,9 +1752,7 @@ DiffusionTensorOp::compute_divtau(
   if (mesh_mapping) {
     auto* mm = m_pelelm->meshMap();
     for (int lev = 0; lev <= finest_level; ++lev) {
-      for (int n = 0; n < AMREX_SPACEDIM; ++n) {
-        amrex::MultiFab::Divide(*a_divtau[lev], mm->detJ_cc(lev), 0, n, 1, 0);
-      }
+      mm->divide_by_detJ_cc(lev, *a_divtau[lev], 0, AMREX_SPACEDIM);
     }
   }
 
@@ -1888,20 +1826,7 @@ DiffusionTensorOp::diffuse_velocity(
         lev, 0, 1, doZeroVisc, {a_bcrec}, *a_beta[lev], addTurbContrib);
     if (mesh_mapping) {
       // beta_i -> (J/fac_i^2) . beta on face i
-      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-        const auto& fac_ma = mm->fac_fc(lev, idim).const_arrays();
-        const auto& detJ_ma = mm->detJ_fc(lev, idim).const_arrays();
-        const auto& b_ma = beta_ec[idim].arrays();
-        const int nc = idim;
-        amrex::ParallelFor(
-          beta_ec[idim],
-          [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
-            const amrex::Real f = fac_ma[box_no](i, j, k, nc);
-            const amrex::Real dJ = detJ_ma[box_no](i, j, k);
-            b_ma[box_no](i, j, k) *= dJ / (f * f);
-          });
-      }
-      amrex::Gpu::streamSynchronize();
+      m_pelelm->scaleFaceDiffusivityMapped(lev, beta_ec);
 #if defined(AMREX_MLTENSOROP_HAS_MAPPING_FACTORS) && !defined(AMREX_USE_EB)
       // The scaled face viscosity handles the normal-derivative part; the
       // transpose and bulk (cross) terms need the per-direction factors.
@@ -1960,9 +1885,7 @@ DiffusionTensorOp::diffuse_velocity(
   // A-coeff scaling above so the implicit operator remains consistent).
   if (mesh_mapping) {
     for (int lev = 0; lev <= finest_level; ++lev) {
-      for (int n = 0; n < AMREX_SPACEDIM; ++n) {
-        amrex::MultiFab::Multiply(rhs[lev], mm->detJ_cc(lev), 0, n, 1, 0);
-      }
+      mm->multiply_by_detJ_cc(lev, rhs[lev], 0, AMREX_SPACEDIM);
     }
   }
 

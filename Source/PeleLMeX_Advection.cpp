@@ -209,10 +209,8 @@ PeleLM::computeVelocityAdvTerm(const std::unique_ptr<AdvanceAdvData>& advData)
     // (Xi) space with umac = u_bar, giving J . (physical divergence).
     // Restore the physical-space advection term by dividing by J.
     if (m_mesh_mapping) {
-      for (int n = 0; n < AMREX_SPACEDIM; ++n) {
-        amrex::MultiFab::Divide(
-          advData->AofS[lev], m_mesh_map->detJ_cc(lev), 0, VELX + n, 1, 0);
-      }
+      m_mesh_map->divide_by_detJ_cc(
+        lev, advData->AofS[lev], VELX, AMREX_SPACEDIM);
     }
   }
 }
@@ -937,17 +935,11 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
     // is re-derived from the species sum below, so it inherits the scaling
     // automatically.
     if (m_mesh_mapping) {
-      for (int n = 0; n < NUM_SPECIES; ++n) {
-        amrex::MultiFab::Divide(
-          advData->AofS[lev], m_mesh_map->detJ_cc(lev), 0, FIRSTSPEC + n, 1, 0);
-      }
-      amrex::MultiFab::Divide(
-        advData->AofS[lev], m_mesh_map->detJ_cc(lev), 0, RHOH, 1, 0);
+      m_mesh_map->divide_by_detJ_cc(
+        lev, advData->AofS[lev], FIRSTSPEC, NUM_SPECIES);
+      m_mesh_map->divide_by_detJ_cc(lev, advData->AofS[lev], RHOH, 1);
       if (m_nAux > 0) {
-        for (int n = 0; n < m_nAux; ++n) {
-          amrex::MultiFab::Divide(
-            advData->AofS_aux[lev], m_mesh_map->detJ_cc(lev), 0, n, 1, 0);
-        }
+        m_mesh_map->divide_by_detJ_cc(lev, advData->AofS_aux[lev], 0, m_nAux);
       }
     }
   }
@@ -1144,11 +1136,7 @@ PeleLM::computePassiveAdvTerms(
 
     // Xi-space divergence is J.(physical divergence): restore physical units
     if (m_mesh_mapping) {
-      for (int n = 0; n < ncomp; ++n) {
-        amrex::MultiFab::Divide(
-          advData->AofS[lev], m_mesh_map->detJ_cc(lev), 0, state_comp + n, 1,
-          0);
-      }
+      m_mesh_map->divide_by_detJ_cc(lev, advData->AofS[lev], state_comp, ncomp);
     }
   }
   // TODO: This assumes passive variables have no diffusive fluxes
