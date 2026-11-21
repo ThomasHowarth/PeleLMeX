@@ -241,7 +241,7 @@ PeleLM::Advance(const int is_initIter)
 
     // S^{n+1} from the final state, for divU^{n+1} and the velocity forcing
     if (m_ext_sources_SDC) {
-      updateExternalSourcesSDC(diffData);
+      updateExternalSourcesSDC(diffData, false);
     }
 
     if (m_has_divu != 0) {
@@ -366,7 +366,7 @@ PeleLM::oneSDC(
     }
 
     if (m_ext_sources_SDC) {
-      updateExternalSourcesSDC(diffData);
+      updateExternalSourcesSDC(diffData, true);
 #if NUM_ODE > 0
       if (m_user_defined_ext_sources) {
         predictODEQty();

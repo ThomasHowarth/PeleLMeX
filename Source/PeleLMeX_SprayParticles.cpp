@@ -24,6 +24,7 @@ int spray_verbose = 0;
 std::unique_ptr<SprayParticleContainer> PeleLM::SprayPC = nullptr;
 std::unique_ptr<SprayParticleContainer> PeleLM::VirtPC = nullptr;
 std::unique_ptr<SprayParticleContainer> PeleLM::GhostPC = nullptr;
+std::unique_ptr<SprayParticleContainer> PeleLM::SprayPC_n = nullptr;
 bool PeleLM::do_spray_particles = true;
 // momentum + density + fuel species + enthalpy
 int PeleLM::num_spray_src = AMREX_SPACEDIM + 2 + SPRAY_FUEL_NUM;
@@ -60,6 +61,7 @@ PeleLM::SprayReadParameters()
   SprayParticleContainer::readSprayParams(spray_verbose);
   // Must change dtmod to 1 since we only do MKD
   SprayParticleContainer::getSprayData()->dtmod = 1.;
+  pp.query("spray_SDC", m_spray_SDC);
 }
 
 void
@@ -268,7 +270,8 @@ PeleLM::SprayAddSource(const int level)
 }
 
 void
-PeleLM::SprayMKD(const amrex::Real time, const amrex::Real dt)
+PeleLM::SprayMKD(
+  const amrex::Real time, const amrex::Real dt, const bool a_useNewState)
 {
   if (!do_spray_particles) {
     return;
@@ -285,7 +288,7 @@ PeleLM::SprayMKD(const amrex::Real time, const amrex::Real dt)
       amrex::Print() << "SprayMKDLevel " << lev << "\n";
     }
     m_spraysource[lev]->setVal(0.);
-    SprayMKDLevel(lev, time, dt);
+    SprayMKDLevel(lev, time, dt, a_useNewState);
     SprayAddSource(lev);
     removeGhostParticles(lev);
     removeVirtualParticles(lev);
@@ -294,7 +297,10 @@ PeleLM::SprayMKD(const amrex::Real time, const amrex::Real dt)
 
 void
 PeleLM::SprayMKDLevel(
-  const int level, const amrex::Real time, const amrex::Real dt)
+  const int level,
+  const amrex::Real time,
+  const amrex::Real dt,
+  const bool a_useNewState)
 {
   if (level < finest_level) {
     // Make a copy of the particles on this level into ghost particles
@@ -314,25 +320,77 @@ PeleLM::SprayMKDLevel(
   bool isVirt = false;
   bool isGhost = false;
   bool doMove = true;
+  // With a_useNewState, the particles see the gas varying linearly in time
+  // from the t^n state to the t^{n+1,k} iterate
+  const amrex::MultiFab* state_end =
+    a_useNewState ? m_spraystate_new[level].get() : nullptr;
   // Do the valid particles themselves
   SprayPC->moveKickDrift(
     state, source, level, dt, time, isVirt, isGhost, state_ghosts,
-    source_ghosts, doMove, ltransparm, spray_cfl[level]);
+    source_ghosts, doMove, ltransparm, spray_cfl[level], state_end);
   if (level < finest_level) {
     isVirt = true;
     isGhost = false;
     VirtPC->moveKickDrift(
       state, source, level, dt, time, isVirt, isGhost, state_ghosts,
-      source_ghosts, doMove, ltransparm, spray_cfl[level]);
+      source_ghosts, doMove, ltransparm, spray_cfl[level], state_end);
   }
   if (GhostPC != nullptr && level != 0) {
     isVirt = false;
     isGhost = true;
     GhostPC->moveKickDrift(
       state, source, level, dt, time, isVirt, isGhost, state_ghosts,
-      source_ghosts, doMove, ltransparm, spray_cfl[level]);
+      source_ghosts, doMove, ltransparm, spray_cfl[level], state_end);
   }
   source.SumBoundary(geom[level].periodicity());
+}
+
+void
+PeleLM::SpraySaveParticles()
+{
+  BL_PROFILE("PeleLMeX::SpraySaveParticles()");
+  if (SprayPC_n == nullptr) {
+    SprayPC_n = std::make_unique<SprayParticleContainer>(this, m_phys_bc);
+  }
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    SprayPC_n->SetParticleBoxArray(lev, SprayPC->ParticleBoxArray(lev));
+    SprayPC_n->SetParticleDistributionMap(
+      lev, SprayPC->ParticleDistributionMap(lev));
+  }
+  SprayPC_n->reserveData();
+  SprayPC_n->resizeData();
+  constexpr bool local = true;
+  SprayPC_n->copyParticles(*SprayPC, local);
+}
+
+void
+PeleLM::SprayRestoreParticles()
+{
+  BL_PROFILE("PeleLMeX::SprayRestoreParticles()");
+  constexpr bool local = true;
+  SprayPC->copyParticles(*SprayPC_n, local);
+}
+
+void
+PeleLM::SprayFillNewState()
+{
+  BL_PROFILE("PeleLMeX::SprayFillNewState()");
+  m_spraystate_new.resize(finest_level + 1);
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    const auto& old_state = *m_spraystate[lev];
+    const int state_ghosts = spray_state_ghosts[lev];
+    if (
+      m_spraystate_new[lev] == nullptr ||
+      m_spraystate_new[lev]->boxArray() != old_state.boxArray() ||
+      m_spraystate_new[lev]->DistributionMap() != old_state.DistributionMap() ||
+      m_spraystate_new[lev]->nGrow() != state_ghosts) {
+      m_spraystate_new[lev] = std::make_unique<amrex::MultiFab>(
+        grids[lev], dmap[lev], NVAR, state_ghosts, amrex::MFInfo(),
+        *m_factory[lev]);
+    }
+    fillpatch_state(
+      lev, m_cur_time + m_dt, *(m_spraystate_new[lev]), state_ghosts);
+  }
 }
 
 void

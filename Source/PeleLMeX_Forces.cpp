@@ -441,11 +441,35 @@ PeleLM::getExternalSources(
       grids[lev], dmap[lev], NVAR, ext.nGrowVect(), amrex::MFInfo(),
       *m_factory[lev]);
   }
+
+#ifdef PELE_USE_SPRAY
+  // spray_SDC: keep the particles at t^n, then advance them over the step
+  // against the t^n gas, as without spray_SDC, for the first SDC iteration
+  if (m_spray_SDC && is_initIter == 0) {
+    SpraySaveParticles();
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      m_extSource[lev]->setVal(0.0);
+    }
+    SprayMKD(m_cur_time, m_dt);
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      auto& ext = *m_extSource[lev];
+      const auto ng = ext.nGrowVect();
+      diffData->spraySrc.emplace_back(
+        grids[lev], dmap[lev], NVAR, ng, amrex::MFInfo(), *m_factory[lev]);
+      amrex::MultiFab::Copy(diffData->spraySrc[lev], ext, 0, 0, NVAR, ng);
+      amrex::MultiFab::Add(
+        diffData->extSrc_n[lev], diffData->spraySrc[lev], 0, 0, NVAR, ng);
+      amrex::MultiFab::Copy(ext, diffData->extSrc_n[lev], 0, 0, NVAR, ng);
+    }
+  }
+#endif
 }
 
 // Spray advances its own particles (MKD), soot integrates its source over dt
 // internally and radiation needs a global solve, so these are only evaluated
-// once per step, from t^n. Returns whether any of them is active.
+// once per step, from t^n. With spray_SDC, the particles are re-advanced in
+// each SDC iteration instead (see updateExternalSourcesSDC). Returns whether
+// any of them is active.
 bool
 PeleLM::addFrozenExternalSources(
   const int is_initIter, const PeleLM::TimeStamp a_timestamp)
@@ -453,7 +477,7 @@ PeleLM::addFrozenExternalSources(
   amrex::ignore_unused(is_initIter, a_timestamp);
   bool added = false;
 #ifdef PELE_USE_SPRAY
-  if (is_initIter == 0) {
+  if (is_initIter == 0 && !m_spray_SDC) {
     SprayMKD(m_cur_time, m_dt);
     added = added || do_spray_particles;
   }
@@ -511,21 +535,55 @@ PeleLM::assembleExternalSources(
 }
 
 // ext_sources_SDC: S^{n+1,k} from the new state into diffData->extSrc_np1,
-// and m_extSource <- 0.5 (S^n + S^{n+1,k})
+// and m_extSource <- 0.5 (S^n + S^{n+1,k}).
+// spray_SDC: the spray source is the exchange with the particles over the
+// whole step, so it enters m_extSource as is, and extSrc_n / extSrc_np1 (for
+// divU) both carry it. a_inSDC re-advances the particles from t^n, with the
+// gas varying linearly in time from t^n to the t^{n+1,k} iterate; after the
+// SDC loop the particles and source of the last iteration are kept, so that
+// the gas and the particles exchange exactly the same mass, momentum and
+// energy.
 void
 PeleLM::updateExternalSourcesSDC(
-  const std::unique_ptr<AdvanceDiffData>& diffData)
+  const std::unique_ptr<AdvanceDiffData>& diffData, const bool a_inSDC)
 {
   BL_PROFILE("PeleLMeX::updateExternalSourcesSDC()");
+  amrex::ignore_unused(a_inSDC);
+  const bool spray_SDC = !diffData->spraySrc.empty();
+#ifdef PELE_USE_SPRAY
+  if (spray_SDC && a_inSDC) {
+    SprayRestoreParticles();
+    SprayFillNewState();
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      m_extSource[lev]->setVal(0.0);
+    }
+    constexpr bool useNewState = true;
+    SprayMKD(m_cur_time, m_dt, useNewState);
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      auto& ext = *m_extSource[lev];
+      const auto ng = ext.nGrowVect();
+      auto& spray = diffData->spraySrc[lev];
+      // extSrc_n <- extSrc_n - S_spray^{old} + S_spray^{new}
+      amrex::MultiFab::Subtract(diffData->extSrc_n[lev], spray, 0, 0, NVAR, ng);
+      amrex::MultiFab::Copy(spray, ext, 0, 0, NVAR, ng);
+      amrex::MultiFab::Add(diffData->extSrc_n[lev], spray, 0, 0, NVAR, ng);
+    }
+  }
+#endif
   for (int lev = 0; lev <= finest_level; ++lev) {
     m_extSource[lev]->setVal(0.0);
   }
   assembleExternalSources(0, AmrNewTime, AmrNewTime, &diffData->extSrc_frozen);
   for (int lev = 0; lev <= finest_level; ++lev) {
     auto& ext = *m_extSource[lev];
+    const auto ng = ext.nGrowVect();
     std::swap(ext, diffData->extSrc_np1[lev]);
+    if (spray_SDC) {
+      amrex::MultiFab::Add(
+        diffData->extSrc_np1[lev], diffData->spraySrc[lev], 0, 0, NVAR, ng);
+    }
     amrex::MultiFab::LinComb(
       ext, 0.5, diffData->extSrc_n[lev], 0, 0.5, diffData->extSrc_np1[lev], 0,
-      0, NVAR, ext.nGrowVect());
+      0, NVAR, ng);
   }
 }

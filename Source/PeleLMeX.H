@@ -278,6 +278,10 @@ public:
     amrex::Vector<amrex::MultiFab> extSrc_n;
     amrex::Vector<amrex::MultiFab> extSrc_np1;
     amrex::Vector<amrex::MultiFab> extSrc_frozen;
+
+    // spray_SDC only: the spray source of the current SDC iteration, from the
+    // particles advanced over the step from t^n (empty if no spray this step)
+    amrex::Vector<amrex::MultiFab> spraySrc;
   };
   /**
    * \brief Advance function data container for advection term
@@ -936,9 +940,18 @@ public:
   void setupGhostParticles(const int ngrow, const int level);
   void removeGhostParticles(const int level);
   amrex::Real SprayEstDt();
-  void SprayMKD(const amrex::Real time, const amrex::Real dt);
-  void
-  SprayMKDLevel(const int level, const amrex::Real time, const amrex::Real dt);
+  void SprayMKD(
+    const amrex::Real time, const amrex::Real dt, const bool a_useNewState = false);
+  void SprayMKDLevel(
+    const int level,
+    const amrex::Real time,
+    const amrex::Real dt,
+    const bool a_useNewState = false);
+  // spray_SDC: keep the particles at t^n, put them back, and fill the gas
+  // state at t^{n+1,k} that the particles see at the end of the step
+  void SpraySaveParticles();
+  void SprayRestoreParticles();
+  void SprayFillNewState();
   void SprayInjectRedist();
   void SprayPostRegrid();
   void SpraySetState(const amrex::Real& a_flow_dt);
@@ -951,6 +964,11 @@ public:
   // State used for spray interpolation
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_spraysource;
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_spraystate;
+  // spray_SDC: re-advance the particles from t^n in each SDC iteration, with
+  // the gas varying linearly in time from t^n to the t^{n+1,k} iterate
+  bool m_spray_SDC{false};
+  static std::unique_ptr<SprayParticleContainer> SprayPC_n;
+  amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_spraystate_new;
   //-----------------------------------------------------------------------------
 #endif
 #ifdef PELE_USE_SOOT
@@ -1005,8 +1023,8 @@ public:
     const PeleLM::TimeStamp a_timestamp_new,
     const amrex::Vector<amrex::MultiFab>* a_frozen);
 
-  void
-  updateExternalSourcesSDC(const std::unique_ptr<AdvanceDiffData>& diffData);
+  void updateExternalSourcesSDC(
+    const std::unique_ptr<AdvanceDiffData>& diffData, const bool a_inSDC);
 
   //-----------------------------------------------------------------------------
   // EOS

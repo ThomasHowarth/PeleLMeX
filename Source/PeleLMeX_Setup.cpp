@@ -1051,6 +1051,10 @@ PeleLM::readParameters()
 #ifdef USE_MANIFOLD_EOS
   has_sdc_sources = has_sdc_sources || m_add_variance_sources;
 #endif
+#ifdef PELE_USE_SPRAY
+  m_spray_SDC = m_spray_SDC && do_spray_particles;
+  has_sdc_sources = has_sdc_sources || m_spray_SDC;
+#endif
   const bool sdc_capable = m_incompressible == 0 && m_nSDCmax >= 2;
   m_ext_sources_SDC = sdc_capable && has_sdc_sources;
   if (
@@ -1060,6 +1064,13 @@ PeleLM::readParameters()
                       "peleLM.sdc_iterMax >= 2 and a low Mach run\n";
     m_ext_sources_SDC = false;
   }
+#ifdef PELE_USE_SPRAY
+  if (m_spray_SDC && !m_ext_sources_SDC) {
+    amrex::Print() << "WARNING: peleLM.spray_SDC ignored: it needs "
+                      "peleLM.ext_sources_SDC\n";
+    m_spray_SDC = false;
+  }
+#endif
 }
 
 void
