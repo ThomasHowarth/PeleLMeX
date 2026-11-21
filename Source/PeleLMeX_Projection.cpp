@@ -20,61 +20,12 @@ PeleLM::initialProjection()
   constexpr int nGhost = 0;
   constexpr amrex::Real dummy_dt = 1.0;
 
-  // Get sigma.  Same shape convention as velocityProjection: 1-component
-  // without mesh mapping, AMREX_SPACEDIM-component when mesh mapping is on.
+  // Get sigma (1/rho; empty when incompressible without mesh mapping)
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> sigma(finest_level + 1);
-  const int sigma_ncomp = m_mesh_mapping ? AMREX_SPACEDIM : 1;
   if ((m_incompressible == 0) || m_mesh_mapping) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      sigma[lev] = std::make_unique<amrex::MultiFab>(
-        grids[lev], dmap[lev], sigma_ncomp, nGhost, amrex::MFInfo(),
-        *m_factory[lev]);
-
-      auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
-      auto const& state_ma = ldata_p->state.const_arrays();
-      auto const& sigma_ma = sigma[lev]->arrays();
-      if (!m_mesh_mapping) {
-        amrex::ParallelFor(
-          ldata_p->state, [state_ma, sigma_ma] AMREX_GPU_DEVICE(
-                            int box_no, int i, int j, int k) noexcept {
-            amrex::Array4<amrex::Real const> rho(state_ma[box_no], DENSITY);
-            sigma_ma[box_no](i, j, k) = dummy_dt / rho(i, j, k);
-          });
-      } else {
-        auto const& fac_ma = m_mesh_map->fac_cc(lev).const_arrays();
-        auto const& detJ_ma = m_mesh_map->detJ_cc(lev).const_arrays();
-        if (m_incompressible == 0) {
-          amrex::ParallelFor(
-            *sigma[lev], amrex::IntVect(0), AMREX_SPACEDIM,
-            [=] AMREX_GPU_DEVICE(
-              int box_no, int i, int j, int k, int n) noexcept {
-              amrex::Array4<amrex::Real const> rho(state_ma[box_no], DENSITY);
-              const amrex::Real f = fac_ma[box_no](i, j, k, n);
-              const amrex::Real dJ = detJ_ma[box_no](i, j, k);
-              sigma_ma[box_no](i, j, k, n) =
-                dummy_dt * dJ / (f * f * rho(i, j, k));
-            });
-        } else {
-          const amrex::Real rho_const = m_rho;
-          amrex::ParallelFor(
-            *sigma[lev], amrex::IntVect(0), AMREX_SPACEDIM,
-            [=] AMREX_GPU_DEVICE(
-              int box_no, int i, int j, int k, int n) noexcept {
-              const amrex::Real f = fac_ma[box_no](i, j, k, n);
-              const amrex::Real dJ = detJ_ma[box_no](i, j, k);
-              sigma_ma[box_no](i, j, k, n) =
-                dummy_dt * dJ / (f * f * rho_const);
-            });
-        }
-      }
-#if AMREX_SPACEDIM == 2
-      if (geom[lev].IsRZ()) {
-        amrex::Gpu::streamSynchronize();
-        scaleProj_RZ(lev, *sigma[lev]);
-      }
-#endif
-    }
-    amrex::Gpu::streamSynchronize();
+    makeProjectionSigma(
+      sigma, levelFieldVect(m_leveldata_new, &LevelData::state), DENSITY,
+      dummy_dt, nGhost, false);
   }
 
   // Get velocity
@@ -121,23 +72,7 @@ PeleLM::initialProjection()
 
   // Mesh mapping: convert velocity and rhs_cc to uniform (Xi) space
   if (m_mesh_mapping) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto const& fac_ma = m_mesh_map->fac_cc(lev).const_arrays();
-      auto const& detJ_ma = m_mesh_map->detJ_cc(lev).const_arrays();
-      auto const& vel_ma = vel[lev]->arrays();
-      // Ghost cells included: setInflowBoundaryVel() has just written the
-      // inflow Dirichlet values there in physical units, and the nodal
-      // projector reads them as the boundary velocity.  Leaving them
-      // unscaled makes the projection enforce u_phys = u_in * fac_n / J
-      // at the inlet instead of u_in.
-      amrex::ParallelFor(
-        *vel[lev], vel[lev]->nGrowVect(), AMREX_SPACEDIM,
-        [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
-          vel_ma[box_no](i, j, k, n) *=
-            detJ_ma[box_no](i, j, k) / fac_ma[box_no](i, j, k, n);
-        });
-    }
-    amrex::Gpu::streamSynchronize();
+    scaleMappedProjVel(GetVecOfPtrs(vel), true);
     if (!rhs_cc.empty()) {
       for (int lev = 0; lev <= finest_level; ++lev) {
         m_mesh_map->multiply_by_detJ_cc(
@@ -152,50 +87,10 @@ PeleLM::initialProjection()
     GetVecOfPtrs(vel), GetVecOfPtrs(sigma), GetVecOfPtrs(rhs_cc), {},
     incremental, dummy_dt);
 
-  // Mesh mapping: correct the AmrWind-inherited sigma_x-only velocity
-  // update from MLNodeLaplacian::mknewu.  See velocityProjection for
-  // the derivation; the same correction applies here.
-  //
-  // Gated on AMREX_MLNODELAP_HAS_MKNEWU_HA: when the AMReX fix is present
-  // (updateVelocity/getFluxes route through the anisotropic mknewu_ha
-  // kernel automatically), this post-hoc correction is unnecessary and
-  // is compiled out.  This keeps PeleLMeX working against both pre- and
-  // post-fix AMReX.
-#if !defined(AMREX_MLNODELAP_HAS_MKNEWU_HA)
-  if (m_mesh_mapping) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
-      auto const& sigma_ma = sigma[lev]->const_arrays();
-      auto const& gp_ma = ldata_p->gp.const_arrays();
-      auto const& vel_ma = vel[lev]->arrays();
-      amrex::ParallelFor(
-        *vel[lev], amrex::IntVect(0), AMREX_SPACEDIM,
-        [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
-          const amrex::Real sig_x = sigma_ma[box_no](i, j, k, 0);
-          const amrex::Real sig_n = sigma_ma[box_no](i, j, k, n);
-          vel_ma[box_no](i, j, k, n) +=
-            (sig_x - sig_n) * gp_ma[box_no](i, j, k, n);
-        });
-    }
-    amrex::Gpu::streamSynchronize();
-  }
-#endif
+  correctMappedNodalVel(GetVecOfPtrs(vel), GetVecOfPtrs(sigma));
 
   // Mesh mapping: convert projected velocity back to physical space
-  if (m_mesh_mapping) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto const& fac_ma = m_mesh_map->fac_cc(lev).const_arrays();
-      auto const& detJ_ma = m_mesh_map->detJ_cc(lev).const_arrays();
-      auto const& vel_ma = vel[lev]->arrays();
-      amrex::ParallelFor(
-        *vel[lev], vel[lev]->nGrowVect(), AMREX_SPACEDIM,
-        [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
-          vel_ma[box_no](i, j, k, n) *=
-            fac_ma[box_no](i, j, k, n) / detJ_ma[box_no](i, j, k);
-        });
-    }
-    amrex::Gpu::streamSynchronize();
-  }
+  scaleMappedProjVel(GetVecOfPtrs(vel), false);
 
   // Set back press and gpress to zero and restore divu
   // and rescale velocity if 2D-RZ
@@ -247,62 +142,13 @@ PeleLM::initialPressProjection()
   constexpr int incremental = 0;
   constexpr int nGhost = 1;
 
-  // Get sigma (see comment on the equivalent block in initialProjection).
+  // Get sigma (1/rho; empty when incompressible without mesh mapping)
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> sigma;
-  const int sigma_ncomp = m_mesh_mapping ? AMREX_SPACEDIM : 1;
   if ((m_incompressible == 0) || m_mesh_mapping) {
     sigma.resize(finest_level + 1);
-    for (int lev = 0; lev <= finest_level; ++lev) {
-
-      sigma[lev] = std::make_unique<amrex::MultiFab>(
-        grids[lev], dmap[lev], sigma_ncomp, nGhost, amrex::MFInfo(),
-        *m_factory[lev]);
-
-      auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
-      auto const& state_ma = ldata_p->state.const_arrays();
-      auto const& sigma_ma = sigma[lev]->arrays();
-      if (!m_mesh_mapping) {
-        amrex::ParallelFor(
-          ldata_p->state, [state_ma, sigma_ma] AMREX_GPU_DEVICE(
-                            int box_no, int i, int j, int k) noexcept {
-            amrex::Array4<amrex::Real const> rho(state_ma[box_no], DENSITY);
-            sigma_ma[box_no](i, j, k) = dummy_dt / rho(i, j, k);
-          });
-      } else {
-        auto const& fac_ma = m_mesh_map->fac_cc(lev).const_arrays();
-        auto const& detJ_ma = m_mesh_map->detJ_cc(lev).const_arrays();
-        if (m_incompressible == 0) {
-          amrex::ParallelFor(
-            *sigma[lev], amrex::IntVect(0), AMREX_SPACEDIM,
-            [=] AMREX_GPU_DEVICE(
-              int box_no, int i, int j, int k, int n) noexcept {
-              amrex::Array4<amrex::Real const> rho(state_ma[box_no], DENSITY);
-              const amrex::Real f = fac_ma[box_no](i, j, k, n);
-              const amrex::Real dJ = detJ_ma[box_no](i, j, k);
-              sigma_ma[box_no](i, j, k, n) =
-                dummy_dt * dJ / (f * f * rho(i, j, k));
-            });
-        } else {
-          const amrex::Real rho_const = m_rho;
-          amrex::ParallelFor(
-            *sigma[lev], amrex::IntVect(0), AMREX_SPACEDIM,
-            [=] AMREX_GPU_DEVICE(
-              int box_no, int i, int j, int k, int n) noexcept {
-              const amrex::Real f = fac_ma[box_no](i, j, k, n);
-              const amrex::Real dJ = detJ_ma[box_no](i, j, k);
-              sigma_ma[box_no](i, j, k, n) =
-                dummy_dt * dJ / (f * f * rho_const);
-            });
-        }
-      }
-#if AMREX_SPACEDIM == 2
-      if (geom[lev].IsRZ()) {
-        amrex::Gpu::streamSynchronize();
-        scaleProj_RZ(lev, *sigma[lev]);
-      }
-#endif
-    }
-    amrex::Gpu::streamSynchronize();
+    makeProjectionSigma(
+      sigma, levelFieldVect(m_leveldata_new, &LevelData::state), DENSITY,
+      dummy_dt, nGhost, false);
   }
 
   // Set the velocity to the gravity field
@@ -325,25 +171,7 @@ PeleLM::initialPressProjection()
   }
 
   // Mesh mapping: convert velocity to uniform (Xi) space
-  if (m_mesh_mapping) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto const& fac_ma = m_mesh_map->fac_cc(lev).const_arrays();
-      auto const& detJ_ma = m_mesh_map->detJ_cc(lev).const_arrays();
-      auto const& vel_ma = vel[lev].arrays();
-      // Ghost cells included: setInflowBoundaryVel() has just written the
-      // inflow Dirichlet values there in physical units, and the nodal
-      // projector reads them as the boundary velocity.  Leaving them
-      // unscaled makes the projection enforce u_phys = u_in * fac_n / J
-      // at the inlet instead of u_in.
-      amrex::ParallelFor(
-        vel[lev], vel[lev].nGrowVect(), AMREX_SPACEDIM,
-        [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
-          vel_ma[box_no](i, j, k, n) *=
-            detJ_ma[box_no](i, j, k) / fac_ma[box_no](i, j, k, n);
-        });
-    }
-    amrex::Gpu::streamSynchronize();
-  }
+  scaleMappedProjVel(GetVecOfPtrs(vel), true);
 
   // Done without divU in IAMR
   doNodalProject(
@@ -361,76 +189,15 @@ PeleLM::velocityProjection(
   constexpr int nGhost = 0;
   const int incremental = (is_initIter) != 0 ? 1 : 0;
 
-  // Get sigma.  Shape:
-  //   - standard path:   1 component, value dt/rho    (incompressible uses
-  //                       a constant sigma built downstream in doNodalProject)
-  //   - mesh mapping on: AMREX_SPACEDIM components, component i holds
-  //                       (dt/rho) . J/fac_i^2.  Built for both the
-  //                       incompressible (rho = m_rho) and low-Mach
-  //                       (rho = rhoHalf) paths so the MultiFab-sigma
-  //                       code path is exercised uniformly.
+  // Get sigma: dt/rho^{a_rhoTime} (dt/m_rho incompressible); empty when
+  // incompressible without mesh mapping (constant sigma in doNodalProject)
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> sigma(finest_level + 1);
-  const int sigma_ncomp = m_mesh_mapping ? AMREX_SPACEDIM : 1;
   if ((m_incompressible == 0) || m_mesh_mapping) {
-    // rhoHalf only needed for the low-Mach path
     amrex::Vector<std::unique_ptr<amrex::MultiFab>> rhoHalf;
     if (m_incompressible == 0) {
       rhoHalf = getDensityVect(a_rhoTime);
     }
-    for (int lev = 0; lev <= finest_level; ++lev) {
-
-      sigma[lev] = std::make_unique<amrex::MultiFab>(
-        grids[lev], dmap[lev], sigma_ncomp, nGhost, amrex::MFInfo(),
-        *m_factory[lev]);
-
-      if (!m_mesh_mapping) {
-        auto const& rhoHalf_ma = rhoHalf[lev]->const_arrays();
-        auto const& sigma_ma = sigma[lev]->arrays();
-        amrex::ParallelFor(
-          *rhoHalf[lev], [rhoHalf_ma, sigma_ma, dt = a_dt] AMREX_GPU_DEVICE(
-                           int box_no, int i, int j, int k) noexcept {
-            sigma_ma[box_no](i, j, k) = dt / rhoHalf_ma[box_no](i, j, k);
-          });
-      } else {
-        // Mesh mapping: sigma_i = dt/rho . J/fac_i^2
-        auto const& fac_ma = m_mesh_map->fac_cc(lev).const_arrays();
-        auto const& detJ_ma = m_mesh_map->detJ_cc(lev).const_arrays();
-        auto const& sigma_ma = sigma[lev]->arrays();
-        if (m_incompressible == 0) {
-          auto const& rhoHalf_ma = rhoHalf[lev]->const_arrays();
-          amrex::ParallelFor(
-            *sigma[lev], amrex::IntVect(0), AMREX_SPACEDIM,
-            [=, dt = a_dt] AMREX_GPU_DEVICE(
-              int box_no, int i, int j, int k, int n) noexcept {
-              const amrex::Real f = fac_ma[box_no](i, j, k, n);
-              const amrex::Real dJ = detJ_ma[box_no](i, j, k);
-              sigma_ma[box_no](i, j, k, n) =
-                dt * dJ / (f * f * rhoHalf_ma[box_no](i, j, k));
-            });
-        } else {
-          const amrex::Real rho_const = m_rho;
-          amrex::ParallelFor(
-            *sigma[lev], amrex::IntVect(0), AMREX_SPACEDIM,
-            [=, dt = a_dt] AMREX_GPU_DEVICE(
-              int box_no, int i, int j, int k, int n) noexcept {
-              const amrex::Real f = fac_ma[box_no](i, j, k, n);
-              const amrex::Real dJ = detJ_ma[box_no](i, j, k);
-              sigma_ma[box_no](i, j, k, n) = dt * dJ / (f * f * rho_const);
-            });
-        }
-      }
-#ifdef AMREX_USE_EB
-      amrex::Gpu::streamSynchronize();
-      EB_set_covered(*sigma[lev], 0.0);
-#endif
-#if AMREX_SPACEDIM == 2
-      if (geom[lev].IsRZ()) {
-        amrex::Gpu::streamSynchronize();
-        scaleProj_RZ(lev, *sigma[lev]);
-      }
-#endif
-    }
-    amrex::Gpu::streamSynchronize();
+    makeProjectionSigma(sigma, GetVecOfPtrs(rhoHalf), 0, a_dt, nGhost, true);
   }
 
   // Under mesh mapping the pressure-gradient correction carries a 1/fac_i
@@ -605,23 +372,7 @@ PeleLM::velocityProjection(
   // returns -- vel is aliased into state, so we must restore it, but
   // rhs_cc is function-local and doesn't need a restore.
   if (m_mesh_mapping) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto const& fac_ma = m_mesh_map->fac_cc(lev).const_arrays();
-      auto const& detJ_ma = m_mesh_map->detJ_cc(lev).const_arrays();
-      auto const& vel_ma = vel[lev]->arrays();
-      // Ghost cells included: setInflowBoundaryVel() has just written the
-      // inflow Dirichlet values there in physical units, and the nodal
-      // projector reads them as the boundary velocity.  Leaving them
-      // unscaled makes the projection enforce u_phys = u_in * fac_n / J
-      // at the inlet instead of u_in.
-      amrex::ParallelFor(
-        *vel[lev], vel[lev]->nGrowVect(), AMREX_SPACEDIM,
-        [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
-          vel_ma[box_no](i, j, k, n) *=
-            detJ_ma[box_no](i, j, k) / fac_ma[box_no](i, j, k, n);
-        });
-    }
-    amrex::Gpu::streamSynchronize();
+    scaleMappedProjVel(GetVecOfPtrs(vel), true);
 
     if (!rhs_cc.empty()) {
       for (int lev = 0; lev <= finest_level; ++lev) {
@@ -637,60 +388,10 @@ PeleLM::velocityProjection(
     GetVecOfPtrs(vel), GetVecOfPtrs(sigma), GetVecOfPtrs(rhs_cc), {},
     incremental, a_dt);
 
-  // Correct the AmrWind-inherited limitation in AMReX's nodal projector:
-  // MLNodeLaplacian::mknewu collapses the anisotropic sigma to sigma_x
-  // (the first component of the stored 3-component sigma) when applying
-  // the velocity update to all three components.  That means doNodalProject
-  // left us with
-  //     u_i = u_entry_i - sigma_x . (grad phi)_i
-  // instead of the correct
-  //     u_i = u_entry_i - sigma_i . (grad phi)_i
-  // After doNodalProject, ldata_p->gp holds grad phi (cell-centered,
-  // AMREX_SPACEDIM components).  Apply the per-component correction here
-  // so the mesh-mapping path produces the right answer even without an
-  // AMReX-level fix for mknewu.  Under identity mapping all sigma_i are
-  // equal and the correction is exactly zero, preserving byte-identity.
-  //
-  // Gated on AMREX_MLNODELAP_HAS_MKNEWU_HA: when the AMReX fix is present
-  // (updateVelocity/getFluxes route through the anisotropic mknewu_ha
-  // kernel automatically), this post-hoc correction is unnecessary and
-  // is compiled out.  This keeps PeleLMeX working against both pre- and
-  // post-fix AMReX.
-#if !defined(AMREX_MLNODELAP_HAS_MKNEWU_HA)
-  if (m_mesh_mapping) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
-      auto const& sigma_ma = sigma[lev]->const_arrays();
-      auto const& gp_ma = ldata_p->gp.const_arrays();
-      auto const& vel_ma = vel[lev]->arrays();
-      amrex::ParallelFor(
-        *vel[lev], amrex::IntVect(0), AMREX_SPACEDIM,
-        [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
-          const amrex::Real sig_x = sigma_ma[box_no](i, j, k, 0);
-          const amrex::Real sig_n = sigma_ma[box_no](i, j, k, n);
-          vel_ma[box_no](i, j, k, n) +=
-            (sig_x - sig_n) * gp_ma[box_no](i, j, k, n);
-        });
-    }
-    amrex::Gpu::streamSynchronize();
-  }
-#endif
+  correctMappedNodalVel(GetVecOfPtrs(vel), GetVecOfPtrs(sigma));
 
   // Mesh mapping: scale U^{n+1} back to physical space (u_i *= fac_i/J).
-  if (m_mesh_mapping) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto const& fac_ma = m_mesh_map->fac_cc(lev).const_arrays();
-      auto const& detJ_ma = m_mesh_map->detJ_cc(lev).const_arrays();
-      auto const& vel_ma = vel[lev]->arrays();
-      amrex::ParallelFor(
-        *vel[lev], vel[lev]->nGrowVect(), AMREX_SPACEDIM,
-        [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
-          vel_ma[box_no](i, j, k, n) *=
-            fac_ma[box_no](i, j, k, n) / detJ_ma[box_no](i, j, k);
-        });
-    }
-    amrex::Gpu::streamSynchronize();
-  }
+  scaleMappedProjVel(GetVecOfPtrs(vel), false);
 
 #if AMREX_SPACEDIM == 2
   // Unscaling New vel before adding back old one
@@ -723,6 +424,152 @@ PeleLM::velocityProjection(
   if (m_mesh_mapping) {
     averageDownVelocity(AmrNewTime);
   }
+#endif
+}
+
+// Projection sigma, allocated here with a_nGhost ghost cells: a_dt/rho, or
+// with mesh mapping a_dt/rho . J/fac_i^2 in component i. rho is component
+// a_rhoComp of a_rho, or m_rho when incompressible (a_rho unused).
+void
+PeleLM::makeProjectionSigma(
+  amrex::Vector<std::unique_ptr<amrex::MultiFab>>& a_sigma,
+  const amrex::Vector<amrex::MultiFab*>& a_rho,
+  const int a_rhoComp,
+  const amrex::Real a_dt,
+  const int a_nGhost,
+  const bool a_setCovered)
+{
+  const int sigma_ncomp = m_mesh_mapping ? AMREX_SPACEDIM : 1;
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    a_sigma[lev] = std::make_unique<amrex::MultiFab>(
+      grids[lev], dmap[lev], sigma_ncomp, a_nGhost, amrex::MFInfo(),
+      *m_factory[lev]);
+    auto const& sigma_ma = a_sigma[lev]->arrays();
+    if (!m_mesh_mapping) {
+      auto const& rho_ma = a_rho[lev]->const_arrays();
+      amrex::ParallelFor(
+        *a_rho[lev],
+        [rho_ma, sigma_ma, rc = a_rhoComp,
+         dt = a_dt] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+          sigma_ma[box_no](i, j, k) = dt / rho_ma[box_no](i, j, k, rc);
+        });
+    } else {
+      auto const& fac_ma = m_mesh_map->fac_cc(lev).const_arrays();
+      auto const& detJ_ma = m_mesh_map->detJ_cc(lev).const_arrays();
+      if (m_incompressible == 0) {
+        auto const& rho_ma = a_rho[lev]->const_arrays();
+        amrex::ParallelFor(
+          *a_sigma[lev], amrex::IntVect(0), AMREX_SPACEDIM,
+          [=, rc = a_rhoComp, dt = a_dt] AMREX_GPU_DEVICE(
+            int box_no, int i, int j, int k, int n) noexcept {
+            const amrex::Real f = fac_ma[box_no](i, j, k, n);
+            const amrex::Real dJ = detJ_ma[box_no](i, j, k);
+            sigma_ma[box_no](i, j, k, n) =
+              dt * dJ / (f * f * rho_ma[box_no](i, j, k, rc));
+          });
+      } else {
+        const amrex::Real rho_const = m_rho;
+        amrex::ParallelFor(
+          *a_sigma[lev], amrex::IntVect(0), AMREX_SPACEDIM,
+          [=, dt = a_dt] AMREX_GPU_DEVICE(
+            int box_no, int i, int j, int k, int n) noexcept {
+            const amrex::Real f = fac_ma[box_no](i, j, k, n);
+            const amrex::Real dJ = detJ_ma[box_no](i, j, k);
+            sigma_ma[box_no](i, j, k, n) = dt * dJ / (f * f * rho_const);
+          });
+      }
+    }
+#ifdef AMREX_USE_EB
+    if (a_setCovered) {
+      amrex::Gpu::streamSynchronize();
+      EB_set_covered(*a_sigma[lev], 0.0);
+    }
+#else
+    amrex::ignore_unused(a_setCovered);
+#endif
+#if AMREX_SPACEDIM == 2
+    if (geom[lev].IsRZ()) {
+      amrex::Gpu::streamSynchronize();
+      scaleProj_RZ(lev, *a_sigma[lev]);
+    }
+#endif
+  }
+  amrex::Gpu::streamSynchronize();
+}
+
+// Mesh mapping: projection velocity to Xi space (a_toXi, u_i *= J/fac_i) or
+// back (u_i *= fac_i/J). No-op without mapping. Ghost cells included:
+// setInflowBoundaryVel() writes the inflow Dirichlet values there in
+// physical units, and the nodal projector reads them as the boundary
+// velocity. Leaving them unscaled makes the projection enforce
+// u_phys = u_in * fac_n / J at the inlet instead of u_in.
+void
+PeleLM::scaleMappedProjVel(
+  const amrex::Vector<amrex::MultiFab*>& a_vel, const bool a_toXi)
+{
+  if (!m_mesh_mapping) {
+    return;
+  }
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    auto const& fac_ma = m_mesh_map->fac_cc(lev).const_arrays();
+    auto const& detJ_ma = m_mesh_map->detJ_cc(lev).const_arrays();
+    auto const& vel_ma = a_vel[lev]->arrays();
+    amrex::ParallelFor(
+      *a_vel[lev], a_vel[lev]->nGrowVect(), AMREX_SPACEDIM,
+      [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
+        const amrex::Real f = fac_ma[box_no](i, j, k, n);
+        const amrex::Real dJ = detJ_ma[box_no](i, j, k);
+        vel_ma[box_no](i, j, k, n) *= a_toXi ? dJ / f : f / dJ;
+      });
+  }
+  amrex::Gpu::streamSynchronize();
+}
+
+// Correct the AmrWind-inherited limitation in AMReX's nodal projector:
+// MLNodeLaplacian::mknewu collapses the anisotropic sigma to sigma_x
+// (the first component of the stored 3-component sigma) when applying
+// the velocity update to all three components.  That means doNodalProject
+// left us with
+//     u_i = u_entry_i - sigma_x . (grad phi)_i
+// instead of the correct
+//     u_i = u_entry_i - sigma_i . (grad phi)_i
+// After doNodalProject, ldata_p->gp holds grad phi (cell-centered,
+// AMREX_SPACEDIM components).  Apply the per-component correction here
+// so the mesh-mapping path produces the right answer even without an
+// AMReX-level fix for mknewu.  Under identity mapping all sigma_i are
+// equal and the correction is exactly zero, preserving byte-identity.
+//
+// Gated on AMREX_MLNODELAP_HAS_MKNEWU_HA: when the AMReX fix is present
+// (updateVelocity/getFluxes route through the anisotropic mknewu_ha
+// kernel automatically), this post-hoc correction is unnecessary and
+// is compiled out.  This keeps PeleLMeX working against both pre- and
+// post-fix AMReX.
+void
+PeleLM::correctMappedNodalVel(
+  const amrex::Vector<amrex::MultiFab*>& a_vel,
+  const amrex::Vector<amrex::MultiFab*>& a_sigma)
+{
+#if !defined(AMREX_MLNODELAP_HAS_MKNEWU_HA)
+  if (!m_mesh_mapping) {
+    return;
+  }
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
+    auto const& sigma_ma = a_sigma[lev]->const_arrays();
+    auto const& gp_ma = ldata_p->gp.const_arrays();
+    auto const& vel_ma = a_vel[lev]->arrays();
+    amrex::ParallelFor(
+      *a_vel[lev], amrex::IntVect(0), AMREX_SPACEDIM,
+      [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
+        const amrex::Real sig_x = sigma_ma[box_no](i, j, k, 0);
+        const amrex::Real sig_n = sigma_ma[box_no](i, j, k, n);
+        vel_ma[box_no](i, j, k, n) +=
+          (sig_x - sig_n) * gp_ma[box_no](i, j, k, n);
+      });
+  }
+  amrex::Gpu::streamSynchronize();
+#else
+  amrex::ignore_unused(a_vel, a_sigma);
 #endif
 }
 
