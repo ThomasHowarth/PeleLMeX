@@ -286,6 +286,14 @@ PeleLM::macProject(
 
   const int has_divu = static_cast<int>(!a_divu.empty());
   const bool setBeta = a_updateBeta || macproj->needInitialization();
+  // Kept coefficients must have been built for the same density and dt
+  const amrex::Real betaTime = getTime(0, a_time);
+  if (setBeta) {
+    m_macBetaTime = betaTime;
+    m_macBetaDt = m_dt;
+  } else {
+    AMREX_ALWAYS_ASSERT(betaTime == m_macBetaTime && m_dt == m_macBetaDt);
+  }
 
   // Get face rho inv
   auto bcRec = fetchBCRecArray(DENSITY, 1);

@@ -2559,6 +2559,9 @@ public:
   std::unique_ptr<DiffusionOp> m_mcdiffusion_op;
   std::unique_ptr<DiffusionTensorOp> m_diffusionTensor_op;
   std::unique_ptr<Hydro::MacProjector> macproj;
+  // Time and dt the MAC projector coefficients were last built for
+  amrex::Real m_macBetaTime{-1.0};
+  amrex::Real m_macBetaDt{-1.0};
   int m_macProjNeedReset{0};
   int m_macProjOldSize{0};
 

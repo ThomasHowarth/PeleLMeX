@@ -245,6 +245,9 @@ PeleLM::Advance(const int is_initIter)
   }
   // Re-evaluate viscosity only if scalar updated. With divu, calcDivU has
   // just evaluated the transport (including mu) on the post-SDC state.
+  // This relies on that call using computeDiffusionTerm = 1 (it runs
+  // calcDiffusivity(AmrNewTime)) and on nothing changing the new state in
+  // between: otherwise diff_cc would hold a stale mu.
   if (m_incompressible == 0) {
     if (m_has_divu != 0) {
       setViscosityFromDiffusivity(AmrNewTime);
@@ -391,6 +394,20 @@ PeleLM::oneSDC(
   // (macProject overwrites umac), unless the external sources it includes
   // are updated in the iterations.
   const bool keepPrediction = (m_nSDCmax > 1) && !m_ext_sources_SDC;
+  // Copy all the face components, ghosts included
+  const auto copyFaces =
+    [this](
+      amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_dst,
+      const amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>&
+        a_src) {
+      for (int lev = 0; lev <= finest_level; ++lev) {
+        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+          amrex::MultiFab::Copy(
+            a_dst[lev][idim], a_src[lev][idim], 0, 0, 1,
+            a_src[lev][idim].nGrowVect());
+        }
+      }
+    };
   if (sdcIter == 1 || !keepPrediction) {
     predictVelocity(advData);
     if (keepPrediction) {
@@ -401,18 +418,16 @@ PeleLM::oneSDC(
           advData->umac_pred[lev][idim].define(
             umac.boxArray(), umac.DistributionMap(), 1, umac.nGrowVect(),
             amrex::MFInfo(), umac.Factory());
-          amrex::MultiFab::Copy(
-            advData->umac_pred[lev][idim], umac, 0, 0, 1, umac.nGrowVect());
         }
       }
+      copyFaces(advData->umac_pred, advData->umac);
     }
   } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-        auto& umac = advData->umac[lev][idim];
-        amrex::MultiFab::Copy(
-          umac, advData->umac_pred[lev][idim], 0, 0, 1, umac.nGrowVect());
-      }
+    copyFaces(advData->umac, advData->umac_pred);
+    if (sdcIter == m_nSDCmax) {
+      // Not needed any more: free it once the copy kernels are done
+      amrex::Gpu::streamSynchronize();
+      advData->umac_pred.clear();
     }
   }
 
