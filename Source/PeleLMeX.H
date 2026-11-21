@@ -464,6 +464,21 @@ public:
     const amrex::Vector<const amrex::MultiFab*>& rhs_nd,
     const int incremental,
     const amrex::Real scaling_factor);
+
+  void makeProjectionSigma(
+    amrex::Vector<std::unique_ptr<amrex::MultiFab>>& a_sigma,
+    const amrex::Vector<amrex::MultiFab*>& a_rho,
+    const int a_rhoComp,
+    const amrex::Real a_dt,
+    const int a_nGhost,
+    const bool a_setCovered);
+
+  void scaleMappedProjVel(
+    const amrex::Vector<amrex::MultiFab*>& a_vel, const bool a_toXi);
+
+  void correctMappedNodalVel(
+    const amrex::Vector<amrex::MultiFab*>& a_vel,
+    const amrex::Vector<amrex::MultiFab*>& a_sigma);
 #if AMREX_SPACEDIM == 2
   /**
    * \brief For 2D-RZ, scale multifab components by radius
