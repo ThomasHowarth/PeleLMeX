@@ -52,6 +52,87 @@ PeleLM::computeSootSource(const TimeStamp a_timestamp, const amrex::Real a_dt)
 }
 
 void
+PeleLM::computeSootSourceSDC(
+  const std::unique_ptr<AdvanceDiffData>& diffData, const bool a_withForcing)
+{
+  BL_PROFILE("PeleLMeX::computeSootSourceSDC()");
+  constexpr bool pres_term =
+    false; // Do not include change in pressure in energy
+  const amrex::Real dtinv = 1.0 / m_dt;
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    auto* ldataOld_p = getLevelDataPtr(lev, AmrOldTime);
+    auto* ldataNew_p = getLevelDataPtr(lev, AmrNewTime);
+    auto& sootSrc = diffData->sootSrc[lev];
+    const auto ng = sootSrc.nGrowVect();
+
+    // Forcing: everything that moved the t^{n+1,k} iterate except the soot
+    // source it used, F = (Phi^{n+1,k} - Phi^n) / dt - S_soot
+    amrex::MultiFab forcing;
+    if (a_withForcing) {
+      forcing.define(
+        grids[lev], dmap[lev], NVAR, ng, amrex::MFInfo(), *m_factory[lev]);
+      auto const& f_ma = forcing.arrays();
+      auto const& so_ma = ldataOld_p->state.const_arrays();
+      auto const& sn_ma = ldataNew_p->state.const_arrays();
+      auto const& src_ma = sootSrc.const_arrays();
+      amrex::ParallelFor(
+        forcing, ng, NVAR - DENSITY,
+        [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
+          const int c = DENSITY + n;
+          f_ma[box_no](i, j, k, c) =
+            (sn_ma[box_no](i, j, k, c) - so_ma[box_no](i, j, k, c)) * dtinv -
+            src_ma[box_no](i, j, k, c);
+        });
+      amrex::Gpu::streamSynchronize();
+    }
+
+    sootSrc.setVal(0.0);
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+    for (amrex::MFIter mfi(sootSrc, amrex::TilingIfNotGPU()); mfi.isValid();
+         ++mfi) {
+      amrex::Box const& gbx = mfi.growntilebox();
+      auto const& state_arr = ldataOld_p->state.const_array(mfi, DENSITY);
+      auto const& mu = ldataOld_p->visc_cc.const_array(mfi, 0);
+      auto const& source_arr = sootSrc.array(mfi, DENSITY);
+      SootModel::SootForcing sf;
+      if (a_withForcing) {
+        sf.forcing = forcing.const_array(mfi, DENSITY);
+        sf.Qstate_end = ldataNew_p->state.const_array(mfi, DENSITY);
+      }
+      soot_model->computeSootSourceTerm(
+        gbx, state_arr, mu, source_arr, getTime(lev, AmrOldTime), m_dt,
+        pres_term, sf);
+    }
+  }
+}
+
+void
+PeleLM::computeSootRate(
+  const TimeStamp a_timestamp, amrex::Vector<amrex::MultiFab>& a_dst)
+{
+  BL_PROFILE("PeleLMeX::computeSootRate()");
+  constexpr bool pres_term =
+    false; // Do not include change in pressure in energy
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    auto* ldata_p = getLevelDataPtr(lev, a_timestamp);
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+    for (amrex::MFIter mfi(a_dst[lev], amrex::TilingIfNotGPU()); mfi.isValid();
+         ++mfi) {
+      amrex::Box const& gbx = mfi.growntilebox();
+      auto const& state_arr = ldata_p->state.const_array(mfi, DENSITY);
+      auto const& mu = ldata_p->visc_cc.const_array(mfi, 0);
+      auto const& source_arr = a_dst[lev].array(mfi, DENSITY);
+      soot_model->computeSootSourceRate(
+        gbx, state_arr, mu, source_arr, pres_term);
+    }
+  }
+}
+
+void
 PeleLM::clipSootMoments()
 {
   SootData* sd = soot_model->getSootData_d();

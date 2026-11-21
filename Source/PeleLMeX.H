@@ -278,6 +278,14 @@ public:
     amrex::Vector<amrex::MultiFab> extSrc_n;
     amrex::Vector<amrex::MultiFab> extSrc_np1;
     amrex::Vector<amrex::MultiFab> extSrc_frozen;
+
+    // soot_SDC only: the soot source used by the current SDC iteration,
+    // integrated over the step from t^n with the forcing of the previous
+    // iterate, and the instantaneous soot rate at t^n and t^(n+1,k), which
+    // are part of extSrc_n / extSrc_np1 (for divU)
+    amrex::Vector<amrex::MultiFab> sootSrc;
+    amrex::Vector<amrex::MultiFab> sootRate_n;
+    amrex::Vector<amrex::MultiFab> sootRate_np1;
   };
   /**
    * \brief Advance function data container for advection term
@@ -970,6 +978,16 @@ public:
   void computeSootSource(
     const PeleLM::TimeStamp a_timestamp, const amrex::Real a_dt);
 
+  // soot_SDC: integrate the soot source over the step from t^n into
+  // diffData->sootSrc. a_withForcing: with the forcing of the t^{n+1,k}
+  // iterate (everything but the soot source it used), otherwise alone.
+  void computeSootSourceSDC(
+    const std::unique_ptr<AdvanceDiffData>& diffData, const bool a_withForcing);
+
+  // Add the instantaneous soot source rate at a_timestamp into a_dst
+  void computeSootRate(
+    const PeleLM::TimeStamp a_timestamp, amrex::Vector<amrex::MultiFab>& a_dst);
+
   // Clip soot moments
   void clipSootMoments();
 
@@ -1005,8 +1023,8 @@ public:
     const PeleLM::TimeStamp a_timestamp_new,
     const amrex::Vector<amrex::MultiFab>* a_frozen);
 
-  void
-  updateExternalSourcesSDC(const std::unique_ptr<AdvanceDiffData>& diffData);
+  void updateExternalSourcesSDC(
+    const std::unique_ptr<AdvanceDiffData>& diffData, const bool a_inSDC);
 
   //-----------------------------------------------------------------------------
   // EOS
@@ -2210,6 +2228,9 @@ public:
   // Soot parameters
   SootModel* soot_model = nullptr;
   bool do_soot_solve;
+  // Integrate the soot source in each SDC iteration with the forcing of the
+  // previous iterate (needs ext_sources_SDC), instead of once from t^n alone
+  bool m_soot_SDC{false};
 #endif
 
 #ifdef PELE_USE_RADIATION

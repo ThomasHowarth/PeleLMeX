@@ -441,11 +441,39 @@ PeleLM::getExternalSources(
       grids[lev], dmap[lev], NVAR, ext.nGrowVect(), amrex::MFInfo(),
       *m_factory[lev]);
   }
+
+#ifdef PELE_USE_SOOT
+  // soot_SDC: divU^n sees the instantaneous soot rate at t^n, and the first
+  // SDC iteration the soot source integrated from t^n alone, as without
+  // soot_SDC
+  if (m_soot_SDC) {
+    for (auto* v :
+         {&diffData->sootSrc, &diffData->sootRate_n, &diffData->sootRate_np1}) {
+      for (int lev = 0; lev <= finest_level; ++lev) {
+        v->emplace_back(
+          grids[lev], dmap[lev], NVAR, m_extSource[lev]->nGrowVect(),
+          amrex::MFInfo(), *m_factory[lev]);
+        (*v)[lev].setVal(0.0);
+      }
+    }
+    computeSootRate(a_timestamp_old, diffData->sootRate_n);
+    computeSootSourceSDC(diffData, false);
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      const auto ng = m_extSource[lev]->nGrowVect();
+      amrex::MultiFab::Add(
+        diffData->extSrc_n[lev], diffData->sootRate_n[lev], 0, 0, NVAR, ng);
+      amrex::MultiFab::Add(
+        *m_extSource[lev], diffData->sootSrc[lev], 0, 0, NVAR, ng);
+    }
+  }
+#endif
 }
 
 // Spray advances its own particles (MKD), soot integrates its source over dt
 // internally and radiation needs a global solve, so these are only evaluated
-// once per step, from t^n. Returns whether any of them is active.
+// once per step, from t^n. With soot_SDC, soot is integrated in each SDC
+// iteration instead (see computeSootSourceSDC). Returns whether any of them is
+// active.
 bool
 PeleLM::addFrozenExternalSources(
   const int is_initIter, const PeleLM::TimeStamp a_timestamp)
@@ -459,7 +487,7 @@ PeleLM::addFrozenExternalSources(
   }
 #endif
 #ifdef PELE_USE_SOOT
-  if (do_soot_solve) {
+  if (do_soot_solve && !m_soot_SDC) {
     computeSootSource(a_timestamp, m_dt);
     added = true;
   }
@@ -511,21 +539,52 @@ PeleLM::assembleExternalSources(
 }
 
 // ext_sources_SDC: S^{n+1,k} from the new state into diffData->extSrc_np1,
-// and m_extSource <- 0.5 (S^n + S^{n+1,k})
+// and m_extSource <- 0.5 (S^n + S^{n+1,k}).
+// soot_SDC: extSrc_n / extSrc_np1 carry the instantaneous soot rates (for
+// divU), while m_extSource carries the soot source integrated over the step.
+// a_inSDC re-integrates it from the t^{n+1,k} iterate; after the SDC loop it
+// is kept, so that the velocity sees the mass source the scalars used.
 void
 PeleLM::updateExternalSourcesSDC(
-  const std::unique_ptr<AdvanceDiffData>& diffData)
+  const std::unique_ptr<AdvanceDiffData>& diffData, const bool a_inSDC)
 {
   BL_PROFILE("PeleLMeX::updateExternalSourcesSDC()");
+  amrex::ignore_unused(a_inSDC);
   for (int lev = 0; lev <= finest_level; ++lev) {
     m_extSource[lev]->setVal(0.0);
   }
   assembleExternalSources(0, AmrNewTime, AmrNewTime, &diffData->extSrc_frozen);
+  bool soot_SDC = false;
+#ifdef PELE_USE_SOOT
+  soot_SDC = m_soot_SDC;
+  if (soot_SDC) {
+    if (a_inSDC) {
+      computeSootSourceSDC(diffData, true);
+    }
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      diffData->sootRate_np1[lev].setVal(0.0);
+    }
+    computeSootRate(AmrNewTime, diffData->sootRate_np1);
+  }
+#endif
   for (int lev = 0; lev <= finest_level; ++lev) {
     auto& ext = *m_extSource[lev];
+    const auto ng = ext.nGrowVect();
     std::swap(ext, diffData->extSrc_np1[lev]);
+    if (soot_SDC) {
+      amrex::MultiFab::Add(
+        diffData->extSrc_np1[lev], diffData->sootRate_np1[lev], 0, 0, NVAR,
+        ng);
+    }
     amrex::MultiFab::LinComb(
       ext, 0.5, diffData->extSrc_n[lev], 0, 0.5, diffData->extSrc_np1[lev], 0,
-      0, NVAR, ext.nGrowVect());
+      0, NVAR, ng);
+    if (soot_SDC) {
+      amrex::MultiFab::Saxpy(
+        ext, -0.5, diffData->sootRate_n[lev], 0, 0, NVAR, ng);
+      amrex::MultiFab::Saxpy(
+        ext, -0.5, diffData->sootRate_np1[lev], 0, 0, NVAR, ng);
+      amrex::MultiFab::Add(ext, diffData->sootSrc[lev], 0, 0, NVAR, ng);
+    }
   }
 }
