@@ -29,8 +29,10 @@ PeleLM::initTemporals(const PeleLM::TimeStamp a_time)
   }
 
   if ((m_do_speciesBalance != 0) && (m_incompressible == 0)) {
+    // Species aliases built once, not per species
+    const auto rhoY = getSpeciesVect(a_time);
     for (int n = 0; n < NUM_SPECIES; ++n) {
-      m_RhoYOld[n] = MFSum(GetVecOfConstPtrs(getSpeciesVect(a_time)), n);
+      m_RhoYOld[n] = MFSum(GetVecOfConstPtrs(rhoY), n);
       for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
         m_domainRhoYFlux[2 * n * AMREX_SPACEDIM + 2 * idim] = 0.0;
         m_domainRhoYFlux[1 + 2 * n * AMREX_SPACEDIM + 2 * idim] = 0.0;
@@ -89,10 +91,12 @@ PeleLM::speciesBalance()
   amrex::Array<amrex::Real, NUM_SPECIES> dmYdt;
   amrex::Array<amrex::Real, NUM_SPECIES> massYFluxBalance;
   amrex::Array<amrex::Real, NUM_SPECIES> rhoYdots;
+  // Species aliases and reaction rates built once, not per species
+  const auto rhoY = getSpeciesVect(AmrNewTime);
+  const auto IR = (m_do_react != 0) ? getIRVect() : decltype(getIRVect()){};
   for (int n = 0; n < NUM_SPECIES; ++n) {
-    m_RhoYNew[n] = MFSum(GetVecOfConstPtrs(getSpeciesVect(AmrNewTime)), n);
-    rhoYdots[n] =
-      (m_do_react != 0) ? MFSum(GetVecOfConstPtrs(getIRVect()), n) : 0.0;
+    m_RhoYNew[n] = MFSum(GetVecOfConstPtrs(rhoY), n);
+    rhoYdots[n] = (m_do_react != 0) ? MFSum(GetVecOfConstPtrs(IR), n) : 0.0;
     dmYdt[n] = (m_RhoYNew[n] - m_RhoYOld[n]) / m_dt;
     massYFluxBalance[n] = AMREX_D_TERM(
       m_domainRhoYFlux[2 * n * AMREX_SPACEDIM] +
