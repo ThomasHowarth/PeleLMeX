@@ -190,7 +190,7 @@ PeleLM::computeVelocityAdvTerm(const std::unique_ptr<AdvanceAdvData>& advData)
     amrex::MultiFab divTmp(
       grids[lev], dmap[lev], AMREX_SPACEDIM, nGrow_divT, amrex::MFInfo(),
       EBFactory(lev));
-    divTmp.setVal(0.0);
+    divTmp.setBndry(0.0); // advFluxDivergence fills every valid cell
     if (m_useEBinflow != 0) {
       advFluxDivergence(
         lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
@@ -383,6 +383,18 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
   auto bcRecAux_d = convertToDeviceVector(bcRecAux);
   auto AdvTypeAux = fetchAdvTypeAuxArray(0, m_nAux);
   auto AdvTypeAux_d = convertToDeviceVector(AdvTypeAux);
+#ifdef PELE_USE_PLASMA
+  // The ions, last among the species, are advected one by one with their
+  // drift velocity: their BCs and advection types, built once
+  constexpr int firstIon = FIRSTSPEC + NUM_SPECIES - NUM_IONS;
+  amrex::Vector<amrex::Vector<amrex::BCRec>> bcRecIons(NUM_IONS);
+  for (int n = 0; n < NUM_IONS; ++n) {
+    bcRecIons[n] = fetchBCRecArray(firstIon + n, 1);
+  }
+  auto bcRecIons_d = convertToDeviceVector(fetchBCRecArray(firstIon, NUM_IONS));
+  auto AdvTypeIons_d =
+    convertToDeviceVector(fetchAdvTypeArray(firstIon, NUM_IONS));
+#endif
   //----------------------------------------------------------------
   // Create temporary containers
   amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> fluxes(
@@ -503,10 +515,6 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
       // Ions one by one
       for (int n = 0; n < NUM_IONS; ++n) {
         const int ion_idx = NUM_SPECIES - NUM_IONS + n;
-        auto bcRecIons = fetchBCRecArray(FIRSTSPEC + ion_idx, 1);
-        auto bcRecIons_d = convertToDeviceVector(bcRecIons);
-        auto AdvTypeIons = fetchAdvTypeArray(FIRSTSPEC + ion_idx, 1);
-        auto AdvTypeIons_d = convertToDeviceVector(AdvTypeIons);
         AMREX_D_TERM(
           auto const& udrift = advData->uDrift[lev][0].const_array(mfi, n);
           , auto const& vdrift = advData->uDrift[lev][1].const_array(mfi, n);
@@ -527,8 +535,8 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
           bx, 1, mfi, rhoYions_arr, AMREX_D_DECL(fx_ions, fy_ions, fz_ions),
           AMREX_D_DECL(edgex_ions, edgey_ions, edgez_ions), knownEdgeState,
           AMREX_D_DECL(udrift, vdrift, wdrift), divu_arr, forceions_arr,
-          geom[lev], m_dt, bcRecIons, bcRecIons_d.dataPtr(),
-          AdvTypeIons_d.dataPtr(),
+          geom[lev], m_dt, bcRecIons[n], bcRecIons_d.dataPtr() + n,
+          AdvTypeIons_d.dataPtr() + n,
 #ifdef AMREX_USE_EB
           ebfact,
           (m_useEBinflow != 0)
@@ -899,7 +907,7 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
     amrex::MultiFab divTmp(
       grids[lev], dmap[lev], NUM_SPECIES + 1, nGrow_divTmp, amrex::MFInfo(),
       EBFactory(lev));
-    divTmp.setVal(0.0);
+    divTmp.setBndry(0.0); // advFluxDivergence fills every valid cell
     if (m_useEBinflow != 0) {
       advFluxDivergence(
         lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
@@ -936,7 +944,7 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
       amrex::MultiFab divTmp_aux(
         grids[lev], dmap[lev], m_nAux, nGrow_divTmp, amrex::MFInfo(),
         EBFactory(lev));
-      divTmp_aux.setVal(0.0);
+      divTmp_aux.setBndry(0.0); // advFluxDivergence fills every valid cell
       advFluxDivergence(
         lev, divTmp_aux, 0, divu, GetArrOfConstPtrs(fluxes_aux[lev]), 0,
         GetArrOfConstPtrs(edgeState_aux[lev]), 0, m_nAux,
@@ -1178,7 +1186,7 @@ PeleLM::computePassiveAdvTerms(
     amrex::MultiFab divTmp(
       grids[lev], dmap[lev], ncomp, nGrow_divTmp, amrex::MFInfo(),
       EBFactory(lev));
-    divTmp.setVal(0.0);
+    divTmp.setBndry(0.0); // advFluxDivergence fills every valid cell
     advFluxDivergence(
       lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
       GetArrOfConstPtrs(edgeState[lev]), 0, ncomp, AdvTypeAll_d.dataPtr(),
