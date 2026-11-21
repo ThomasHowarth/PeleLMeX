@@ -206,10 +206,11 @@ PeleLM::averageDownState(const TimeStamp a_time)
   const int nc_rest = nCompState() - AMREX_SPACEDIM;
   if (nc_rest > 0) {
     if (m_mesh_mapping) {
-      // detJ-weighted restriction of [DENSITY..RHOH]; components after
-      // RHOH (TEMP, RHORT, aux) use arithmetic and the derived ones are
-      // overwritten by the EOS recompute below.
-      averageDownConservedDensities(a_time);
+      // detJ-weighted (volume-conservative) restriction of [DENSITY..RHOH];
+      // linear per component, so rho = sum(rhoY) is preserved. Components
+      // after RHOH (TEMP, RHORT, aux) use arithmetic and the derived ones
+      // are overwritten by the EOS recompute below.
+      averageDownMetricWeighted(a_time, DENSITY, RHOH - DENSITY + 1, false);
 
       const int nc_after = NVAR - (RHOH + 1);
       if (nc_after > 0) {
@@ -242,7 +243,7 @@ PeleLM::averageDownScalars(const TimeStamp a_time)
     // detJ-weighted restriction of [DENSITY..RHOH]; the rest of the
     // nScal block (TEMP, RHORT/plasma extras) uses arithmetic, with the
     // derived state restored by the EOS recompute below.
-    averageDownConservedDensities(a_time);
+    averageDownMetricWeighted(a_time, DENSITY, RHOH - DENSITY + 1, false);
 
     const int nc_dens = RHOH - DENSITY + 1; // rho + NUM_SPECIES rhoY + rhoH
     const int nc_after = nScal - nc_dens;
@@ -274,13 +275,7 @@ PeleLM::averageDown(
   const int ncomp,
   amrex::MultiFab LevelData::* a_field)
 {
-  for (int lev = finest_level; lev > 0; --lev) {
-    auto* ldataFine_p = getLevelDataPtr(lev, a_time);
-    auto* ldataCrse_p = getLevelDataPtr(lev - 1, a_time);
-    eb_average_down(
-      ldataFine_p->*a_field, ldataCrse_p->*a_field, scomp, ncomp,
-      refRatio(lev - 1));
-  }
+  averageDown(getFieldVect(a_time, a_field), scomp, ncomp);
 }
 
 void
@@ -352,15 +347,37 @@ PeleLM::averageDownVelocity(const TimeStamp a_time)
   }
 }
 
-void
-PeleLM::averageDownConservedDensities(const TimeStamp a_time)
+amrex::MultiFab
+PeleLM::metricWeightedToXi(
+  amrex::MultiFab const& a_state,
+  const int a_lev,
+  const int scomp,
+  const int ncomp,
+  const bool divide_by_fac)
 {
-  // Volume-conservative restriction of [DENSITY..RHOH] = {rho, rhoY, rhoH}
-  // with the cell-volume weight detJ only (scalar densities, not a flux).
-  // Linear and identical per component, so rho = sum(rhoY) is preserved;
-  // TEMP/RHORT are recomputed by the caller.
-  AMREX_ASSERT(m_mesh_mapping && (m_mesh_map != nullptr));
-  averageDownMetricWeighted(a_time, DENSITY, RHOH - DENSITY + 1, false);
+  // Copy of a_state components [scomp, scomp + ncomp) multiplied by detJ,
+  // and divided by fac_n when divide_by_fac (fac_cc is only read then).
+  amrex::MultiFab xi(
+    a_state.boxArray(), a_state.DistributionMap(), ncomp, 0, amrex::MFInfo(),
+    a_state.Factory());
+  amrex::MultiFab::Copy(xi, a_state, scomp, 0, ncomp, 0);
+  amrex::MultiArray4<amrex::Real const> fac_ma{};
+  if (divide_by_fac) {
+    fac_ma = m_mesh_map->fac_cc(a_lev).const_arrays();
+  }
+  auto const& detJ_ma = m_mesh_map->detJ_cc(a_lev).const_arrays();
+  auto const& xi_ma = xi.arrays();
+  amrex::ParallelFor(
+    xi, amrex::IntVect(0), ncomp,
+    [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
+      if (divide_by_fac) {
+        xi_ma[box_no](i, j, k, n) *=
+          detJ_ma[box_no](i, j, k) / fac_ma[box_no](i, j, k, n);
+      } else {
+        xi_ma[box_no](i, j, k, n) *= detJ_ma[box_no](i, j, k);
+      }
+    });
+  return xi;
 }
 
 void
@@ -370,45 +387,29 @@ PeleLM::averageDownMetricWeighted(
   const int ncomp,
   const bool divide_by_fac)
 {
-  // Stage state components [scomp, scomp + ncomp) in Xi-space (multiply by
-  // detJ, and divide by fac_n when divide_by_fac), arithmetic-average (which
-  // IS volume-conservative on the uniform Xi mesh), and convert back to
-  // physical space on the coarse level. The coarse level is staged too, so
-  // average_down overwrites only the covered region and the rest
-  // round-trips. No divide guard needed (unlike MeshMappedCellConsInterp,
-  // which operates on seeded temporaries): detJ/fac are the MeshMap metrics,
-  // strictly positive by construction and defined on every valid cell.
-  // fac_cc is only read when divide_by_fac, i.e. for the velocity block.
+  // Stage state components [scomp, scomp + ncomp) in Xi-space (see
+  // metricWeightedToXi), arithmetic-average (which IS volume-conservative on
+  // the uniform Xi mesh), and convert back to physical space on the coarse
+  // level. The coarse level is staged too, so average_down overwrites only
+  // the covered region and the rest round-trips. No divide guard needed
+  // (unlike MeshMappedCellConsInterp, which operates on seeded temporaries):
+  // detJ/fac are the MeshMap metrics, strictly positive by construction and
+  // defined on every valid cell.
   AMREX_ASSERT(m_mesh_mapping && (m_mesh_map != nullptr));
-  auto toXi = [&](amrex::MultiFab const& state, const int lev) {
-    amrex::MultiFab xi(
-      state.boxArray(), state.DistributionMap(), ncomp, 0, amrex::MFInfo(),
-      state.Factory());
-    amrex::MultiFab::Copy(xi, state, scomp, 0, ncomp, 0);
-    auto const& fac_ma = m_mesh_map->fac_cc(lev).const_arrays();
-    auto const& detJ_ma = m_mesh_map->detJ_cc(lev).const_arrays();
-    auto const& xi_ma = xi.arrays();
-    amrex::ParallelFor(
-      xi, amrex::IntVect(0), ncomp,
-      [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
-        if (divide_by_fac) {
-          xi_ma[box_no](i, j, k, n) *=
-            detJ_ma[box_no](i, j, k) / fac_ma[box_no](i, j, k, n);
-        } else {
-          xi_ma[box_no](i, j, k, n) *= detJ_ma[box_no](i, j, k);
-        }
-      });
-    return xi;
-  };
-
   for (int lev = finest_level; lev > 0; --lev) {
     amrex::MultiFab& stateCrse = getLevelDataPtr(lev - 1, a_time)->state;
-    amrex::MultiFab xi_fine = toXi(getLevelDataPtr(lev, a_time)->state, lev);
-    amrex::MultiFab xi_crse = toXi(stateCrse, lev - 1);
+    amrex::MultiFab xi_fine = metricWeightedToXi(
+      getLevelDataPtr(lev, a_time)->state, lev, scomp, ncomp, divide_by_fac);
+    amrex::MultiFab xi_crse =
+      metricWeightedToXi(stateCrse, lev - 1, scomp, ncomp, divide_by_fac);
 
     eb_average_down(xi_fine, xi_crse, 0, ncomp, refRatio(lev - 1));
 
-    auto const& fac_ma = m_mesh_map->fac_cc(lev - 1).const_arrays();
+    // fac_cc is only read (and fetched) when divide_by_fac
+    amrex::MultiArray4<amrex::Real const> fac_ma{};
+    if (divide_by_fac) {
+      fac_ma = m_mesh_map->fac_cc(lev - 1).const_arrays();
+    }
     auto const& detJ_ma = m_mesh_map->detJ_cc(lev - 1).const_arrays();
     auto const& xi_ma = xi_crse.const_arrays();
     auto const& state_ma = stateCrse.arrays();

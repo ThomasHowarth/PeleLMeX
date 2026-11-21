@@ -1393,15 +1393,19 @@ public:
   void averageDownState(const PeleLM::TimeStamp a_time);
   void averageDownScalars(const PeleLM::TimeStamp a_time);
   void averageDownVelocity(const PeleLM::TimeStamp a_time);
-  //! detJ-weighted (volume-conservative) restriction of the conserved
-  //! density block [DENSITY..RHOH] (rho, rhoY, rhoH) under mesh mapping.
-  //! Derived TEMP/RHORT are not touched; recompute via setTemperature /
-  //! setThermoPress afterward.
-  void averageDownConservedDensities(const PeleLM::TimeStamp a_time);
   //! Restrict state components [scomp, scomp + ncomp) under mesh mapping,
   //! weighted by detJ (and divided by fac_n when divide_by_fac).
   void averageDownMetricWeighted(
     const PeleLM::TimeStamp a_time,
+    const int scomp,
+    const int ncomp,
+    const bool divide_by_fac);
+  //! Xi-space copy of state components [scomp, scomp + ncomp) on level
+  //! a_lev: times detJ, divided by fac_n when divide_by_fac. Public because
+  //! it holds a device lambda.
+  amrex::MultiFab metricWeightedToXi(
+    amrex::MultiFab const& a_state,
+    const int a_lev,
     const int scomp,
     const int ncomp,
     const bool divide_by_fac);
