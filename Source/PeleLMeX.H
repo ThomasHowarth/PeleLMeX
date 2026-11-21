@@ -521,11 +521,14 @@ public:
    * \param a_time time stamp to access the density used in the projection
    * \param advData container for the face-centered velocities umac
    * \param a_divu velocity divergence constraint (can be empty)
+   * \param a_updateBeta false to keep the projector's coefficients from the
+   * previous call (same density and dt)
    */
   void macProject(
     const PeleLM::TimeStamp a_time,
     const std::unique_ptr<AdvanceAdvData>& advData,
-    const amrex::Vector<amrex::MultiFab*>& a_divu);
+    const amrex::Vector<amrex::MultiFab*>& a_divu,
+    const bool a_updateBeta = true);
 
   /**
    * \brief Fill the projected face velocities ghost faces, ensuring

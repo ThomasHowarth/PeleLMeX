@@ -279,17 +279,19 @@ void
 PeleLM::macProject(
   const TimeStamp a_time,
   const std::unique_ptr<AdvanceAdvData>& advData,
-  const amrex::Vector<amrex::MultiFab*>& a_divu)
+  const amrex::Vector<amrex::MultiFab*>& a_divu,
+  const bool a_updateBeta)
 {
   BL_PROFILE("PeleLMeX::macProject()");
 
   const int has_divu = static_cast<int>(!a_divu.empty());
+  const bool setBeta = a_updateBeta || macproj->needInitialization();
 
   // Get face rho inv
   auto bcRec = fetchBCRecArray(DENSITY, 1);
   amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> rho_inv(
     finest_level + 1);
-  for (int lev = 0; lev <= finest_level; ++lev) {
+  for (int lev = 0; setBeta && lev <= finest_level; ++lev) {
     if (m_incompressible != 0) {
       amrex::Real rhoInv = m_dt / (2.0 * m_rho);
       for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
@@ -341,7 +343,8 @@ PeleLM::macProject(
         const auto& fac_ma = m_mesh_map->fac_fc(lev, idim).const_arrays();
         const auto& detJ_ma = m_mesh_map->detJ_fc(lev, idim).const_arrays();
         const auto& umac_ma = advData->umac[lev][idim].arrays();
-        const auto& rhoinv_ma = rho_inv[lev][idim].arrays();
+        // rho_inv is not defined when the coefficients are kept
+        const auto& rhoinv_ma = setBeta ? rho_inv[lev][idim].arrays() : umac_ma;
         const int nc = idim;
         amrex::ParallelFor(
           advData->umac[lev][idim],
@@ -349,7 +352,9 @@ PeleLM::macProject(
             const amrex::Real f = fac_ma[box_no](i, j, k, nc);
             const amrex::Real dJ = detJ_ma[box_no](i, j, k);
             umac_ma[box_no](i, j, k) *= dJ / f;
-            rhoinv_ma[box_no](i, j, k) *= dJ / (f * f);
+            if (setBeta) {
+              rhoinv_ma[box_no](i, j, k) *= dJ / (f * f);
+            }
           });
       }
     }
@@ -386,7 +391,7 @@ PeleLM::macProject(
       macproj->getMLMG().setHypreOptionsNamespace(m_hypre_namespace_mac);
     }
 #endif
-  } else {
+  } else if (setBeta) {
     macproj->updateBeta(GetVecOfArrOfConstPtrs(rho_inv));
   }
 
