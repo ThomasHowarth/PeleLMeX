@@ -1109,8 +1109,10 @@ PeleLM::derive(
       a_state = statemf_filled.get();
     }
     AMREX_ASSERT(a_state->nGrow() >= m_nGrowState);
-    // Get pressure: TODO no fillpatch for pressure just yet, simply get new
-    // state
+    // Pressure is not time-interpolated: it is the latest one, pi^{n+1/2},
+    // held in the new-time level data. All callers derive at m_cur_time,
+    // the new time, so this is the pressure of the step that produced the
+    // state.
     auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
     std::unique_ptr<amrex::MultiFab> reactmf;
     if (m_incompressible == 0 && m_do_react != 0) {
