@@ -152,6 +152,33 @@ public:
     return m_detJ_cc[lev];
   }
 
+  /// a_mf[a_comp, a_comp + a_ncomp) *= detJ_cc, on a_ngrow ghost cells
+  void multiply_by_detJ_cc(
+    int lev,
+    amrex::MultiFab& a_mf,
+    int a_comp,
+    int a_ncomp,
+    int a_ngrow = 0) const
+  {
+    for (int n = 0; n < a_ncomp; ++n) {
+      amrex::MultiFab::Multiply(
+        a_mf, m_detJ_cc[lev], 0, a_comp + n, 1, a_ngrow);
+    }
+  }
+
+  /// a_mf[a_comp, a_comp + a_ncomp) /= detJ_cc, on a_ngrow ghost cells
+  void divide_by_detJ_cc(
+    int lev,
+    amrex::MultiFab& a_mf,
+    int a_comp,
+    int a_ncomp,
+    int a_ngrow = 0) const
+  {
+    for (int n = 0; n < a_ncomp; ++n) {
+      amrex::MultiFab::Divide(a_mf, m_detJ_cc[lev], 0, a_comp + n, 1, a_ngrow);
+    }
+  }
+
   // ---- Nodal accessors ---------------------------------------------------
   amrex::MultiFab& fac_nd(int lev) { return m_fac_nd[lev]; }
   amrex::MultiFab& detJ_nd(int lev) { return m_detJ_nd[lev]; }
