@@ -528,25 +528,17 @@ public:
     const amrex::Vector<amrex::MultiFab*>& a_divu);
 
   /**
-   * \brief Fill the projected face velocities ghost faces, ensuring
-   * that the ghost cell velocities are constrained by the ghost cell
-   * divergence constraint
-   * \param a_lev target level
-   * \param a_nGrow number of ghost faces
-   * \param crse_geom pointer to the geometry of the next coarser level
-   * \param fine_geom pointer to the geometry of the current level
-   * \param u_mac_crse face-centered umac of the next coarser level
-   * \param u_mac_fine face-centered umac of the current level (those updated by
-   * the function) \param divu pointer to the current level divU \param
-   * crse_ratio refinement ratio with the next coarser level
+   * \brief Fill the ghost cells of face data on level lev > 0 from itself and
+   * level lev-1 (interpolated with a_mapper). Domain faces are int_dir when
+   * periodic, foextrap otherwise.
    */
-  void create_constrained_umac_grown(
-    const int a_nGrow,
-    const amrex::Geometry* crse_geom,
-    const amrex::Geometry* fine_geom,
-    const amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>& u_mac_crse,
-    const amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>& u_mac_fine,
-    const amrex::IntVect& crse_ratio);
+  void fillpatchFaces(
+    const int lev,
+    const amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>& a_crse,
+    const amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>& a_fine,
+    const int ncomp,
+    const int nGrow,
+    amrex::Interpolater* a_mapper);
 
   /**
    * \brief Setup the linear operator boundary condition for the
