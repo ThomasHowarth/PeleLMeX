@@ -1745,8 +1745,12 @@ PeleLM::checkProjectionCompatibility(
     sum_rhs += amrex::get<0>(r);
     sum_abs += amrex::get<1>(r);
   }
-  amrex::ParallelDescriptor::ReduceRealSum(sum_rhs);
-  amrex::ParallelDescriptor::ReduceRealSum(sum_abs);
+  {
+    amrex::Real sums[2] = {sum_rhs, sum_abs};
+    amrex::ParallelDescriptor::ReduceRealSum(sums, 2);
+    sum_rhs = sums[0];
+    sum_abs = sums[1];
+  }
 
   const amrex::Real resid = a_bdry_flux + a_rhs_sign * sum_rhs;
   const amrex::Real scale =
@@ -1869,18 +1873,18 @@ PeleLM::checkMACDivuMismatch(
   }
 
   ReduceTuple hv = reduce_data.value(reduce_op);
-  amrex::Real dmax = amrex::get<0>(hv);
+  amrex::Real maxs[3] = {
+    amrex::get<0>(hv), amrex::get<4>(hv), amrex::get<5>(hv)};
+  amrex::Real sums[2] = {amrex::get<2>(hv), amrex::get<3>(hv)};
   amrex::Real dmin = amrex::get<1>(hv);
-  amrex::Real dsum = amrex::get<2>(hv);
-  amrex::Real cnt = amrex::get<3>(hv);
-  amrex::Real smax = amrex::get<4>(hv);
-  amrex::Real jmax = amrex::get<5>(hv);
-  amrex::ParallelDescriptor::ReduceRealMax(dmax);
+  amrex::ParallelDescriptor::ReduceRealMax(maxs, 3);
+  amrex::ParallelDescriptor::ReduceRealSum(sums, 2);
   amrex::ParallelDescriptor::ReduceRealMin(dmin);
-  amrex::ParallelDescriptor::ReduceRealSum(dsum);
-  amrex::ParallelDescriptor::ReduceRealSum(cnt);
-  amrex::ParallelDescriptor::ReduceRealMax(smax);
-  amrex::ParallelDescriptor::ReduceRealMax(jmax);
+  const amrex::Real dmax = maxs[0];
+  const amrex::Real smax = maxs[1];
+  const amrex::Real jmax = maxs[2];
+  const amrex::Real dsum = sums[0];
+  const amrex::Real cnt = sums[1];
 
   if (cnt < 0.5) {
     amrex::Print() << "   ... DIVUCHECK lev " << a_lev << " " << a_who
