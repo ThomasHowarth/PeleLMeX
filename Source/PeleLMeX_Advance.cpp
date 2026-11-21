@@ -386,8 +386,35 @@ PeleLM::oneSDC(
   if (m_verbose > 1) {
     MACStart = amrex::ParallelDescriptor::second();
   }
-  // Predict face velocity with Godunov
-  predictVelocity(advData);
+  // Predict face velocity with Godunov. The prediction only uses t^n data,
+  // so with several SDC iterations it is done once and restored afterwards
+  // (macProject overwrites umac), unless the external sources it includes
+  // are updated in the iterations.
+  const bool keepPrediction = (m_nSDCmax > 1) && !m_ext_sources_SDC;
+  if (sdcIter == 1 || !keepPrediction) {
+    predictVelocity(advData);
+    if (keepPrediction) {
+      advData->umac_pred.resize(finest_level + 1);
+      for (int lev = 0; lev <= finest_level; ++lev) {
+        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+          const auto& umac = advData->umac[lev][idim];
+          advData->umac_pred[lev][idim].define(
+            umac.boxArray(), umac.DistributionMap(), 1, umac.nGrowVect(),
+            amrex::MFInfo(), umac.Factory());
+          amrex::MultiFab::Copy(
+            advData->umac_pred[lev][idim], umac, 0, 0, 1, umac.nGrowVect());
+        }
+      }
+    }
+  } else {
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+        auto& umac = advData->umac[lev][idim];
+        amrex::MultiFab::Copy(
+          umac, advData->umac_pred[lev][idim], 0, 0, 1, umac.nGrowVect());
+      }
+    }
+  }
 
   // Create S^{n+1/2} by fillpatching t^{n} and t^{np1,k}
   createMACRHS(advData);
