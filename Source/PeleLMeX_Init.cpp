@@ -59,12 +59,8 @@ PeleLM::MakeNewLevelFromScratch(
 #endif
 
   // Initialize the LevelData
-  m_leveldata_old[lev] = std::make_unique<LevelData>(
-    grids[lev], dmap[lev], *m_factory[lev], m_incompressible, m_has_divu,
-    m_nAux, m_nGrowState, m_use_soret, static_cast<int>(m_do_les));
-  m_leveldata_new[lev] = std::make_unique<LevelData>(
-    grids[lev], dmap[lev], *m_factory[lev], m_incompressible, m_has_divu,
-    m_nAux, m_nGrowState, m_use_soret, static_cast<int>(m_do_les));
+  m_leveldata_old[lev] = makeLevelData(grids[lev], dmap[lev], *m_factory[lev]);
+  m_leveldata_new[lev] = makeLevelData(grids[lev], dmap[lev], *m_factory[lev]);
 
   if (max_level > 0 && lev != max_level) {
     m_coveredMask[lev] =

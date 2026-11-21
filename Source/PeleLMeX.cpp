@@ -56,9 +56,7 @@ PeleLM::getLevelDataPtr(
   if (a_time == AmrNewTime) {
     return m_leveldata_new[lev].get();
   }
-  m_leveldata_floating = std::make_unique<LevelData>(
-    grids[lev], dmap[lev], *m_factory[lev], m_incompressible, m_has_divu,
-    m_nAux, m_nGrowState, m_use_soret, static_cast<int>(m_do_les));
+  m_leveldata_floating = makeLevelData(grids[lev], dmap[lev], *m_factory[lev]);
   const amrex::Real time = getTime(lev, a_time);
   fillpatch_state(lev, time, m_leveldata_floating->state, m_nGrowState);
   if (m_nAux > 0) {
