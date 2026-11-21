@@ -352,12 +352,10 @@ PeleLM::getScalarAdvForce(
       m_cur_time, GetVecOfPtrs(advData->Forcing), advData->Forcing[0].nGrow());
   }
   // Fill auxiliary forcing ghost cells
-  if (m_nAux > 0) {
-    if (advData->Forcing_aux[0].nGrow() > 0) {
-      fillpatch_forces(
-        m_cur_time, GetVecOfPtrs(advData->Forcing_aux),
-        advData->Forcing_aux[0].nGrow());
-    }
+  if (m_nAux > 0 && advData->Forcing_aux[0].nGrow() > 0) {
+    fillpatch_forces(
+      m_cur_time, GetVecOfPtrs(advData->Forcing_aux),
+      advData->Forcing_aux[0].nGrow());
   }
 }
 
@@ -497,7 +495,7 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
               .const_array()
           : amrex::Array4<amrex::Real const>{},
 #endif
-        m_Godunov_ppm, m_Godunov_ForceInTrans, is_velocity,
+        m_Godunov_ppm != 0, m_Godunov_ForceInTrans != 0, is_velocity,
         fluxes_are_area_weighted, m_advection_type, m_Godunov_ppm_limiter);
 
       // Ions one by one
@@ -536,7 +534,7 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
                 .const_array()
             : amrex::Array4<amrex::Real const>{},
 #endif
-          m_Godunov_ppm, m_Godunov_ForceInTrans, is_velocity,
+          m_Godunov_ppm != 0, m_Godunov_ForceInTrans != 0, is_velocity,
           fluxes_are_area_weighted, m_advection_type, m_Godunov_ppm_limiter);
       }
 #else
@@ -704,13 +702,13 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
     }
 
     // Get the edge RhoH states
+    auto const* leosparm = eos_parms.device_parm();
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
 #endif
     for (amrex::MFIter mfi(ldata_p->state, amrex::TilingIfNotGPU());
          mfi.isValid(); ++mfi) {
       amrex::Box const& bx = mfi.tilebox();
-      auto const* leosparm = eos_parms.device_parm();
 
 #ifdef AMREX_USE_EB
       auto const& flagfab = ebfact.getMultiEBCellFlagFab()[mfi];
@@ -890,7 +888,7 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
         divu, m_mesh_map->detJ_cc(lev), 0, 0, 1, m_nGrowdivu);
     }
 
-    bool fluxes_are_area_weighted = false;
+    constexpr bool fluxes_are_area_weighted = false;
 #ifdef AMREX_USE_EB
     auto* ldata_p = getLevelDataPtr(lev, AmrOldTime);
     //----------------------------------------------------------------
@@ -1151,8 +1149,6 @@ PeleLM::computePassiveAdvTerms(
   }
   //----------------------------------------------------------------
   // Fluxes divergence to get the scalars advection term
-  auto AdvTypeAll = fetchAdvTypeArray(state_comp, ncomp);
-  auto AdvTypeAll_d = convertToDeviceVector(AdvTypeAll);
   for (int lev = 0; lev <= finest_level; ++lev) {
 
     amrex::MultiFab divu(
@@ -1181,7 +1177,7 @@ PeleLM::computePassiveAdvTerms(
     divTmp.setVal(0.0);
     advFluxDivergence(
       lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
-      GetArrOfConstPtrs(edgeState[lev]), 0, ncomp, AdvTypeAll_d.dataPtr(),
+      GetArrOfConstPtrs(edgeState[lev]), 0, ncomp, AdvTypePass_d.dataPtr(),
       geom[lev], -1.0, fluxes_are_area_weighted);
 
     divTmp.FillBoundary(geom[lev].periodicity());
@@ -1194,7 +1190,7 @@ PeleLM::computePassiveAdvTerms(
     // Otherwise go directly into AofS
     advFluxDivergence(
       lev, advData->AofS[lev], state_comp, divu, GetArrOfConstPtrs(fluxes[lev]),
-      0, GetArrOfConstPtrs(edgeState[lev]), 0, ncomp, AdvTypeAll_d.dataPtr(),
+      0, GetArrOfConstPtrs(edgeState[lev]), 0, ncomp, AdvTypePass_d.dataPtr(),
       geom[lev], -1.0, fluxes_are_area_weighted);
 #endif
 
