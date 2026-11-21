@@ -241,6 +241,7 @@ PeleLM::velocityProjection(
     }
     amrex::Gpu::streamSynchronize();
   }
+  rhoHalf.clear(); // Only needed for sigma and the gp correction
 
   // If incremental
   // define "vel" to be U^{np1*} - U^{n} rather than U^{np1*}
@@ -327,9 +328,7 @@ PeleLM::velocityProjection(
         if (m_closed_chamber != 0) {
           rhs_cc[lev].plus(SbarNew - SbarOld, 0, 1, ldataOld_p->divu.nGrow());
         }
-#ifdef AMREX_USE_EB
-        EB_set_covered(rhs_cc[lev], 0.0);
-#endif
+        eb_set_covered(rhs_cc[lev], 0.0);
 #if AMREX_SPACEDIM == 2
         if (geom[lev].IsRZ()) {
           scaleProj_RZ(lev, rhs_cc[lev]);
@@ -452,13 +451,14 @@ PeleLM::makeProjectionSigma(
           });
       }
     }
-#ifdef AMREX_USE_EB
     if (a_setCovered) {
-      EB_set_covered(*a_sigma[lev], 0.0);
+      eb_set_covered(*a_sigma[lev], 0.0);
     }
-#else
-    amrex::ignore_unused(a_setCovered);
-#endif
+    // Only valid cells are computed; zero the ghosts so they are never read
+    // uninitialised (the nodal solver itself uses valid cells only).
+    if (a_nGhost > 0) {
+      a_sigma[lev]->setBndry(0.0);
+    }
 #if AMREX_SPACEDIM == 2
     if (geom[lev].IsRZ()) {
       scaleProj_RZ(lev, *a_sigma[lev]);
