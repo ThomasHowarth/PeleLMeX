@@ -1477,31 +1477,11 @@ PeleLM::fetchAdvTypeArray(int scomp, int ncomp)
 }
 
 amrex::Vector<int>
-PeleLM::fetchDiffTypeArray(int scomp, int ncomp)
-{
-  amrex::Vector<int> types(ncomp);
-  for (int comp = 0; comp < ncomp; ++comp) {
-    types[comp] = m_DiffTypeState[scomp + comp];
-  }
-  return types;
-}
-
-amrex::Vector<int>
 PeleLM::fetchAdvTypeAuxArray(int scomp, int ncomp)
 {
   amrex::Vector<int> types(ncomp);
   for (int comp = 0; comp < ncomp; ++comp) {
     types[comp] = m_AdvTypeAux[scomp + comp];
-  }
-  return types;
-}
-
-amrex::Vector<int>
-PeleLM::fetchDiffTypeAuxArray(int scomp, int ncomp)
-{
-  amrex::Vector<int> types(ncomp);
-  for (int comp = 0; comp < ncomp; ++comp) {
-    types[comp] = m_DiffTypeAux[scomp + comp];
   }
   return types;
 }

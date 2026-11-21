@@ -1347,10 +1347,6 @@ public:
   void averageDown(
     const PeleLM::TimeStamp a_time, const int state_comp, const int ncomp);
   void averageDownReaction();
-#ifdef PELE_USE_PLASMA
-  void averageDownnE(const PeleLM::TimeStamp a_time);
-  void averageDownPhiV(const PeleLM::TimeStamp a_time);
-#endif
   //-----------------------------------------------------------------------------
 
   //-----------------------------------------------------------------------------
@@ -1737,8 +1733,6 @@ public:
   //-----------------------------------------------------------------------------
   // ADVANCE
 
-  void advanceSetup();
-
   void oneSDC(
     const int sdcIter,
     const std::unique_ptr<AdvanceAdvData>& advData,
@@ -1996,9 +1990,7 @@ public:
   fetchBCRecAuxArray(const int scomp, const int ncomp);
   amrex::Vector<amrex::BCRec> fetchBCRecDummyArray(const int ncomp);
   amrex::Vector<int> fetchAdvTypeArray(const int scomp, const int ncomp);
-  amrex::Vector<int> fetchDiffTypeArray(const int scomp, const int ncomp);
   amrex::Vector<int> fetchAdvTypeAuxArray(const int scomp, const int ncomp);
-  amrex::Vector<int> fetchDiffTypeAuxArray(const int scomp, const int ncomp);
   DiffusionOp* getDiffusionOp();
   DiffusionOp* getMCDiffusionOp(const int ncomp = 1);
   DiffusionTensorOp* getDiffusionTensorOp();
@@ -2092,8 +2084,6 @@ public:
   // use; an input value overrides the measurement.
   amrex::Real m_inlet_plane_target_flow =
     std::numeric_limits<amrex::Real>::quiet_NaN();
-  // Most recent flux-control factor (diagnostics).
-  amrex::Real m_recycling_last_gamma = 1.0;
   // One-shot warning latches for flux control.
   bool m_warned_recycling_flux_both_sides = false;
   bool m_warned_recycling_flux_disabled = false;
@@ -2193,7 +2183,6 @@ public:
   amrex::Real m_ctrl_tBase{0.0};
   amrex::Real m_ctrl_dV{0.0};
   amrex::Real m_ctrl_scale{0.0};
-  amrex::Real m_ctrl_zBase{0.0};
   amrex::Real m_ctrl_h{0.0};
   amrex::Real m_ctrl_velMax{-1.0};
   amrex::Real m_ctrl_temperature{-1.0};
@@ -2358,8 +2347,6 @@ public:
   amrex::Vector<int> m_DiffTypeAux;
   amrex::Vector<amrex::Real> m_aux_Schmidt;
   amrex::Vector<int> m_aux_advect;
-  // R-z
-  int m_rz_correction = 0;
 
   // cc->ec average
   int m_harm_avg_cen2edge = 0;
@@ -2386,11 +2373,8 @@ public:
   amrex::Real m_les_cs_sigma = 1.35;
   amrex::Real m_les_c_chi = 20.0;
 
-  // switch on/off different processes
-  // TODO: actually implement that
+  // Reactions on/off
   int m_do_react = 1;
-  int m_do_diff = 1;
-  int m_do_adv = 1;
 
   // Turbulent Forcing
   bool m_do_turbulent_forcing = false;
@@ -2439,7 +2423,6 @@ public:
   int m_debug_divu_mismatch = 0;
 
   // Godunov is default
-  std::string m_predict_advection_key = "Godunov_PLM";
   std::string m_advection_key = "Godunov_PLM";
   std::string m_predict_advection_type;
   std::string m_advection_type;
@@ -2611,7 +2594,6 @@ private:
   std::string m_hypre_namespace_nodal = "nodal_hypre";
 
   // MAC projection
-  int m_mac_mg_verbose = 0;
   int m_mac_mg_max_coarsening_level = 100;
   int m_mac_max_order = 4;
   amrex::Real m_mac_mg_rtol = 1.0e-11;

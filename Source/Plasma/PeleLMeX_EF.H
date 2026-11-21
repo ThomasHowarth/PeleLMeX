@@ -84,7 +84,6 @@ getLevelDataNLSolvePtr(int lev)
 
 amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>>
 getNLgradPhiVVect();
-amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>> getUeffVect();
 amrex::Vector<amrex::MultiFab*> getNLresidVect();
 amrex::Vector<amrex::MultiFab*> getNLstateVect();
 amrex::Vector<amrex::MultiFab*> getNLBGChargeVect();

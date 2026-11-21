@@ -9,7 +9,6 @@
 #include "PelePhysics.H"
 #include <PltFileManager.H>
 #include <AMReX_ParmParse.H>
-#include <PeleLMeX_BCfill.H>
 #include <AMReX_FillPatchUtil.H>
 #include <memory>
 #include <fstream>
