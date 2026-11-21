@@ -1918,15 +1918,6 @@ PeleLM::MFSum(const amrex::Vector<const amrex::MultiFab*>& a_mf, const int comp)
   return volwgtsum;
 }
 
-/*
-amrex::Array<amrex::Real,3>
-PeleLM::MFStat (const amrex::Vector<const amrex::MultiFab*> &a_mf, int comp)
-{
-   // Get the min/max/mean of a given component, not including the fine-covered
-cells
-}
-*/
-
 void
 PeleLM::setTypicalValues(const TimeStamp a_time, const int is_init)
 {
