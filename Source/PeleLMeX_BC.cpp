@@ -423,14 +423,9 @@ PeleLM::fillPatchReact(const int lev, const amrex::Real a_time, const int nGrow)
 {
   BL_PROFILE("PeleLMeX::fillPatchReact()");
 
-#ifdef PELE_USE_PLASMA
-  constexpr int IRsize = NUM_SPECIES + 1;
-#else
-  constexpr int IRsize = NUM_SPECIES;
-#endif
   std::unique_ptr<amrex::MultiFab> mf;
   mf = std::make_unique<amrex::MultiFab>(
-    grids[lev], dmap[lev], IRsize, nGrow, amrex::MFInfo(), Factory(lev));
+    grids[lev], dmap[lev], nCompIR(), nGrow, amrex::MFInfo(), Factory(lev));
   fillpatch_reaction(lev, a_time, *mf, nGrow);
 
   return mf;
@@ -2137,7 +2132,6 @@ PeleLM::applyRecyclingFluxControl()
     }
     m_inlet_recycling.fluct_src[lev]->mult(gamma, 0, AMREX_SPACEDIM, 0);
   }
-  m_recycling_last_gamma = gamma;
 
   if (m_verbose > 2) {
     amrex::Print() << "   Recycling flux control: plane flow = " << q_sample

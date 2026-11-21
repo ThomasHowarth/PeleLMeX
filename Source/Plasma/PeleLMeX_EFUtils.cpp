@@ -15,17 +15,6 @@ PeleLM::getNLgradPhiVVect()
   return r;
 }
 
-amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>>
-PeleLM::getUeffVect()
-{
-  amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>> r;
-  r.reserve(finest_level + 1);
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    r.push_back(GetArrOfPtrs(m_leveldatanlsolve[lev]->uEffnE));
-  }
-  return r;
-}
-
 amrex::Vector<amrex::MultiFab*>
 PeleLM::getNLresidVect()
 {

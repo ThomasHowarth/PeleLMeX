@@ -61,12 +61,7 @@ PeleLM::LevelDataReact::LevelDataReact(
   const amrex::DistributionMapping& dm,
   const amrex::FabFactory<amrex::FArrayBox>& factory)
 {
-#ifdef PELE_USE_PLASMA
-  constexpr int IRsize = NUM_SPECIES + 1;
-#else
-  constexpr int IRsize = NUM_SPECIES;
-#endif
-  I_R.define(ba, dm, IRsize, 0, amrex::MFInfo(), factory);
+  I_R.define(ba, dm, nCompIR(), 0, amrex::MFInfo(), factory);
   functC.define(ba, dm, 1, 0, amrex::MFInfo(), factory);
 }
 
