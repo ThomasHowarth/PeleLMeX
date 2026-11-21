@@ -1088,7 +1088,12 @@ public:
   void ReadCheckPointFile();
   bool writeCheckNow() const;
   void WriteJobInfo(const std::string& path) const;
-  void WriteHeader(const std::string& name, const bool is_checkpoint) const;
+  void WriteHeader(const std::string& name) const;
+  //! Per-level checkpoint MultiFabs with their file tags, in file order
+  amrex::Vector<std::pair<std::string, amrex::MultiFab*>>
+  checkpointFields(const int lev);
+  //! Whether the recycling-plane running mean goes into checkpoints
+  bool recyclingMeanCheckpointed() const;
   void WriteDebugPlotFile(
     const amrex::Vector<const amrex::MultiFab*>& a_MF,
     const std::string& pltname);
