@@ -1817,7 +1817,8 @@ public:
   void updateScalarComp(
     const std::unique_ptr<AdvanceAdvData>& advData,
     const int state_comp,
-    const int ncomp);
+    const int ncomp,
+    const bool a_avgDown = true);
 
   void getScalarDiffForce(
     const std::unique_ptr<AdvanceAdvData>& advData,
