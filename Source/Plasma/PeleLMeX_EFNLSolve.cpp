@@ -799,7 +799,8 @@ PeleLM::setUpPrecond(
       getPrecondOp()->getDiffOpDiagonal(lev, diagDiffOp[lev]);
       diagDiffOp[lev].mult(FnE_scale / nE_scale);
     }
-    fillPatchExtrap(m_cur_time, GetVecOfPtrs(diagDiffOp), 1);
+    fillpatch_forces(
+      m_cur_time, GetVecOfPtrs(diagDiffOp), 1, getInterpolator());
   }
 
   //--------------------------------------------------------------------------

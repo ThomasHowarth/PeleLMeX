@@ -1155,6 +1155,88 @@ public:
   void fillPatchPhiV(const PeleLM::TimeStamp a_time);
 #endif
 
+  // Source data for a fillpatch on one level: MultiFabs and their times
+  struct FillPatchSource
+  {
+    amrex::Vector<amrex::MultiFab*> mf;
+    amrex::Vector<amrex::Real> time;
+  };
+
+  // Fillpatch source on level lev: old and new data of a LevelData field,
+  // a LevelDataReact field at a_time, or a per-level vector at a_time
+  FillPatchSource fillSource(
+    const int lev, amrex::MultiFab LevelData::* a_field, const amrex::Real)
+  {
+    return {
+      {&((*m_leveldata_old[lev]).*a_field),
+       &((*m_leveldata_new[lev]).*a_field)},
+      {m_t_old[lev], m_t_new[lev]}};
+  }
+  FillPatchSource fillSource(
+    const int lev,
+    amrex::MultiFab LevelDataReact::* a_field,
+    const amrex::Real a_time)
+  {
+    return {{&((*m_leveldatareact[lev]).*a_field)}, {a_time}};
+  }
+  static FillPatchSource fillSource(
+    const int lev,
+    amrex::Vector<amrex::MultiFab*> const& a_mf,
+    const amrex::Real a_time)
+  {
+    return {{a_mf[lev]}, {a_time}};
+  }
+
+  // ext_dir BC functor of the given kind, wired to the problem's bcnormal.
+  // Defined in PeleLMeX_FillPatch.H, as are the helpers below.
+  template <template <typename> class BCFill>
+  auto makeBCFill();
+  // ext_dir BC functor for the whole state (handles turbulent/recycled inflow)
+  // a_inflowPreload = false disables the turbulent-inflow and
+  // recycling-plane preloads, so ghost cells get bcnormal alone.
+  auto makeStateBCFill(bool a_inflowPreload = true);
+
+  // Fill a_dst on level lev from fillSource(lev, a_src) (and level lev-1,
+  // interpolated with a_mapper, when lev > 0), applying a_bcfill on domain
+  // boundaries.
+  template <typename BCFill, typename Src>
+  void fillpatchLevel(
+    const int lev,
+    const amrex::Real a_time,
+    amrex::MultiFab& a_dst,
+    const int nGhost,
+    Src const& a_src,
+    const int scomp,
+    const int dcomp,
+    const int ncomp,
+    amrex::Vector<amrex::BCRec> const& a_bcrec,
+    BCFill const& a_bcfill,
+    amrex::InterpBase* a_mapper);
+
+  // Fill every level of a_mf, all held at a_time
+  template <typename BCFill>
+  void fillpatchAllLevels(
+    const amrex::Real a_time,
+    amrex::Vector<amrex::MultiFab*> const& a_mf,
+    const int nGhost,
+    const int ncomp,
+    amrex::Vector<amrex::BCRec> const& a_bcrec,
+    BCFill const& a_bcfill,
+    amrex::InterpBase* a_mapper);
+
+  // Fill a_dst on level lev > 0 entirely by interpolation from a_crse
+  template <typename BCFill>
+  void fillcoarsepatchLevel(
+    const int lev,
+    const amrex::Real a_time,
+    amrex::MultiFab& a_dst,
+    const int nGhost,
+    amrex::MultiFab const& a_crse,
+    const int ncomp,
+    amrex::Vector<amrex::BCRec> const& a_bcrec,
+    BCFill const& a_bcfill,
+    amrex::InterpBase* a_mapper);
+
   // FillPatch and return a MF
   std::unique_ptr<amrex::MultiFab>
   fillPatchState(const int lev, const amrex::Real a_time, const int nGrow);
@@ -1205,10 +1287,13 @@ public:
     const amrex::Real a_time,
     amrex::MultiFab& a_I_R,
     const int nGhost);
+  //! Ghost cells only, foextrap at domain faces. C/F interpolation uses
+  //! a_mapper, or piecewise constant when null.
   void fillpatch_forces(
     const amrex::Real a_time,
     amrex::Vector<amrex::MultiFab*> const& a_force,
-    const int nGrowForce);
+    const int nGrowForce,
+    amrex::InterpBase* a_mapper = nullptr);
   //! Ghost cells only of a divergence-like vector of MultiFabs: periodic
   //! and coarse/fine fill from the vector itself, divu BCs at domain faces.
   void fillpatch_divu_ghosts(
@@ -1225,10 +1310,6 @@ public:
     amrex::MultiFab& a_phiV,
     const int phiV_comp,
     const int nGhost);
-  void fillPatchExtrap(
-    const amrex::Real a_time,
-    amrex::Vector<amrex::MultiFab*> const& a_MF,
-    const int a_nGrow);
   void fillPatchNLnE(
     const amrex::Real a_time,
     amrex::Vector<amrex::MultiFab*> const& a_nE,
@@ -1264,11 +1345,6 @@ public:
     const int lev,
     const amrex::Real a_time,
     amrex::MultiFab& a_I_R,
-    const int nGhost);
-  void fillcoarsepatch_chemFunctCall(
-    const int lev,
-    const amrex::Real a_time,
-    amrex::MultiFab& a_fctC,
     const int nGhost);
 
   // Fill physical boundaries
@@ -1949,6 +2025,29 @@ public:
 
   int getVerbose() const { return m_verbose; }
 
+  // Per-level alias of components [a_scomp, a_scomp + a_ncomp) of a
+  // LevelData field (old data at AmrOldTime, new data otherwise)
+  amrex::Vector<std::unique_ptr<amrex::MultiFab>> getAliasVect(
+    const PeleLM::TimeStamp a_time,
+    amrex::MultiFab LevelData::* a_field,
+    const int a_scomp,
+    const int a_ncomp);
+  // Per-level pointer to a LevelData field (old at AmrOldTime, else new)
+  amrex::Vector<amrex::MultiFab*> getFieldVect(
+    const PeleLM::TimeStamp a_time, amrex::MultiFab LevelData::* a_field);
+  // Per-level pointer to a_field of the level data held in a_levels
+  template <class L>
+  amrex::Vector<amrex::MultiFab*> levelFieldVect(
+    amrex::Vector<std::unique_ptr<L>>& a_levels, amrex::MultiFab L::* a_field)
+  {
+    amrex::Vector<amrex::MultiFab*> r;
+    r.reserve(finest_level + 1);
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      r.push_back(&((*a_levels[lev]).*a_field));
+    }
+    return r;
+  }
+
   amrex::Vector<std::unique_ptr<amrex::MultiFab>>
   getStateVect(const PeleLM::TimeStamp a_time);
   amrex::Vector<std::unique_ptr<amrex::MultiFab>>
@@ -1975,13 +2074,13 @@ public:
 #ifdef PELE_USE_PLASMA
   amrex::Vector<std::unique_ptr<amrex::MultiFab>>
   getPhiVVect(const PeleLM::TimeStamp a_time);
-  amrex::Vector<std::unique_ptr<amrex::MultiFab>>
-  getnEVect(const PeleLM::TimeStamp a_time);
   amrex::Vector<amrex::MultiFab*>
   getnEDiffusivityVect(const PeleLM::TimeStamp a_time);
 #endif
 
   amrex::Vector<amrex::BCRec> fetchBCRecArray(const int scomp, const int ncomp);
+  // Velocity BCRecs keeping only the ext_dir faces, others set to bogus
+  amrex::Vector<amrex::BCRec> inflowOnlyVelBCRec();
   amrex::Vector<amrex::BCRec>
   fetchBCRecAuxArray(const int scomp, const int ncomp);
   amrex::Vector<amrex::BCRec> fetchBCRecDummyArray(const int ncomp);
