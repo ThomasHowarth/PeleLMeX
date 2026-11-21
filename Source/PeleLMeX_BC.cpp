@@ -1,6 +1,4 @@
-#include <PeleLMeX.H>
-#include <PeleLMeX_BCfill.H>
-#include <AMReX_FillPatchUtil.H>
+#include <PeleLMeX_FillPatch.H>
 #include <AMReX_REAL.H>
 #include <AMReX_Reduce.H>
 #include <cmath>
@@ -433,11 +431,6 @@ PeleLM::fillpatch_state(
   amrex::MultiFab& a_state,
   const int nGhost)
 {
-  ProbParm const* lprobparm = prob_parm_d;
-  auto const* lpmfdata = pmf_data.device_parm();
-  const int recycFull =
-    static_cast<int>(m_recycling_mode == RecyclingMode::Full);
-
   const int nCompState = (m_incompressible) != 0 ? AMREX_SPACEDIM : NVAR;
 
   if (m_use_inlet_from_plane != 0) {
@@ -490,52 +483,14 @@ PeleLM::fillpatch_state(
     fillFromRecyclingPlane(a_state, 0, lev);
   }
 
-  if (lev == 0) {
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirState<ProblemSpecificFunctions>>>
-      bndry_func(
-        geom[lev], fetchBCRecArray(0, nCompState),
-        PeleLMCCFillExtDirState<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux,
-          static_cast<int>(turb_inflow.is_initialized()),
-          m_use_inlet_from_plane, m_inlet_plane_dir, recycFull, m_map_eval});
-    FillPatchSingleLevel(
-      a_state, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldata_old[lev]->state), &(m_leveldata_new[lev]->state)},
-      {m_t_old[lev], m_t_new[lev]}, 0, 0, nCompState, geom[lev], bndry_func, 0);
-  } else {
-
-    // Whole-state fill: request the mapping-aware interpolator for the
-    // lev-1 -> lev pair (its per-component weights serve both
-    // incompressible and compressible state).  getInterpolator falls back
-    // to the legacy interpolator when mesh mapping is off or unavailable.
-    auto* mapper = getInterpolator(1, lev - 1);
-
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirState<ProblemSpecificFunctions>>>
-      crse_bndry_func(
-        geom[lev - 1], fetchBCRecArray(0, nCompState),
-        PeleLMCCFillExtDirState<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux,
-          static_cast<int>(turb_inflow.is_initialized()),
-          m_use_inlet_from_plane, m_inlet_plane_dir, recycFull, m_map_eval});
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirState<ProblemSpecificFunctions>>>
-      fine_bndry_func(
-        geom[lev], fetchBCRecArray(0, nCompState),
-        PeleLMCCFillExtDirState<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux,
-          static_cast<int>(turb_inflow.is_initialized()),
-          m_use_inlet_from_plane, m_inlet_plane_dir, recycFull, m_map_eval});
-    FillPatchTwoLevels(
-      a_state, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldata_old[lev - 1]->state), &(m_leveldata_new[lev - 1]->state)},
-      {m_t_old[lev - 1], m_t_new[lev - 1]},
-      {&(m_leveldata_old[lev]->state), &(m_leveldata_new[lev]->state)},
-      {m_t_old[lev], m_t_new[lev]}, 0, 0, nCompState, geom[lev - 1], geom[lev],
-      crse_bndry_func, 0, fine_bndry_func, 0, refRatio(lev - 1), mapper,
-      fetchBCRecArray(0, nCompState), 0);
-  }
+  // Whole-state fill: request the mapping-aware interpolator for the
+  // lev-1 -> lev pair (its per-component weights serve both
+  // incompressible and compressible state).  getInterpolator falls back
+  // to the legacy interpolator when mesh mapping is off or unavailable.
+  fillpatchLevel(
+    lev, a_time, a_state, nGhost, &LevelData::state, 0, 0, nCompState,
+    fetchBCRecArray(0, nCompState), makeStateBCFill(),
+    getInterpolator(1, lev - 1));
 
   a_state.EnforcePeriodicity(geom[lev].periodicity());
 }
@@ -549,50 +504,10 @@ PeleLM::fillpatch_density(
   const int rho_comp,
   const int nGhost)
 {
-  ProbParm const* lprobparm = prob_parm_d;
-  auto const* lpmfdata = pmf_data.device_parm();
-  if (lev == 0) {
-
-    // Density
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDens<ProblemSpecificFunctions>>>
-      bndry_func_rho(
-        geom[lev], fetchBCRecArray(DENSITY, 1),
-        PeleLMCCFillExtDirDens<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux, m_map_eval});
-    FillPatchSingleLevel(
-      a_density, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldata_old[lev]->state), &(m_leveldata_new[lev]->state)},
-      {m_t_old[lev], m_t_new[lev]}, DENSITY, rho_comp, 1, geom[lev],
-      bndry_func_rho, 0);
-
-  } else {
-
-    // Interpolator
-    auto* mapper = getInterpolator();
-
-    // Density
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDens<ProblemSpecificFunctions>>>
-      crse_bndry_func_rho(
-        geom[lev - 1], fetchBCRecArray(DENSITY, 1),
-        PeleLMCCFillExtDirDens<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux, m_map_eval});
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDens<ProblemSpecificFunctions>>>
-      fine_bndry_func_rho(
-        geom[lev], fetchBCRecArray(DENSITY, 1),
-        PeleLMCCFillExtDirDens<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux, m_map_eval});
-    FillPatchTwoLevels(
-      a_density, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldata_old[lev - 1]->state), &(m_leveldata_new[lev - 1]->state)},
-      {m_t_old[lev - 1], m_t_new[lev - 1]},
-      {&(m_leveldata_old[lev]->state), &(m_leveldata_new[lev]->state)},
-      {m_t_old[lev], m_t_new[lev]}, DENSITY, rho_comp, 1, geom[lev - 1],
-      geom[lev], crse_bndry_func_rho, 0, fine_bndry_func_rho, 0,
-      refRatio(lev - 1), mapper, fetchBCRecArray(DENSITY, 1), 0);
-  }
+  fillpatchLevel(
+    lev, a_time, a_density, nGhost, &LevelData::state, DENSITY, rho_comp, 1,
+    fetchBCRecArray(DENSITY, 1), makeBCFill<PeleLMCCFillExtDirDens>(),
+    getInterpolator());
 }
 
 // Fill the mass fractions
@@ -604,49 +519,10 @@ PeleLM::fillpatch_species(
   const int rhoY_comp,
   const int nGhost)
 {
-  ProbParm const* lprobparm = prob_parm_d;
-  auto const* lpmfdata = pmf_data.device_parm();
-  if (lev == 0) {
-
-    // Species
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirSpec<ProblemSpecificFunctions>>>
-      bndry_func(
-        geom[lev], fetchBCRecArray(FIRSTSPEC, NUM_SPECIES),
-        PeleLMCCFillExtDirSpec<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux, m_map_eval});
-    FillPatchSingleLevel(
-      a_species, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldata_old[lev]->state), &(m_leveldata_new[lev]->state)},
-      {m_t_old[lev], m_t_new[lev]}, FIRSTSPEC, rhoY_comp, NUM_SPECIES,
-      geom[lev], bndry_func, 0);
-  } else {
-
-    // Interpolator
-    auto* mapper = getInterpolator();
-
-    // Species
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirSpec<ProblemSpecificFunctions>>>
-      crse_bndry_func(
-        geom[lev - 1], fetchBCRecArray(FIRSTSPEC, NUM_SPECIES),
-        PeleLMCCFillExtDirSpec<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux, m_map_eval});
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirSpec<ProblemSpecificFunctions>>>
-      fine_bndry_func(
-        geom[lev], fetchBCRecArray(FIRSTSPEC, NUM_SPECIES),
-        PeleLMCCFillExtDirSpec<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux, m_map_eval});
-    FillPatchTwoLevels(
-      a_species, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldata_old[lev - 1]->state), &(m_leveldata_new[lev - 1]->state)},
-      {m_t_old[lev - 1], m_t_new[lev - 1]},
-      {&(m_leveldata_old[lev]->state), &(m_leveldata_new[lev]->state)},
-      {m_t_old[lev], m_t_new[lev]}, FIRSTSPEC, rhoY_comp, NUM_SPECIES,
-      geom[lev - 1], geom[lev], crse_bndry_func, 0, fine_bndry_func, 0,
-      refRatio(lev - 1), mapper, fetchBCRecArray(FIRSTSPEC, NUM_SPECIES), 0);
-  }
+  fillpatchLevel(
+    lev, a_time, a_species, nGhost, &LevelData::state, FIRSTSPEC, rhoY_comp,
+    NUM_SPECIES, fetchBCRecArray(FIRSTSPEC, NUM_SPECIES),
+    makeBCFill<PeleLMCCFillExtDirSpec>(), getInterpolator());
 }
 
 // Fill temperature
@@ -658,46 +534,10 @@ PeleLM::fillpatch_temp(
   const int temp_comp,
   const int nGhost)
 {
-  ProbParm const* lprobparm = prob_parm_d;
-  auto const* lpmfdata = pmf_data.device_parm();
-  if (lev == 0) {
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirTemp<ProblemSpecificFunctions>>>
-      bndry_func(
-        geom[lev], fetchBCRecArray(TEMP, 1),
-        PeleLMCCFillExtDirTemp<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux, m_map_eval});
-    FillPatchSingleLevel(
-      a_temp, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldata_old[lev]->state), &(m_leveldata_new[lev]->state)},
-      {m_t_old[lev], m_t_new[lev]}, TEMP, temp_comp, 1, geom[lev], bndry_func,
-      0);
-  } else {
-
-    // Interpolator
-    auto* mapper = getInterpolator();
-
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirTemp<ProblemSpecificFunctions>>>
-      crse_bndry_func(
-        geom[lev - 1], fetchBCRecArray(TEMP, 1),
-        PeleLMCCFillExtDirTemp<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux, m_map_eval});
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirTemp<ProblemSpecificFunctions>>>
-      fine_bndry_func(
-        geom[lev], fetchBCRecArray(TEMP, 1),
-        PeleLMCCFillExtDirTemp<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux, m_map_eval});
-    FillPatchTwoLevels(
-      a_temp, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldata_old[lev - 1]->state), &(m_leveldata_new[lev - 1]->state)},
-      {m_t_old[lev - 1], m_t_new[lev - 1]},
-      {&(m_leveldata_old[lev]->state), &(m_leveldata_new[lev]->state)},
-      {m_t_old[lev], m_t_new[lev]}, TEMP, temp_comp, 1, geom[lev - 1],
-      geom[lev], crse_bndry_func, 0, fine_bndry_func, 0, refRatio(lev - 1),
-      mapper, fetchBCRecArray(TEMP, 1), 0);
-  }
+  fillpatchLevel(
+    lev, a_time, a_temp, nGhost, &LevelData::state, TEMP, temp_comp, 1,
+    fetchBCRecArray(TEMP, 1), makeBCFill<PeleLMCCFillExtDirTemp>(),
+    getInterpolator());
 }
 
 // Fill the auxiliaries
@@ -708,50 +548,10 @@ PeleLM::fillpatch_aux(
   amrex::MultiFab& a_aux,
   const int nGhost)
 {
-
-  ProbParm const* lprobparm = prob_parm_d;
-  auto const* lpmfdata = pmf_data.device_parm();
-
-  if (lev == 0) {
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirAux<ProblemSpecificFunctions>>>
-      bndry_func(
-        geom[lev], fetchBCRecAuxArray(0, m_nAux),
-        PeleLMCCFillExtDirAux<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux, m_map_eval});
-    FillPatchSingleLevel(
-      a_aux, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldata_old[lev]->auxiliaries),
-       &(m_leveldata_new[lev]->auxiliaries)},
-      {m_t_old[lev], m_t_new[lev]}, 0, 0, m_nAux, geom[lev], bndry_func, 0);
-  } else {
-
-    // Interpolator
-    auto* mapper = getInterpolator();
-
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirAux<ProblemSpecificFunctions>>>
-      crse_bndry_func(
-        geom[lev - 1], fetchBCRecAuxArray(0, m_nAux),
-        PeleLMCCFillExtDirAux<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux, m_map_eval});
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirAux<ProblemSpecificFunctions>>>
-      fine_bndry_func(
-        geom[lev], fetchBCRecAuxArray(0, m_nAux),
-        PeleLMCCFillExtDirAux<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux, m_map_eval});
-    FillPatchTwoLevels(
-      a_aux, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldata_old[lev - 1]->auxiliaries),
-       &(m_leveldata_new[lev - 1]->auxiliaries)},
-      {m_t_old[lev - 1], m_t_new[lev - 1]},
-      {&(m_leveldata_old[lev]->auxiliaries),
-       &(m_leveldata_new[lev]->auxiliaries)},
-      {m_t_old[lev], m_t_new[lev]}, 0, 0, m_nAux, geom[lev - 1], geom[lev],
-      crse_bndry_func, 0, fine_bndry_func, 0, refRatio(lev - 1), mapper,
-      fetchBCRecAuxArray(0, m_nAux), 0);
-  }
+  fillpatchLevel(
+    lev, a_time, a_aux, nGhost, &LevelData::auxiliaries, 0, 0, m_nAux,
+    fetchBCRecAuxArray(0, m_nAux), makeBCFill<PeleLMCCFillExtDirAux>(),
+    getInterpolator());
 
   a_aux.EnforcePeriodicity(geom[lev].periodicity());
 }
@@ -762,50 +562,14 @@ void
 PeleLM::fillpatch_phiV(
   const int lev,
   const amrex::Real a_time,
-  amrex::MultiFab& a_temp,
+  amrex::MultiFab& a_phiV,
   const int phiV_comp,
   const int nGhost)
 {
-  ProbParm const* lprobparm = prob_parm_d;
-  auto const* lpmfdata = pmf_data.device_parm();
-  if (lev == 0) {
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirPhiV<ProblemSpecificFunctions>>>
-      bndry_func(
-        geom[lev], fetchBCRecArray(PHIV, 1),
-        PeleLMCCFillExtDirPhiV<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux, m_map_eval});
-    FillPatchSingleLevel(
-      a_temp, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldata_old[lev]->state), &(m_leveldata_new[lev]->state)},
-      {m_t_old[lev], m_t_new[lev]}, PHIV, phiV_comp, 1, geom[lev], bndry_func,
-      0);
-  } else {
-
-    // Interpolator
-    auto* mapper = getInterpolator();
-
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirPhiV<ProblemSpecificFunctions>>>
-      crse_bndry_func(
-        geom[lev - 1], fetchBCRecArray(PHIV, 1),
-        PeleLMCCFillExtDirPhiV<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux, m_map_eval});
-    amrex::PhysBCFunct<
-      amrex::GpuBndryFuncFab<PeleLMCCFillExtDirPhiV<ProblemSpecificFunctions>>>
-      fine_bndry_func(
-        geom[lev], fetchBCRecArray(PHIV, 1),
-        PeleLMCCFillExtDirPhiV<ProblemSpecificFunctions>{
-          lprobparm, lpmfdata, m_nAux, m_map_eval});
-    FillPatchTwoLevels(
-      a_temp, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldata_old[lev - 1]->state), &(m_leveldata_new[lev - 1]->state)},
-      {m_t_old[lev - 1], m_t_new[lev - 1]},
-      {&(m_leveldata_old[lev]->state), &(m_leveldata_new[lev]->state)},
-      {m_t_old[lev], m_t_new[lev]}, PHIV, phiV_comp, 1, geom[lev - 1],
-      geom[lev], crse_bndry_func, 0, fine_bndry_func, 0, refRatio(lev - 1),
-      mapper, fetchBCRecArray(PHIV, 1), 0);
-  }
+  fillpatchLevel(
+    lev, a_time, a_phiV, nGhost, &LevelData::state, PHIV, phiV_comp, 1,
+    fetchBCRecArray(PHIV, 1), makeBCFill<PeleLMCCFillExtDirPhiV>(),
+    getInterpolator());
 }
 #endif
 
@@ -817,33 +581,9 @@ PeleLM::fillpatch_divu(
   amrex::MultiFab& a_divu,
   const int nGhost)
 {
-  if (lev == 0) {
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      bndry_func(geom[lev], {m_bcrec_divu}, PeleLMCCFillExtDirDummy{m_nAux});
-    FillPatchSingleLevel(
-      a_divu, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldata_old[lev]->divu), &(m_leveldata_new[lev]->divu)},
-      {m_t_old[lev], m_t_new[lev]}, 0, 0, 1, geom[lev], bndry_func, 0);
-  } else {
-
-    // Interpolator
-    auto* mapper = getInterpolator();
-
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      crse_bndry_func(
-        geom[lev - 1], {m_bcrec_divu}, PeleLMCCFillExtDirDummy{m_nAux});
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      fine_bndry_func(
-        geom[lev], {m_bcrec_divu}, PeleLMCCFillExtDirDummy{m_nAux});
-    FillPatchTwoLevels(
-      a_divu, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldata_old[lev - 1]->divu), &(m_leveldata_new[lev - 1]->divu)},
-      {m_t_old[lev - 1], m_t_new[lev - 1]},
-      {&(m_leveldata_old[lev]->divu), &(m_leveldata_new[lev]->divu)},
-      {m_t_old[lev], m_t_new[lev]}, 0, 0, 1, geom[lev - 1], geom[lev],
-      crse_bndry_func, 0, fine_bndry_func, 0, refRatio(lev - 1), mapper,
-      {m_bcrec_divu}, 0);
-  }
+  fillpatchLevel(
+    lev, a_time, a_divu, nGhost, &LevelData::divu, 0, 0, 1, {m_bcrec_divu},
+    PeleLMCCFillExtDirDummy{}, getInterpolator());
 }
 
 // Fillpatch a vector of forces:
@@ -853,33 +593,14 @@ void
 PeleLM::fillpatch_forces(
   const amrex::Real a_time,
   amrex::Vector<amrex::MultiFab*> const& a_force,
-  const int nGrowForce)
+  const int nGrowForce,
+  amrex::InterpBase* a_mapper)
 {
   AMREX_ASSERT(a_force[0]->nComp() <= m_bcrec_force.size());
-  const int nComp = a_force[0]->nComp();
-
-  int lev = 0;
-  {
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      bndry_func(geom[lev], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-    FillPatchSingleLevel(
-      *a_force[lev], amrex::IntVect(nGrowForce), a_time, {a_force[lev]},
-      {a_time}, 0, 0, nComp, geom[lev], bndry_func, 0);
-  }
-  for (lev = 1; lev <= finest_level; ++lev) {
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      crse_bndry_func(
-        geom[lev - 1], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      fine_bndry_func(
-        geom[lev], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-    amrex::Interpolater* mapper = &amrex::pc_interp;
-    FillPatchTwoLevels(
-      *a_force[lev], amrex::IntVect(nGrowForce), a_time, {a_force[lev - 1]},
-      {a_time}, {a_force[lev]}, {a_time}, 0, 0, nComp, geom[lev - 1], geom[lev],
-      crse_bndry_func, 0, fine_bndry_func, 0, refRatio(lev - 1), mapper,
-      {m_bcrec_force}, 0);
-  }
+  fillpatchAllLevels(
+    a_time, a_force, nGrowForce, a_force[0]->nComp(), {m_bcrec_force},
+    PeleLMCCFillExtDirDummy{},
+    (a_mapper != nullptr) ? a_mapper : &amrex::pc_interp);
 }
 
 // Ghost cells of a divergence-like field held outside leveldata (the
@@ -889,29 +610,10 @@ void
 PeleLM::fillpatch_divu_ghosts(
   amrex::Vector<amrex::MultiFab*> const& a_divu, const int nGhost)
 {
-  const amrex::Real dummy_time = 0.0;
-  int lev = 0;
-  {
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      bndry_func(geom[lev], {m_bcrec_divu}, PeleLMCCFillExtDirDummy{m_nAux});
-    FillPatchSingleLevel(
-      *a_divu[lev], amrex::IntVect(nGhost), dummy_time, {a_divu[lev]},
-      {dummy_time}, 0, 0, 1, geom[lev], bndry_func, 0);
-  }
-  for (lev = 1; lev <= finest_level; ++lev) {
-    auto* mapper = getInterpolator();
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      crse_bndry_func(
-        geom[lev - 1], {m_bcrec_divu}, PeleLMCCFillExtDirDummy{m_nAux});
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      fine_bndry_func(
-        geom[lev], {m_bcrec_divu}, PeleLMCCFillExtDirDummy{m_nAux});
-    FillPatchTwoLevels(
-      *a_divu[lev], amrex::IntVect(nGhost), dummy_time, {a_divu[lev - 1]},
-      {dummy_time}, {a_divu[lev]}, {dummy_time}, 0, 0, 1, geom[lev - 1],
-      geom[lev], crse_bndry_func, 0, fine_bndry_func, 0, refRatio(lev - 1),
-      mapper, {m_bcrec_divu}, 0);
-  }
+  constexpr amrex::Real dummy_time = 0.0;
+  fillpatchAllLevels(
+    dummy_time, a_divu, nGhost, 1, {m_bcrec_divu}, PeleLMCCFillExtDirDummy{},
+    getInterpolator());
 }
 
 // Fill the gradp
@@ -922,34 +624,9 @@ PeleLM::fillpatch_gradp(
   amrex::MultiFab& a_gp,
   const int nGhost)
 {
-  if (lev == 0) {
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      bndry_func(geom[lev], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-    FillPatchSingleLevel(
-      a_gp, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldata_old[lev]->gp), &(m_leveldata_new[lev]->gp)},
-      {m_t_old[lev], m_t_new[lev]}, 0, 0, AMREX_SPACEDIM, geom[lev], bndry_func,
-      0);
-  } else {
-
-    // Interpolator
-    auto* mapper = getInterpolator();
-
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      crse_bndry_func(
-        geom[lev - 1], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      fine_bndry_func(
-        geom[lev], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-    FillPatchTwoLevels(
-      a_gp, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldata_old[lev - 1]->gp), &(m_leveldata_new[lev - 1]->gp)},
-      {m_t_old[lev - 1], m_t_new[lev - 1]},
-      {&(m_leveldata_old[lev]->gp), &(m_leveldata_new[lev]->gp)},
-      {m_t_old[lev], m_t_new[lev]}, 0, 0, AMREX_SPACEDIM, geom[lev - 1],
-      geom[lev], crse_bndry_func, 0, fine_bndry_func, 0, refRatio(lev - 1),
-      mapper, {m_bcrec_force}, 0);
-  }
+  fillpatchLevel(
+    lev, a_time, a_gp, nGhost, &LevelData::gp, 0, 0, AMREX_SPACEDIM,
+    {m_bcrec_force}, PeleLMCCFillExtDirDummy{}, getInterpolator());
 }
 
 // Fill the reaction data
@@ -960,30 +637,9 @@ PeleLM::fillpatch_reaction(
   amrex::MultiFab& a_I_R,
   const int nGhost)
 {
-  if (lev == 0) {
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      bndry_func(geom[lev], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-    FillPatchSingleLevel(
-      a_I_R, amrex::IntVect(nGhost), a_time, {&(m_leveldatareact[lev]->I_R)},
-      {a_time}, 0, 0, nCompIR(), geom[lev], bndry_func, 0);
-  } else {
-
-    // Interpolator
-    auto* mapper = getInterpolator();
-
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      crse_bndry_func(
-        geom[lev - 1], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      fine_bndry_func(
-        geom[lev], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-    FillPatchTwoLevels(
-      a_I_R, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldatareact[lev - 1]->I_R)}, {a_time},
-      {&(m_leveldatareact[lev]->I_R)}, {a_time}, 0, 0, nCompIR(), geom[lev - 1],
-      geom[lev], crse_bndry_func, 0, fine_bndry_func, 0, refRatio(lev - 1),
-      mapper, {m_bcrec_force}, 0);
-  }
+  fillpatchLevel(
+    lev, a_time, a_I_R, nGhost, &LevelDataReact::I_R, 0, 0, nCompIR(),
+    {m_bcrec_force}, PeleLMCCFillExtDirDummy{}, getInterpolator());
 }
 
 // Fill functC
@@ -994,31 +650,9 @@ PeleLM::fillpatch_chemFunctCall(
   amrex::MultiFab& a_fctC,
   const int nGhost)
 {
-  if (lev == 0) {
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      bndry_func(geom[lev], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-    FillPatchSingleLevel(
-      a_fctC, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldatareact[lev]->functC)}, {a_time}, 0, 0, 1, geom[lev],
-      bndry_func, 0);
-  } else {
-
-    // Interpolator
-    auto* mapper = getInterpolator();
-
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      crse_bndry_func(
-        geom[lev - 1], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-    amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-      fine_bndry_func(
-        geom[lev], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-    FillPatchTwoLevels(
-      a_fctC, amrex::IntVect(nGhost), a_time,
-      {&(m_leveldatareact[lev - 1]->functC)}, {a_time},
-      {&(m_leveldatareact[lev]->functC)}, {a_time}, 0, 0, 1, geom[lev - 1],
-      geom[lev], crse_bndry_func, 0, fine_bndry_func, 0, refRatio(lev - 1),
-      mapper, {m_bcrec_force}, 0);
-  }
+  fillpatchLevel(
+    lev, a_time, a_fctC, nGhost, &LevelDataReact::functC, 0, 0, 1,
+    {m_bcrec_force}, PeleLMCCFillExtDirDummy{}, getInterpolator());
 }
 
 // Fill the state
@@ -1030,11 +664,6 @@ PeleLM::fillcoarsepatch_state(
   const int nGhost)
 {
   AMREX_ASSERT(lev > 0);
-  ProbParm const* lprobparm = prob_parm_d;
-  auto const* lpmfdata = pmf_data.device_parm();
-  const int recycFull =
-    static_cast<int>(m_recycling_mode == RecyclingMode::Full);
-
   const int nCompState = (m_incompressible) != 0 ? AMREX_SPACEDIM : NVAR;
 
   fillTurbInflow(a_state, VELX, lev, a_time);
@@ -1048,29 +677,10 @@ PeleLM::fillcoarsepatch_state(
   // interp, which it wraps; else getInterpolator returns the legacy one).
   // Derived TEMP/RHORT are restored by the EOS recompute in
   // MakeNewLevelFromCoarse / RemakeLevel.
-  auto* mapper = getInterpolator(m_regrid_interp_method, lev - 1);
-
-  amrex::PhysBCFunct<
-    amrex::GpuBndryFuncFab<PeleLMCCFillExtDirState<ProblemSpecificFunctions>>>
-    crse_bndry_func(
-      geom[lev - 1], fetchBCRecArray(0, nCompState),
-      PeleLMCCFillExtDirState<ProblemSpecificFunctions>{
-        lprobparm, lpmfdata, m_nAux,
-        static_cast<int>(turb_inflow.is_initialized()), m_use_inlet_from_plane,
-        m_inlet_plane_dir, recycFull, m_map_eval});
-  amrex::PhysBCFunct<
-    amrex::GpuBndryFuncFab<PeleLMCCFillExtDirState<ProblemSpecificFunctions>>>
-    fine_bndry_func(
-      geom[lev], fetchBCRecArray(0, nCompState),
-      PeleLMCCFillExtDirState<ProblemSpecificFunctions>{
-        lprobparm, lpmfdata, m_nAux,
-        static_cast<int>(turb_inflow.is_initialized()), m_use_inlet_from_plane,
-        m_inlet_plane_dir, recycFull, m_map_eval});
-  InterpFromCoarseLevel(
-    a_state, amrex::IntVect(nGhost), a_time, m_leveldata_new[lev - 1]->state, 0,
-    0, nCompState, geom[lev - 1], geom[lev], crse_bndry_func, 0,
-    fine_bndry_func, 0, refRatio(lev - 1), mapper,
-    fetchBCRecArray(0, nCompState), 0);
+  fillcoarsepatchLevel(
+    lev, a_time, a_state, nGhost, m_leveldata_new[lev - 1]->state, nCompState,
+    fetchBCRecArray(0, nCompState), makeStateBCFill(),
+    getInterpolator(m_regrid_interp_method, lev - 1));
 }
 
 // Fill the auxiliaries
@@ -1081,30 +691,10 @@ PeleLM::fillcoarsepatch_aux(
   amrex::MultiFab& a_aux,
   const int nGhost)
 {
-  AMREX_ASSERT(lev > 0);
-  ProbParm const* lprobparm = prob_parm_d;
-  auto const* lpmfdata = pmf_data.device_parm();
-
-  // Interpolator
-  auto* mapper = getInterpolator(m_regrid_interp_method);
-
-  amrex::PhysBCFunct<
-    amrex::GpuBndryFuncFab<PeleLMCCFillExtDirAux<ProblemSpecificFunctions>>>
-    crse_bndry_func(
-      geom[lev - 1], fetchBCRecAuxArray(0, m_nAux),
-      PeleLMCCFillExtDirAux<ProblemSpecificFunctions>{
-        lprobparm, lpmfdata, m_nAux, m_map_eval});
-  amrex::PhysBCFunct<
-    amrex::GpuBndryFuncFab<PeleLMCCFillExtDirAux<ProblemSpecificFunctions>>>
-    fine_bndry_func(
-      geom[lev], fetchBCRecAuxArray(0, m_nAux),
-      PeleLMCCFillExtDirAux<ProblemSpecificFunctions>{
-        lprobparm, lpmfdata, m_nAux, m_map_eval});
-  InterpFromCoarseLevel(
-    a_aux, amrex::IntVect(nGhost), a_time,
-    m_leveldata_new[lev - 1]->auxiliaries, 0, 0, m_nAux, geom[lev - 1],
-    geom[lev], crse_bndry_func, 0, fine_bndry_func, 0, refRatio(lev - 1),
-    mapper, fetchBCRecAuxArray(0, m_nAux), 0);
+  fillcoarsepatchLevel(
+    lev, a_time, a_aux, nGhost, m_leveldata_new[lev - 1]->auxiliaries, m_nAux,
+    fetchBCRecAuxArray(0, m_nAux), makeBCFill<PeleLMCCFillExtDirAux>(),
+    getInterpolator(m_regrid_interp_method));
 }
 
 // Fill the grad P
@@ -1115,19 +705,10 @@ PeleLM::fillcoarsepatch_gradp(
   amrex::MultiFab& a_gp,
   const int nGhost)
 {
-  // Interpolator
-  auto* mapper = getInterpolator(m_regrid_interp_method);
-
-  amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-    crse_bndry_func(
-      geom[lev - 1], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-  amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-    fine_bndry_func(
-      geom[lev], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-  InterpFromCoarseLevel(
-    a_gp, amrex::IntVect(nGhost), a_time, m_leveldata_new[lev - 1]->gp, 0, 0,
-    AMREX_SPACEDIM, geom[lev - 1], geom[lev], crse_bndry_func, 0,
-    fine_bndry_func, 0, refRatio(lev - 1), mapper, {m_bcrec_force}, 0);
+  fillcoarsepatchLevel(
+    lev, a_time, a_gp, nGhost, m_leveldata_new[lev - 1]->gp, AMREX_SPACEDIM,
+    {m_bcrec_force}, PeleLMCCFillExtDirDummy{},
+    getInterpolator(m_regrid_interp_method));
 }
 
 // Fill the divu
@@ -1138,18 +719,10 @@ PeleLM::fillcoarsepatch_divu(
   amrex::MultiFab& a_divu,
   const int nGhost)
 {
-  // Interpolator
-  auto* mapper = getInterpolator(m_regrid_interp_method);
-
-  amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-    crse_bndry_func(
-      geom[lev - 1], {m_bcrec_divu}, PeleLMCCFillExtDirDummy{m_nAux});
-  amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-    fine_bndry_func(geom[lev], {m_bcrec_divu}, PeleLMCCFillExtDirDummy{m_nAux});
-  InterpFromCoarseLevel(
-    a_divu, amrex::IntVect(nGhost), a_time, m_leveldata_new[lev - 1]->divu, 0,
-    0, 1, geom[lev - 1], geom[lev], crse_bndry_func, 0, fine_bndry_func, 0,
-    refRatio(lev - 1), mapper, {m_bcrec_divu}, 0);
+  fillcoarsepatchLevel(
+    lev, a_time, a_divu, nGhost, m_leveldata_new[lev - 1]->divu, 1,
+    {m_bcrec_divu}, PeleLMCCFillExtDirDummy{},
+    getInterpolator(m_regrid_interp_method));
 }
 
 // Fill coarse patch of reaction
@@ -1160,46 +733,34 @@ PeleLM::fillcoarsepatch_reaction(
   amrex::MultiFab& a_I_R,
   const int nGhost)
 {
-  // Interpolator
-  auto* mapper = getInterpolator(m_regrid_interp_method);
-
-  amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-    crse_bndry_func(
-      geom[lev - 1], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-  amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-    fine_bndry_func(
-      geom[lev], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-  InterpFromCoarseLevel(
-    a_I_R, amrex::IntVect(nGhost), a_time, m_leveldatareact[lev - 1]->I_R, 0, 0,
-    nCompIR(), geom[lev - 1], geom[lev], crse_bndry_func, 0, fine_bndry_func, 0,
-    refRatio(lev - 1), mapper, {m_bcrec_force}, 0);
+  fillcoarsepatchLevel(
+    lev, a_time, a_I_R, nGhost, m_leveldatareact[lev - 1]->I_R, nCompIR(),
+    {m_bcrec_force}, PeleLMCCFillExtDirDummy{},
+    getInterpolator(m_regrid_interp_method));
 }
 
-// Fill coarse patch of chem function call
-void
-PeleLM::fillcoarsepatch_chemFunctCall(
-  const int lev,
-  const amrex::Real a_time,
-  amrex::MultiFab& a_fctC,
-  const int nGhost)
+// Velocity BCRecs keeping only the ext_dir (inflow) faces
+amrex::Vector<amrex::BCRec>
+PeleLM::inflowOnlyVelBCRec()
 {
-  // Interpolator
-  auto* mapper = getInterpolator(m_regrid_interp_method);
-
-  amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-    crse_bndry_func(
-      geom[lev - 1], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-  amrex::PhysBCFunct<amrex::GpuBndryFuncFab<PeleLMCCFillExtDirDummy>>
-    fine_bndry_func(
-      geom[lev], {m_bcrec_force}, PeleLMCCFillExtDirDummy{m_nAux});
-  InterpFromCoarseLevel(
-    a_fctC, amrex::IntVect(nGhost), a_time, m_leveldatareact[lev - 1]->functC,
-    0, 0, 1, geom[lev - 1], geom[lev], crse_bndry_func, 0, fine_bndry_func, 0,
-    refRatio(lev - 1), mapper, {m_bcrec_force}, 0);
+  auto realVelBCRec = fetchBCRecArray(VELX, AMREX_SPACEDIM);
+  amrex::Vector<amrex::BCRec> inflowBCRec(AMREX_SPACEDIM);
+  for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+    for (int idim2 = 0; idim2 < AMREX_SPACEDIM; ++idim2) {
+      inflowBCRec[idim].setLo(
+        idim2, (realVelBCRec[idim].lo(idim2) == amrex::BCType::ext_dir)
+                 ? amrex::BCType::ext_dir
+                 : amrex::BCType::bogus);
+      inflowBCRec[idim].setHi(
+        idim2, (realVelBCRec[idim].hi(idim2) == amrex::BCType::ext_dir)
+                 ? amrex::BCType::ext_dir
+                 : amrex::BCType::bogus);
+    }
+  }
+  return inflowBCRec;
 }
 
-// Fill the inflow boundary of a velocity MF
-// used for velocity projection
+// Fill the inflow boundary of a velocity MF used for velocity projection
 void
 PeleLM::setInflowBoundaryVel(
   amrex::MultiFab& a_vel, const int lev, const TimeStamp a_time)
@@ -1214,37 +775,10 @@ PeleLM::setInflowBoundaryVel(
     fillFromRecyclingPlane(a_vel, 0, lev);
   }
 
-  // Create a dummy BCRec from Velocity BCRec keeping only Inflow and set the
-  // other to bogus
-  auto realVelBCRec = fetchBCRecArray(VELX, AMREX_SPACEDIM);
-  amrex::Vector<amrex::BCRec> dummyVelBCRec(AMREX_SPACEDIM);
-  for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-    for (int idim2 = 0; idim2 < AMREX_SPACEDIM; ++idim2) {
-      if (realVelBCRec[idim].lo(idim2) == amrex::BCType::ext_dir) {
-        dummyVelBCRec[idim].setLo(idim2, amrex::BCType::ext_dir);
-      } else {
-        dummyVelBCRec[idim].setLo(idim2, amrex::BCType::bogus);
-      }
-      if (realVelBCRec[idim].hi(idim2) == amrex::BCType::ext_dir) {
-        dummyVelBCRec[idim].setHi(idim2, amrex::BCType::ext_dir);
-      } else {
-        dummyVelBCRec[idim].setHi(idim2, amrex::BCType::bogus);
-      }
-    }
-  }
-
-  ProbParm const* lprobparm = prob_parm_d;
-  auto const* lpmfdata = pmf_data.device_parm();
-  const int recycFull =
-    static_cast<int>(m_recycling_mode == RecyclingMode::Full);
-  amrex::PhysBCFunct<
-    amrex::GpuBndryFuncFab<PeleLMCCFillExtDirState<ProblemSpecificFunctions>>>
-    bndry_func(
-      geom[lev], dummyVelBCRec,
-      PeleLMCCFillExtDirState<ProblemSpecificFunctions>{
-        lprobparm, lpmfdata, m_nAux,
-        static_cast<int>(turb_inflow.is_initialized()), m_use_inlet_from_plane,
-        m_inlet_plane_dir, recycFull, m_map_eval});
+  // Fill only the inflow (ext_dir) faces
+  auto bcfill = makeStateBCFill();
+  amrex::PhysBCFunct<amrex::GpuBndryFuncFab<decltype(bcfill)>> bndry_func(
+    geom[lev], inflowOnlyVelBCRec(), bcfill);
 
   bndry_func(a_vel, 0, AMREX_SPACEDIM, a_vel.nGrowVect(), time, 0);
 
@@ -1466,10 +1000,6 @@ PeleLM::interpRecyclingSlabFromCoarse(
 {
   AMREX_ASSERT(lev > 0);
 
-  ProbParm const* lprobparm = prob_parm_d;
-  auto const* lpmfdata = pmf_data.device_parm();
-  const int recycFull =
-    static_cast<int>(m_recycling_mode == RecyclingMode::Full);
   // All-int_dir dummy BCRecs disable boundary handling: the slab lies in the
   // domain interior, so PhysBCFunct calls on the temporaries are no-ops in
   // practice. The time argument is likewise informational only.
@@ -1481,30 +1011,11 @@ PeleLM::interpRecyclingSlabFromCoarse(
   // planeDir ghost cells. PCInterp has no transverse stencil and is
   // adequate for injecting a fluctuation field across a refinement
   // boundary.
-  // NOTE: Declared as InterpBase* (not auto* / MFPCInterp*) so AMReX's
-  // FillPatchInterp dispatches through its runtime dynamic_cast path
-  // and picks the MultiFab-based interpolator entry point.
-  amrex::InterpBase* mapper = &amrex::mf_pc_interp;
-  amrex::PhysBCFunct<
-    amrex::GpuBndryFuncFab<PeleLMCCFillExtDirState<ProblemSpecificFunctions>>>
-    crse_bndry_func(
-      geom[lev - 1], velBCRec,
-      PeleLMCCFillExtDirState<ProblemSpecificFunctions>{
-        lprobparm, lpmfdata, m_nAux,
-        static_cast<int>(turb_inflow.is_initialized()), m_use_inlet_from_plane,
-        m_inlet_plane_dir, recycFull});
-  amrex::PhysBCFunct<
-    amrex::GpuBndryFuncFab<PeleLMCCFillExtDirState<ProblemSpecificFunctions>>>
-    fine_bndry_func(
-      geom[lev], velBCRec,
-      PeleLMCCFillExtDirState<ProblemSpecificFunctions>{
-        lprobparm, lpmfdata, m_nAux,
-        static_cast<int>(turb_inflow.is_initialized()), m_use_inlet_from_plane,
-        m_inlet_plane_dir, recycFull});
-  amrex::InterpFromCoarseLevel(
-    a_fine, amrex::IntVect(0), m_cur_time, a_crse, 0, 0, AMREX_SPACEDIM,
-    geom[lev - 1], geom[lev], crse_bndry_func, 0, fine_bndry_func, 0,
-    refRatio(lev - 1), mapper, velBCRec, 0);
+  // mf_pc_interp must reach AMReX as an InterpBase* (as fillcoarsepatchLevel
+  // takes it) to select the MultiFab-based interpolator entry point.
+  fillcoarsepatchLevel(
+    lev, m_cur_time, a_fine, 0, a_crse, AMREX_SPACEDIM, velBCRec,
+    makeStateBCFill(), &amrex::mf_pc_interp);
 }
 
 void
@@ -1902,33 +1413,10 @@ PeleLM::computeRecyclingTargetFlow(amrex::Orientation::Side a_side)
   amrex::MultiFab vel(grids[0], dmap[0], AMREX_SPACEDIM, 1);
   vel.setVal(0.0);
 
-  // Keep only ext_dir faces; everything else is bogus so the fill functor
-  // leaves it alone (same construction as setInflowBoundaryVel).
-  auto realVelBCRec = fetchBCRecArray(VELX, AMREX_SPACEDIM);
-  amrex::Vector<amrex::BCRec> dummyVelBCRec(AMREX_SPACEDIM);
-  for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-    for (int idim2 = 0; idim2 < AMREX_SPACEDIM; ++idim2) {
-      dummyVelBCRec[idim].setLo(
-        idim2, (realVelBCRec[idim].lo(idim2) == amrex::BCType::ext_dir)
-                 ? amrex::BCType::ext_dir
-                 : amrex::BCType::bogus);
-      dummyVelBCRec[idim].setHi(
-        idim2, (realVelBCRec[idim].hi(idim2) == amrex::BCType::ext_dir)
-                 ? amrex::BCType::ext_dir
-                 : amrex::BCType::bogus);
-    }
-  }
-
-  ProbParm const* lprobparm = prob_parm_d;
-  auto const* lpmfdata = pmf_data.device_parm();
-  amrex::PhysBCFunct<
-    amrex::GpuBndryFuncFab<PeleLMCCFillExtDirState<ProblemSpecificFunctions>>>
-    bndry_func(
-      geom[0], dummyVelBCRec,
-      PeleLMCCFillExtDirState<ProblemSpecificFunctions>{
-        lprobparm, lpmfdata, m_nAux, /*do_turbInflow=*/0,
-        /*do_inletFromPlane=*/0, m_inlet_plane_dir, /*recycling_full=*/0,
-        m_map_eval});
+  // Fill only the ext_dir faces, without the inflow preloads
+  auto bcfill = makeStateBCFill(false);
+  amrex::PhysBCFunct<amrex::GpuBndryFuncFab<decltype(bcfill)>> bndry_func(
+    geom[0], inflowOnlyVelBCRec(), bcfill);
   bndry_func(vel, 0, AMREX_SPACEDIM, vel.nGrowVect(), m_cur_time, 0);
 
   // Copy the innermost ghost layer onto the slab layout and integrate over
