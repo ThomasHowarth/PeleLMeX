@@ -1587,18 +1587,9 @@ public:
     const amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>& a_fluxes,
     const int flux_comp,
     const int ncomp,
-    const amrex::Real scale);
-
-  void intFluxDivergenceLevelEB(
-    const int lev,
-    amrex::MultiFab& a_divergence,
-    const int div_comp,
-    const amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>& a_fluxes,
-    const int flux_comp,
-    const amrex::MultiFab* a_EBfluxes,
-    const int ebflux_comp,
-    const int ncomp,
-    const amrex::Real scale);
+    const amrex::Real scale,
+    const amrex::MultiFab* a_EBfluxes = nullptr,
+    const int ebflux_comp = 0);
 
   void floorSpecies(const PeleLM::TimeStamp a_time);
 
