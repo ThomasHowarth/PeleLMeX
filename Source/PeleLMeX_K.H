@@ -140,7 +140,7 @@ getTransportCoeff<pele::physics::eos::Manifold>(
   const pele::physics::eos::EosParm<pele::physics::PhysicsType::eos_type>*
     eosparm) noexcept
 {
-  // No Soret with manifold moels
+  // No Soret with manifold models
   AMREX_ASSERT(!do_soret);
 
   // Get rho & Y from rhoY
@@ -165,7 +165,7 @@ getTransportCoeff<pele::physics::eos::Manifold>(
   constexpr bool get_mu = true;
   constexpr bool get_lam = false;
   constexpr bool get_Ddiag = true;
-  const bool get_chi = do_soret;
+  constexpr bool get_chi = false; // Asserted above
   auto trans = pele::physics::PhysicsType::transport();
   trans.transport(
     get_xi, get_mu, get_lam, get_Ddiag, get_chi, Tloc, rho_cgs, y, rhoDi_cgs,
@@ -1083,12 +1083,11 @@ est_divu_dt_2(
   amrex::Array4<const amrex::Real> const& divu) noexcept
 {
   amrex::Real dtcell = 1.0e20;
-  amrex::Real denom = 0.0;
   const bool rho_is_okay = (rho(i, j, k) > rhomin);
 
   const auto dxinv = mapped_inv_dx_array(i, j, k, dxinv_uniform, mmap, gd);
 
-  denom =
+  const amrex::Real denom =
     rho(i, j, k) * divu(i, j, k) +
     AMREX_D_TERM(
       vel(i, j, k, 0) * (rho(i + 1, j, k) - rho(i - 1, j, k)) * dxinv[0],
