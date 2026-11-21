@@ -851,6 +851,29 @@ public:
   void advanceChemistryBAChem(
     const int lev, const amrex::Real a_dt, amrex::MultiFab& a_extForcing);
 
+  void reactChemBox(
+    const amrex::Box& bx,
+    const amrex::Real a_dt,
+    const int a_doReact,
+    const bool a_restoreForcing,
+    amrex::Array4<const amrex::Real> const& rhoY_src,
+    amrex::Array4<const amrex::Real> const& rhoH_src,
+    amrex::Array4<const amrex::Real> const& temp_src,
+    amrex::Array4<amrex::Real> const& rhoY,
+    amrex::Array4<amrex::Real> const& rhoH,
+    amrex::Array4<amrex::Real> const& temp,
+    amrex::Array4<amrex::Real> const& extF_rhoY,
+    amrex::Array4<amrex::Real> const& extF_rhoH,
+    amrex::Array4<amrex::Real> const& fcl,
+    amrex::Array4<int> const& mask_arr
+#ifdef PELE_USE_PLASMA
+    ,
+    amrex::Array4<const amrex::Real> const& nE_src,
+    amrex::Array4<amrex::Real> const& nE,
+    amrex::Array4<amrex::Real> const& FnE
+#endif
+  );
+
   /**
    * \brief Top-level instantaneous reaction rate function, acting on all levels
    * \param a_I_R outgoing multi-level container inst. RR container
