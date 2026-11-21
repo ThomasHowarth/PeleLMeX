@@ -2758,4 +2758,7 @@ private:
 
 void writeBuildInfo();
 
+//! Git hashes of PeleLMeX, AMReX, PelePhysics, AMReX-Hydro and SUNDIALS
+std::array<std::string, 5> gitHashes();
+
 #endif

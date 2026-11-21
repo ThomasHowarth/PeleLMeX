@@ -2,6 +2,7 @@
 #include <PeleLMeX.H>
 #include <PeleLMeX_K.H>
 #include <hydro_utils.H>
+#include <array>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -11,6 +12,22 @@
 #ifdef PELE_USE_CMAKE
 #include "PeleGitHashes.H"
 #endif
+
+std::array<std::string, 5>
+gitHashes()
+{
+#ifdef PELE_USE_CMAKE
+  return {
+    PeleBuildInfo::PeleLMeX_git_hash, PeleBuildInfo::AMReX_git_hash,
+    PeleBuildInfo::PelePhysics_git_hash, PeleBuildInfo::AMReXHydro_git_hash,
+    PeleBuildInfo::SUNDIALS_git_hash};
+#else
+  return {
+    amrex::buildInfoGetGitHash(1), amrex::buildInfoGetGitHash(2),
+    amrex::buildInfoGetGitHash(3), amrex::buildInfoGetGitHash(4),
+    amrex::buildInfoGetGitHash(5)};
+#endif
+}
 
 void
 writeBuildInfo()
@@ -49,34 +66,14 @@ writeBuildInfo()
 
   std::cout << "\n";
 
-#ifdef PELE_USE_CMAKE
-  const std::string pele_hash = PeleBuildInfo::PeleLMeX_git_hash;
-  const std::string amrex_hash = PeleBuildInfo::AMReX_git_hash;
-  const std::string pelephysics_hash = PeleBuildInfo::PelePhysics_git_hash;
-  const std::string amrex_hydro_hash = PeleBuildInfo::AMReXHydro_git_hash;
-  const std::string sundials_hash = PeleBuildInfo::SUNDIALS_git_hash;
-#else
-  const std::string pele_hash = amrex::buildInfoGetGitHash(1);
-  const std::string amrex_hash = amrex::buildInfoGetGitHash(2);
-  const std::string pelephysics_hash = amrex::buildInfoGetGitHash(3);
-  const std::string amrex_hydro_hash = amrex::buildInfoGetGitHash(4);
-  const std::string sundials_hash = amrex::buildInfoGetGitHash(5);
-#endif
-
-  if (!pele_hash.empty()) {
-    std::cout << "PeleLMeX     git hash: " << pele_hash << "\n";
-  }
-  if (!amrex_hash.empty()) {
-    std::cout << "AMReX        git hash: " << amrex_hash << "\n";
-  }
-  if (!pelephysics_hash.empty()) {
-    std::cout << "PelePhysics  git hash: " << pelephysics_hash << "\n";
-  }
-  if (!amrex_hydro_hash.empty()) {
-    std::cout << "AMReX-Hydro  git hash: " << amrex_hydro_hash << "\n";
-  }
-  if (!sundials_hash.empty()) {
-    std::cout << "SUNDIALS     git hash: " << sundials_hash << "\n";
+  const auto hashes = gitHashes();
+  const std::array<const char*, 5> names{
+    "PeleLMeX    ", "AMReX       ", "PelePhysics ", "AMReX-Hydro ",
+    "SUNDIALS    "};
+  for (int i = 0; i < 5; ++i) {
+    if (!hashes[i].empty()) {
+      std::cout << names[i] << " git hash: " << hashes[i] << "\n";
+    }
   }
 
   const std::string buildgithash = amrex::buildInfoGetBuildGitHash();

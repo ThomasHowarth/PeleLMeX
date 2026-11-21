@@ -5,14 +5,10 @@
 #include <string>
 #include <AMReX_Algorithm.H>
 #include <AMReX_ParmParse.H>
-#include <AMReX_buildInfo.H>
 #include <PeleLMeX.H>
 #include <PeleLMeX_DeriveFunc.H>
 #include <PeleLMeX_BPatch.H>
 #include <PelePhysics.H>
-#ifdef PELE_USE_CMAKE
-#include <PeleGitHashes.H>
-#endif
 
 #ifdef PELE_USE_PLASMA
 #include "PeleLMeX_EOS_Extension.H"
@@ -51,6 +47,26 @@ PeleLM::Setup()
 
   m_wall_start = amrex::ParallelDescriptor::second();
 
+  // Print build info to screen
+  {
+    const auto hashes = gitHashes();
+    const std::array<const char*, 5> names{
+      "PeleLMeX   ", "AMReX      ", "PelePhysics", "AMReX-Hydro",
+      "SUNDIALS   "};
+    amrex::Print() << "\n ================ Version Info =================\n";
+    for (int i = 0; i < 5; ++i) {
+      amrex::Print() << " " << names[i] << " git hash: " << hashes[i] << "\n";
+    }
+    amrex::Print() << " ===============================================\n";
+  }
+
+#ifdef PELE_USE_SOOT
+  soot_model = new SootModel{};
+#endif
+
+  // Read PeleLMeX parameters
+  readParameters();
+
   // Ensure grid is isotropic.
   //
   // When mesh mapping is enabled, the AMReX grid represents the uniform
@@ -60,47 +76,12 @@ PeleLM::Setup()
   // in the inputs; the mapping model is expected to produce a
   // physically isotropic grid (or the user has intentionally chosen
   // anisotropic physical spacing).
-  {
-    std::string mesh_mapping_name;
-    amrex::ParmParse ppg("geometry");
-    const bool mesh_mapping_on =
-      static_cast<bool>(ppg.query("mesh_mapping", mesh_mapping_name));
-    if (!mesh_mapping_on) {
-      auto const dx = geom[0].CellSizeArray();
-      AMREX_ALWAYS_ASSERT(AMREX_D_TERM(
-        , amrex::almostEqual(dx[0], dx[1], 10),
-        &&amrex::almostEqual(dx[1], dx[2], 10)));
-    }
+  if (!m_mesh_mapping) {
+    auto const dx = geom[0].CellSizeArray();
+    AMREX_ALWAYS_ASSERT(AMREX_D_TERM(
+      , amrex::almostEqual(dx[0], dx[1], 10),
+      &&amrex::almostEqual(dx[1], dx[2], 10)));
   }
-  // Print build info to screen
-#ifdef PELE_USE_CMAKE
-  const std::string pele_hash = PeleBuildInfo::PeleLMeX_git_hash;
-  const std::string amrex_hash = PeleBuildInfo::AMReX_git_hash;
-  const std::string pelephysics_hash = PeleBuildInfo::PelePhysics_git_hash;
-  const std::string amrex_hydro_hash = PeleBuildInfo::AMReXHydro_git_hash;
-  const std::string sundials_hash = PeleBuildInfo::SUNDIALS_git_hash;
-#else
-  const std::string pele_hash = amrex::buildInfoGetGitHash(1);
-  const std::string amrex_hash = amrex::buildInfoGetGitHash(2);
-  const std::string pelephysics_hash = amrex::buildInfoGetGitHash(3);
-  const std::string amrex_hydro_hash = amrex::buildInfoGetGitHash(4);
-  const std::string sundials_hash = amrex::buildInfoGetGitHash(5);
-#endif
-
-  amrex::Print() << "\n ================ Version Info =================\n";
-  amrex::Print() << " PeleLMeX    git hash: " << pele_hash << "\n";
-  amrex::Print() << " AMReX       git hash: " << amrex_hash << "\n";
-  amrex::Print() << " PelePhysics git hash: " << pelephysics_hash << "\n";
-  amrex::Print() << " AMReX-Hydro git hash: " << amrex_hydro_hash << "\n";
-  amrex::Print() << " SUNDIALS    git hash: " << sundials_hash << "\n";
-  amrex::Print() << " ===============================================\n";
-
-#ifdef PELE_USE_SOOT
-  soot_model = new SootModel{};
-#endif
-
-  // Read PeleLMeX parameters
-  readParameters();
 
 #ifdef AMREX_USE_EB
   makeEBGeometry();
@@ -196,16 +177,6 @@ PeleLM::Setup()
 
   // Derived variables
   derivedSetup();
-
-  // Emit mesh-mapping displacement metadata alongside the plotfile
-  // when mesh mapping is active (so ParaView/VisIt renders in physical
-  // space).  On by default; set to 0 to keep Xi-space plotfiles.
-  // Parsed unconditionally so the query also runs for incompressible /
-  // chemistry-off cases.
-  {
-    amrex::ParmParse ppplt("peleLM");
-    ppplt.query("plot_mesh_mapping", m_plot_mesh_mapping);
-  }
 
   // Evaluate variables
   evaluateSetup();
@@ -328,6 +299,10 @@ PeleLM::readParameters()
       amrex::Print() << " Mesh mapping enabled: " << mesh_mapping_name << "\n";
     }
   }
+  // Emit mesh-mapping displacement metadata alongside the plotfile
+  // when mesh mapping is active (so ParaView/VisIt renders in physical
+  // space).  On by default; set to 0 to keep Xi-space plotfiles.
+  pp.query("plot_mesh_mapping", m_plot_mesh_mapping);
 
   // -----------------------------------------
   // Boundary conditions
