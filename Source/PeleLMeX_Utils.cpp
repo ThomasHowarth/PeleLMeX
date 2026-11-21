@@ -887,27 +887,11 @@ PeleLM::resetCoveredMask()
     }
 
     for (int lev = 0; lev < finest_level; ++lev) {
-      // Set a fine-covered mask
+      // Set a fine-covered mask: 1 where uncovered, 0 under level lev+1
+      *m_coveredMask[lev] = amrex::makeFineMask(
+        grids[lev], dmap[lev], grids[lev + 1], ref_ratio[lev], 1, 0);
       amrex::BoxArray baf = grids[lev + 1];
       baf.coarsen(ref_ratio[lev]);
-      m_coveredMask[lev]->setVal(1);
-#ifdef AMREX_USE_OMP
-#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
-#endif
-      {
-        std::vector<std::pair<int, amrex::Box>> isects;
-        for (amrex::MFIter mfi(*m_coveredMask[lev], amrex::TilingIfNotGPU());
-             mfi.isValid(); ++mfi) {
-          auto const& mask = m_coveredMask[lev]->array(mfi);
-          baf.intersections(grids[lev][mfi.index()], isects);
-          for (const auto& is : isects) {
-            amrex::ParallelFor(
-              is.second, [mask] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-                mask(i, j, k) = 0;
-              });
-          }
-        }
-      }
 
       //----------------------------------------------------------------------------
       // Setup a BoxArray for the chemistry
@@ -1981,95 +1965,58 @@ PeleLM::updateTypicalValuesChem()
   }
 }
 
+namespace {
+// Local reduction (Op = amrex::ReduceOpMax or ReduceOpMin) of component comp
+// over the cells where a_mask is non-zero and, in EB builds, not covered.
+// a_skip is the value an excluded cell contributes.
+template <typename Op>
+amrex::Real
+maskedReduce(
+  const amrex::MultiFab& a_MF,
+  const amrex::iMultiFab& a_mask,
+  const int comp,
+  const amrex::Real a_skip)
+{
+  auto const& ma = a_MF.const_arrays();
+  auto const& mask = a_mask.const_arrays();
+#ifdef AMREX_USE_EB
+  if (a_MF.hasEBFabFactory()) {
+    const auto& ebfactory =
+      dynamic_cast<amrex::EBFArrayBoxFactory const&>(a_MF.Factory());
+    auto const& flagsma = ebfactory.getMultiEBCellFlagFab().const_arrays();
+    return amrex::ParReduce(
+      amrex::TypeList<Op>{}, amrex::TypeList<amrex::Real>{}, a_MF,
+      amrex::IntVect(0),
+      [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept
+        -> amrex::GpuTuple<amrex::Real> {
+        if (flagsma[box_no](i, j, k).isCovered() || !mask[box_no](i, j, k)) {
+          return a_skip;
+        }
+        return ma[box_no](i, j, k, comp);
+      });
+  }
+#endif
+  return amrex::ParReduce(
+    amrex::TypeList<Op>{}, amrex::TypeList<amrex::Real>{}, a_MF,
+    amrex::IntVect(0),
+    [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept
+      -> amrex::GpuTuple<amrex::Real> {
+      if (!mask[box_no](i, j, k)) {
+        return a_skip;
+      }
+      return ma[box_no](i, j, k, comp);
+    });
+}
+} // namespace
+
 // amrex::MultiFab max, excluding EB-covered/fine-covered cells, local
 amrex::Real
 PeleLM::MFmax(
   const amrex::MultiFab* a_MF, const amrex::iMultiFab& a_mask, const int comp)
 {
   BL_PROFILE("PeleLMeX::MFmax()");
-  amrex::Real mx = std::numeric_limits<amrex::Real>::lowest();
-
-#ifdef AMREX_USE_EB
-  if (a_MF->hasEBFabFactory()) {
-    const auto& ebfactory =
-      dynamic_cast<amrex::EBFArrayBoxFactory const&>(a_MF->Factory());
-    auto const& flags = ebfactory.getMultiEBCellFlagFab();
-#ifdef AMREX_USE_GPU
-    if (amrex::Gpu::inLaunchRegion()) {
-      auto const& flagsma = flags.const_arrays();
-      auto const& ma = a_MF->const_arrays();
-      auto const& mask = a_mask.const_arrays();
-      mx = ParReduce(
-        amrex::TypeList<amrex::ReduceOpMax>{}, amrex::TypeList<amrex::Real>{},
-        *a_MF, amrex::IntVect(0),
-        [flagsma, mask, ma, comp] AMREX_GPU_DEVICE(
-          int box_no, int i, int j,
-          int k) noexcept -> amrex::GpuTuple<amrex::Real> {
-          if (flagsma[box_no](i, j, k).isCovered() || !mask[box_no](i, j, k)) {
-            return AMREX_REAL_LOWEST;
-          } else {
-            return ma[box_no](i, j, k, comp);
-          }
-        });
-    } else
-#endif
-    {
-#ifdef AMREX_USE_OMP
-#pragma omp parallel reduction(max : mx)
-#endif
-      for (amrex::MFIter mfi(*a_MF, true); mfi.isValid(); ++mfi) {
-        amrex::Box const& bx = mfi.tilebox();
-        if (flags[mfi].getType(bx) != amrex::FabType::covered) {
-          auto const& flag = flags.const_array(mfi);
-          auto const& a = a_MF->const_array(mfi);
-          auto const& mask = a_mask.const_array(mfi);
-          AMREX_LOOP_3D(bx, i, j, k, {
-            if (!flag(i, j, k).isCovered() && mask(i, j, k)) {
-              mx = amrex::max<amrex::Real>(mx, a(i, j, k, comp));
-            }
-          });
-        }
-      }
-    }
-  } else
-#endif
-  {
-#ifdef AMREX_USE_GPU
-    if (amrex::Gpu::inLaunchRegion()) {
-      auto const& ma = a_MF->const_arrays();
-      auto const& mask = a_mask.const_arrays();
-      mx = ParReduce(
-        amrex::TypeList<amrex::ReduceOpMax>{}, amrex::TypeList<amrex::Real>{},
-        *a_MF, amrex::IntVect(0),
-        [mask, ma, comp] AMREX_GPU_DEVICE(
-          int box_no, int i, int j,
-          int k) noexcept -> amrex::GpuTuple<amrex::Real> {
-          if (!mask[box_no](i, j, k)) {
-            return AMREX_REAL_LOWEST;
-          } else {
-            return ma[box_no](i, j, k, comp);
-          }
-        });
-    } else
-#endif
-    {
-#ifdef AMREX_USE_OMP
-#pragma omp parallel reduction(max : mx)
-#endif
-      for (amrex::MFIter mfi(*a_MF, true); mfi.isValid(); ++mfi) {
-        amrex::Box const& bx = mfi.tilebox();
-        auto const& a = a_MF->const_array(mfi);
-        auto const& mask = a_mask.const_array(mfi);
-        AMREX_LOOP_3D(bx, i, j, k, {
-          if (mask(i, j, k)) {
-            mx = amrex::max<amrex::Real>(mx, a(i, j, k, comp));
-          }
-        });
-      }
-    }
-  }
-
-  return mx;
+  return maskedReduce<amrex::ReduceOpMax>(
+    *a_MF, a_mask, comp, std::numeric_limits<amrex::Real>::lowest());
 }
 
 // amrex::MultiFab min, excluding EB-covered/fine-covered cells, local
@@ -2078,92 +2025,11 @@ PeleLM::MFmin(
   const amrex::MultiFab* a_MF, const amrex::iMultiFab& a_mask, const int comp)
 {
   BL_PROFILE("PeleLMeX::MFmin()");
-  amrex::Real mn = std::numeric_limits<amrex::Real>::max();
-
-#ifdef AMREX_USE_EB
-  if (a_MF->hasEBFabFactory()) {
-    const auto& ebfactory =
-      dynamic_cast<amrex::EBFArrayBoxFactory const&>(a_MF->Factory());
-    auto const& flags = ebfactory.getMultiEBCellFlagFab();
-#ifdef AMREX_USE_GPU
-    if (amrex::Gpu::inLaunchRegion()) {
-      auto const& flagsma = flags.const_arrays();
-      auto const& ma = a_MF->const_arrays();
-      auto const& mask = a_mask.const_arrays();
-      mn = ParReduce(
-        amrex::TypeList<amrex::ReduceOpMin>{}, amrex::TypeList<amrex::Real>{},
-        *a_MF, amrex::IntVect(0),
-        [flagsma, mask, ma, comp] AMREX_GPU_DEVICE(
-          int box_no, int i, int j,
-          int k) noexcept -> amrex::GpuTuple<amrex::Real> {
-          if (flagsma[box_no](i, j, k).isCovered() || !mask[box_no](i, j, k)) {
-            return AMREX_REAL_MAX;
-          } else {
-            return ma[box_no](i, j, k, comp);
-          }
-        });
-    } else
-#endif
-    {
-#ifdef AMREX_USE_OMP
-#pragma omp parallel reduction(min : mn)
-#endif
-      for (amrex::MFIter mfi(*a_MF, true); mfi.isValid(); ++mfi) {
-        amrex::Box const& bx = mfi.tilebox();
-        if (flags[mfi].getType(bx) != amrex::FabType::covered) {
-          auto const& flag = flags.const_array(mfi);
-          auto const& a = a_MF->const_array(mfi);
-          auto const& mask = a_mask.const_array(mfi);
-          AMREX_LOOP_3D(bx, i, j, k, {
-            if (!flag(i, j, k).isCovered() && mask(i, j, k)) {
-              mn = amrex::min<amrex::Real>(mn, a(i, j, k, comp));
-            }
-          });
-        }
-      }
-    }
-  } else
-#endif
-  {
-#ifdef AMREX_USE_GPU
-    if (amrex::Gpu::inLaunchRegion()) {
-      auto const& ma = a_MF->const_arrays();
-      auto const& mask = a_mask.const_arrays();
-      mn = ParReduce(
-        amrex::TypeList<amrex::ReduceOpMin>{}, amrex::TypeList<amrex::Real>{},
-        *a_MF, amrex::IntVect(0),
-        [mask, ma, comp] AMREX_GPU_DEVICE(
-          int box_no, int i, int j,
-          int k) noexcept -> amrex::GpuTuple<amrex::Real> {
-          if (!mask[box_no](i, j, k)) {
-            return AMREX_REAL_MAX;
-          } else {
-            return ma[box_no](i, j, k, comp);
-          }
-        });
-    } else
-#endif
-    {
-#ifdef AMREX_USE_OMP
-#pragma omp parallel reduction(min : mn)
-#endif
-      for (amrex::MFIter mfi(*a_MF, true); mfi.isValid(); ++mfi) {
-        amrex::Box const& bx = mfi.tilebox();
-        auto const& a = a_MF->const_array(mfi);
-        auto const& mask = a_mask.const_array(mfi);
-        AMREX_LOOP_3D(bx, i, j, k, {
-          if (mask(i, j, k)) {
-            mn = amrex::min<amrex::Real>(mn, a(i, j, k, comp));
-          }
-        });
-      }
-    }
-  }
-
-  return mn;
+  return maskedReduce<amrex::ReduceOpMin>(
+    *a_MF, a_mask, comp, std::numeric_limits<amrex::Real>::max());
 }
 
-// MultiLevel max, exlucing EB-covered/fine-covered cells
+// MultiLevel max, excluding EB-covered/fine-covered cells
 amrex::Vector<amrex::Real>
 PeleLM::MLmax(
   const amrex::Vector<const amrex::MultiFab*>& a_MF,
@@ -2174,18 +2040,12 @@ PeleLM::MLmax(
   AMREX_ASSERT(a_MF[0]->nComp() >= scomp + ncomp);
 
   amrex::Vector<amrex::Real> nmax(ncomp, AMREX_REAL_LOWEST);
-
   for (int lev = 0; lev < a_MF.size(); ++lev) {
-    if (lev != finest_level) {
-      for (int n = 0; n < ncomp; ++n) {
-        nmax[n] = amrex::max<amrex::Real>(
-          nmax[n], MFmax(a_MF[lev], *m_coveredMask[lev], scomp + n));
-      }
-    } else {
-      for (int n = 0; n < ncomp; ++n) {
-        nmax[n] =
-          amrex::max<amrex::Real>(nmax[n], a_MF[lev]->max(scomp + n, 0, true));
-      }
+    for (int n = 0; n < ncomp; ++n) {
+      const amrex::Real levmax =
+        (lev != finest_level) ? MFmax(a_MF[lev], *m_coveredMask[lev], scomp + n)
+                              : a_MF[lev]->max(scomp + n, 0, true);
+      nmax[n] = amrex::max<amrex::Real>(nmax[n], levmax);
     }
   }
 
@@ -2193,7 +2053,7 @@ PeleLM::MLmax(
   return nmax;
 }
 
-// MultiLevel min, exlucing EB-covered/fine-covered cells
+// MultiLevel min, excluding EB-covered/fine-covered cells
 amrex::Vector<amrex::Real>
 PeleLM::MLmin(
   const amrex::Vector<const amrex::MultiFab*>& a_MF,
@@ -2204,18 +2064,12 @@ PeleLM::MLmin(
   AMREX_ASSERT(a_MF[0]->nComp() >= scomp + ncomp);
 
   amrex::Vector<amrex::Real> nmin(ncomp, AMREX_REAL_MAX);
-
   for (int lev = 0; lev < a_MF.size(); ++lev) {
-    if (lev != finest_level) {
-      for (int n = 0; n < ncomp; ++n) {
-        nmin[n] = amrex::min<amrex::Real>(
-          nmin[n], MFmin(a_MF[lev], *m_coveredMask[lev], scomp + n));
-      }
-    } else {
-      for (int n = 0; n < ncomp; ++n) {
-        nmin[n] =
-          amrex::min<amrex::Real>(nmin[n], a_MF[lev]->min(scomp + n, 0, true));
-      }
+    for (int n = 0; n < ncomp; ++n) {
+      const amrex::Real levmin =
+        (lev != finest_level) ? MFmin(a_MF[lev], *m_coveredMask[lev], scomp + n)
+                              : a_MF[lev]->min(scomp + n, 0, true);
+      nmin[n] = amrex::min<amrex::Real>(nmin[n], levmin);
     }
   }
 
