@@ -1485,44 +1485,33 @@ PeleLM::variablesSetup()
   amrex::Print() << "\n";
 
   //----------------------------------------------------------------
-  // Set advection/diffusion types
+  // Set advection types
   if (m_incompressible != 0) {
     m_AdvTypeState.resize(AMREX_SPACEDIM);
-    m_DiffTypeState.resize(AMREX_SPACEDIM);
   } else {
     m_AdvTypeState.resize(NVAR);
-    m_DiffTypeState.resize(NVAR);
   }
 
   // Velocity - follow incflo
   for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-    m_AdvTypeState[VELX + idim] = 0;  // NonConservative
-    m_DiffTypeState[VELX + idim] = 1; // Diffusive
+    m_AdvTypeState[VELX + idim] = 0; // NonConservative
   }
 
   if (m_incompressible == 0) {
     m_AdvTypeState[DENSITY] = 1;
-    m_DiffTypeState[DENSITY] = 0;
     for (int n = 0; n < NUM_SPECIES; ++n) {
       m_AdvTypeState[FIRSTSPEC + n] = 1;
-      m_DiffTypeState[FIRSTSPEC + n] = 1;
     }
     m_AdvTypeState[RHOH] = 1;
-    m_DiffTypeState[RHOH] = 1;
     m_AdvTypeState[TEMP] = 0;
-    m_DiffTypeState[TEMP] = 0;
     m_AdvTypeState[RHORT] = 0;
-    m_DiffTypeState[RHORT] = 0;
 #ifdef PELE_USE_PLASMA
     m_AdvTypeState[NE] = 0;
-    m_DiffTypeState[NE] = 0;
     m_AdvTypeState[PHIV] = 0;
-    m_DiffTypeState[PHIV] = 0;
 #endif
 #ifdef PELE_USE_SOOT
     for (int mom = 0; mom < NUMSOOTVAR; ++mom) {
       m_AdvTypeState[FIRSTSOOT + mom] = 0;
-      m_DiffTypeState[FIRSTSOOT + mom] = 0;
     }
 #endif
   }
