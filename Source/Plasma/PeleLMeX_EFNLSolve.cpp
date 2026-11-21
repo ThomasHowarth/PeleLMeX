@@ -569,154 +569,43 @@ PeleLM::getAdvectionFluxes(
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
 #endif
-  {
-    amrex::FArrayBox edgstate[AMREX_SPACEDIM];
-    for (amrex::MFIter mfi(a_nE, amrex::TilingIfNotGPU()); mfi.isValid();
-         ++mfi) {
-      amrex::Box const& bx = mfi.tilebox();
-      AMREX_D_TERM(
-        const amrex::Box& xbx = surroundingNodes(bx, 0);
-        , const amrex::Box& ybx = surroundingNodes(bx, 1);
-        , const amrex::Box& zbx = surroundingNodes(bx, 2));
-
-      // data arrays
-      auto const& ne_arr = a_nE.const_array(mfi);
-      AMREX_D_TERM(
-        amrex::Array4<amrex::Real> xflux = a_fluxes[0]->array(mfi);
-        , amrex::Array4<amrex::Real> yflux = a_fluxes[1]->array(mfi);
-        , amrex::Array4<amrex::Real> zflux = a_fluxes[2]->array(mfi));
-      AMREX_D_TERM(
-        amrex::Array4<amrex::Real const> u = a_ueff[0]->const_array(mfi);
-        , amrex::Array4<amrex::Real const> v = a_ueff[1]->const_array(mfi);
-        , amrex::Array4<amrex::Real const> w = a_ueff[2]->const_array(mfi););
-      AMREX_D_TERM(
-        edgstate[0].resize(xbx, 1);, edgstate[1].resize(ybx, 1);
-        , edgstate[2].resize(zbx, 1));
-      AMREX_D_TERM(
-        amrex::Array4<amrex::Real> xstate = edgstate[0].array();
-        , amrex::Array4<amrex::Real> ystate = edgstate[1].array();
-        , amrex::Array4<amrex::Real> zstate = edgstate[2].array());
-      AMREX_D_TERM(
-        amrex::Elixir xstate_eli = edgstate[0].elixir();
-        , amrex::Elixir ystate_eli = edgstate[1].elixir();
-        , amrex::Elixir zstate_eli = edgstate[2].elixir());
-
-      // Predict edge states
-      // X
-      {
-        // BCs
-        const amrex::Box& edomain = surroundingNodes(domain, 0);
-        const auto bc_lo = bcrec.lo(0);
-        const auto bc_hi = bcrec.hi(0);
-
-        amrex::ParallelFor(
-          xbx, [bc_lo, bc_hi, edomain, ne_arr, xstate, u, order, domain,
-                xbx] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-            const int idx[3] = {i, j, k};
-            const bool on_lo =
-              ((bc_lo == amrex::BCType::ext_dir) &&
-               (idx[0] <= edomain.smallEnd(0)));
-            const bool on_hi =
-              ((bc_hi == amrex::BCType::ext_dir) &&
-               (idx[0] >= edomain.bigEnd(0)));
-            if (order == 1) {
-              xstate(i, j, k) =
-                ef_edge_state_extdir(i, j, k, 0, on_lo, on_hi, ne_arr, u);
-            } else if (order == 2) {
-              const bool extdir_or_ho_lo = (bc_lo == amrex::BCType::ext_dir) ||
-                                           (bc_lo == amrex::BCType::hoextrap);
-              const bool extdir_or_ho_hi = (bc_hi == amrex::BCType::ext_dir) ||
-                                           (bc_hi == amrex::BCType::hoextrap);
-              xstate(i, j, k) = ef_edge_state_2ndO_extdir(
-                i, j, k, 0, on_lo, on_hi, extdir_or_ho_lo, extdir_or_ho_hi,
-                domain.smallEnd(0), domain.bigEnd(0), ne_arr, u, xbx);
-            }
-          });
-      }
-#if (AMREX_SPACEDIM > 1)
-      // Y
-      {
-        // BCs
-        const amrex::Box& edomain = surroundingNodes(domain, 1);
-        const auto bc_lo = bcrec.lo(1);
-        const auto bc_hi = bcrec.hi(1);
-
-        amrex::ParallelFor(
-          ybx, [bc_lo, bc_hi, edomain, domain, order, ystate, ne_arr, v,
-                ybx] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-            const int idx[3] = {i, j, k};
-            const bool on_lo =
-              ((bc_lo == amrex::BCType::ext_dir) &&
-               (idx[1] <= edomain.smallEnd(1)));
-            const bool on_hi =
-              ((bc_hi == amrex::BCType::ext_dir) &&
-               (idx[1] >= edomain.bigEnd(1)));
-            if (order == 1) {
-              ystate(i, j, k) =
-                ef_edge_state_extdir(i, j, k, 1, on_lo, on_hi, ne_arr, v);
-            } else if (order == 2) {
-              const bool extdir_or_ho_lo = (bc_lo == amrex::BCType::ext_dir) ||
-                                           (bc_lo == amrex::BCType::hoextrap);
-              const bool extdir_or_ho_hi = (bc_hi == amrex::BCType::ext_dir) ||
-                                           (bc_hi == amrex::BCType::hoextrap);
-              ystate(i, j, k) = ef_edge_state_2ndO_extdir(
-                i, j, k, 1, on_lo, on_hi, extdir_or_ho_lo, extdir_or_ho_hi,
-                domain.smallEnd(1), domain.bigEnd(1), ne_arr, v, ybx);
-            }
-          });
-      }
-#if (AMREX_SPACEDIM == 3)
-      // Z
-      {
-        // BCs
-        const amrex::Box& edomain = surroundingNodes(domain, 2);
-        const auto bc_lo = bcrec.lo(2);
-        const auto bc_hi = bcrec.hi(2);
-
-        amrex::ParallelFor(
-          zbx, [bc_lo, bc_hi, edomain, zstate, order, ne_arr, w, zbx,
-                domain] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-            const int idx[3] = {i, j, k};
-            const bool on_lo =
-              ((bc_lo == amrex::BCType::ext_dir) &&
-               (idx[2] <= edomain.smallEnd(2)));
-            const bool on_hi =
-              ((bc_hi == amrex::BCType::ext_dir) &&
-               (idx[2] >= edomain.bigEnd(2)));
-            if (order == 1) {
-              zstate(i, j, k) =
-                ef_edge_state_extdir(i, j, k, 2, on_lo, on_hi, ne_arr, w);
-            } else if (order == 2) {
-              const bool extdir_or_ho_lo = (bc_lo == amrex::BCType::ext_dir) ||
-                                           (bc_lo == amrex::BCType::hoextrap);
-              const bool extdir_or_ho_hi = (bc_hi == amrex::BCType::ext_dir) ||
-                                           (bc_hi == amrex::BCType::hoextrap);
-              zstate(i, j, k) = ef_edge_state_2ndO_extdir(
-                i, j, k, 2, on_lo, on_hi, extdir_or_ho_lo, extdir_or_ho_hi,
-                domain.smallEnd(2), domain.bigEnd(2), ne_arr, w, zbx);
-            }
-          });
-      }
-#endif
-#endif
-
-      // Computing fluxes
+  for (amrex::MFIter mfi(a_nE, amrex::TilingIfNotGPU()); mfi.isValid(); ++mfi) {
+    amrex::Box const& bx = mfi.tilebox();
+    auto const& ne_arr = a_nE.const_array(mfi);
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+      // Predict the edge state and multiply it by the effective velocity
+      const amrex::Box ebx = amrex::surroundingNodes(bx, idim);
+      const amrex::Box& edomain = amrex::surroundingNodes(domain, idim);
+      const auto bc_lo = bcrec.lo(idim);
+      const auto bc_hi = bcrec.hi(idim);
+      const bool extdir_or_ho_lo =
+        (bc_lo == amrex::BCType::ext_dir) || (bc_lo == amrex::BCType::hoextrap);
+      const bool extdir_or_ho_hi =
+        (bc_hi == amrex::BCType::ext_dir) || (bc_hi == amrex::BCType::hoextrap);
+      const int domlo = domain.smallEnd(idim);
+      const int domhi = domain.bigEnd(idim);
+      auto const& ueff = a_ueff[idim]->const_array(mfi);
+      auto const& flux = a_fluxes[idim]->array(mfi);
       amrex::ParallelFor(
-        xbx, [xflux, u, xstate] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-          xflux(i, j, k) = u(i, j, k) * xstate(i, j, k);
+        ebx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+          const int idx[3] = {i, j, k};
+          const bool on_lo =
+            ((bc_lo == amrex::BCType::ext_dir) &&
+             (idx[idim] <= edomain.smallEnd(idim)));
+          const bool on_hi =
+            ((bc_hi == amrex::BCType::ext_dir) &&
+             (idx[idim] >= edomain.bigEnd(idim)));
+          if (order == 1) {
+            flux(i, j, k) =
+              ueff(i, j, k) *
+              ef_edge_state_extdir(i, j, k, idim, on_lo, on_hi, ne_arr, ueff);
+          } else {
+            flux(i, j, k) = ueff(i, j, k) * ef_edge_state_2ndO_extdir(
+                                              i, j, k, idim, on_lo, on_hi,
+                                              extdir_or_ho_lo, extdir_or_ho_hi,
+                                              domlo, domhi, ne_arr, ueff, ebx);
+          }
         });
-#if (AMREX_SPACEDIM > 1)
-      amrex::ParallelFor(
-        ybx, [yflux, v, ystate] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-          yflux(i, j, k) = v(i, j, k) * ystate(i, j, k);
-        });
-#if (AMREX_SPACEDIM == 3)
-      amrex::ParallelFor(
-        zbx, [zflux, w, zstate] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-          zflux(i, j, k) = w(i, j, k) * zstate(i, j, k);
-        });
-#endif
-#endif
     }
   }
 }
@@ -816,22 +705,17 @@ PeleLM::setUpPrecond(
 
     amrex::ParallelFor(
       nEKe, nEKe.nGrowVect(),
-      [neke_ma, kappaE_ma,
-       ne_arr_ma] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
-        neke_ma[box_no](i, j, k) =
+      [neke_ma, kappaE_ma, ne_arr_ma, do_Schur, Schur_ma, a_dt,
+       diffOp_diag_ma] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+        const amrex::Real neke =
           kappaE_ma[box_no](i, j, k) * ne_arr_ma[box_no](i, j, k);
+        neke_ma[box_no](i, j, k) = neke;
+        if (do_Schur == 1) {
+          Schur_ma[box_no](i, j, k) =
+            -a_dt * 0.5 * neke / diffOp_diag_ma[box_no](i, j, k);
+        }
       });
     amrex::Gpu::streamSynchronize();
-    if (do_Schur == 1) {
-      amrex::ParallelFor(
-        nEKe, nEKe.nGrowVect(),
-        [Schur_ma, a_dt, neke_ma, diffOp_diag_ma] AMREX_GPU_DEVICE(
-          int box_no, int i, int j, int k) noexcept {
-          Schur_ma[box_no](i, j, k) = -a_dt * 0.5 * neke_ma[box_no](i, j, k) /
-                                      diffOp_diag_ma[box_no](i, j, k);
-        });
-      amrex::Gpu::streamSynchronize();
-    }
     // Upwinded edge neKe values
     amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> neKe_ec = getUpwindedEdge(
       lev, 0, 1, bcRecnE, nEKe, GetArrOfConstPtrs(ldataNLs_p->uEffnE));
