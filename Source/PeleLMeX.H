@@ -290,7 +290,9 @@ public:
       const int a_nGrowAdv,
       const int a_nGrowMAC);
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>
-      umac;                              // MAC face velocity
+      umac; // MAC face velocity
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>
+      umac_pred; // Predicted (unprojected) umac, kept over the SDC iterations
     amrex::Vector<amrex::MultiFab> AofS; // Scalar advection term at t^(n+1/2)
     amrex::Vector<amrex::MultiFab>
       AofS_aux; // Scalar advection term for auxiliaries at t^(n+1/2)
