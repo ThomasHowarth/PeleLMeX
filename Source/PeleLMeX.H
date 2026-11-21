@@ -1529,11 +1529,24 @@ public:
     const int face_comp,
     const int ncomp,
     int const* l_conserv_d,
-    const amrex::Geometry& a_geom,
     const amrex::Real scale,
     const bool fluxes_are_area_weighted,
     const amrex::MultiFab* a_EBvelocity = nullptr,
     const amrex::MultiFab* a_EBvalue = nullptr) const;
+
+  //! Divergence of the fluxes on one level: intensive (area-scaled, with
+  //! optional EB fluxes) or extensive
+  void fluxDivergenceLevel(
+    const int lev,
+    amrex::MultiFab& a_divergence,
+    const int div_comp,
+    const amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>& a_fluxes,
+    const int flux_comp,
+    const amrex::MultiFab* a_EBfluxes,
+    const int ebflux_comp,
+    const int ncomp,
+    const int intensiveFluxes,
+    const amrex::Real scale);
 
   void extFluxDivergenceLevel(
     const int lev,
@@ -1615,15 +1628,6 @@ public:
     const amrex::BoxArray& ba,
     const amrex::DistributionMapping& dm,
     const amrex::FabFactory<amrex::FArrayBox>& factory);
-  static amrex::Real MFmax(
-    const amrex::MultiFab* a_MF,
-    const amrex::iMultiFab& a_mask,
-    const int comp);
-  static amrex::Real MFmin(
-    const amrex::MultiFab* a_MF,
-    const amrex::iMultiFab& a_mask,
-    const int comp);
-
   amrex::Vector<amrex::Real> MLmax(
     const amrex::Vector<const amrex::MultiFab*>& a_MF,
     const int scomp,

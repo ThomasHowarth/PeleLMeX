@@ -179,14 +179,14 @@ PeleLM::computeVelocityAdvTerm(const std::unique_ptr<AdvanceAdvData>& advData)
       advFluxDivergence(
         lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
         GetArrOfConstPtrs(faces[lev]), 0, AMREX_SPACEDIM,
-        AdvTypeVel_d.dataPtr(), geom[lev], -1.0, fluxes_are_area_weighted,
+        AdvTypeVel_d.dataPtr(), -1.0, fluxes_are_area_weighted,
         getEBState(lev, VELX, AMREX_SPACEDIM, AmrOldTime).get(),
         getEBState(lev, VELX, AMREX_SPACEDIM, AmrOldTime).get());
     } else {
       advFluxDivergence(
         lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
         GetArrOfConstPtrs(faces[lev]), 0, AMREX_SPACEDIM,
-        AdvTypeVel_d.dataPtr(), geom[lev], -1.0, fluxes_are_area_weighted);
+        AdvTypeVel_d.dataPtr(), -1.0, fluxes_are_area_weighted);
     }
 
     divTmp.FillBoundary(geom[lev].periodicity());
@@ -201,7 +201,7 @@ PeleLM::computeVelocityAdvTerm(const std::unique_ptr<AdvanceAdvData>& advData)
     advFluxDivergence(
       lev, advData->AofS[lev], VELX, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
       GetArrOfConstPtrs(faces[lev]), 0, AMREX_SPACEDIM, AdvTypeVel_d.dataPtr(),
-      geom[lev], -1.0, fluxes_are_area_weighted);
+      -1.0, fluxes_are_area_weighted);
 #endif
 
     // Under mesh mapping, the flux divergence was computed in uniform
@@ -859,8 +859,7 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
         lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
         GetArrOfConstPtrs(fluxes[lev]),
         0, // This will not be used since none of rhoY/rhoH in convective
-        NUM_SPECIES + 1, AdvTypeAll_d.dataPtr(), geom[lev], -1.0,
-        fluxes_are_area_weighted,
+        NUM_SPECIES + 1, AdvTypeAll_d.dataPtr(), -1.0, fluxes_are_area_weighted,
         getEBState(lev, VELX, AMREX_SPACEDIM, AmrOldTime).get(),
         getEBState(lev, FIRSTSPEC, NUM_SPECIES + 1, AmrOldTime).get());
     } else {
@@ -868,7 +867,7 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
         lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
         GetArrOfConstPtrs(fluxes[lev]),
         0, // This will not be used since none of rhoY/rhoH in convective
-        NUM_SPECIES + 1, AdvTypeAll_d.dataPtr(), geom[lev], -1.0,
+        NUM_SPECIES + 1, AdvTypeAll_d.dataPtr(), -1.0,
         fluxes_are_area_weighted);
     }
 
@@ -895,7 +894,7 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
       advFluxDivergence(
         lev, divTmp_aux, 0, divu, GetArrOfConstPtrs(fluxes_aux[lev]), 0,
         GetArrOfConstPtrs(fluxes_aux[lev]), 0, m_nAux, AdvTypeAux_d.dataPtr(),
-        geom[lev], -1.0, fluxes_are_area_weighted);
+        -1.0, fluxes_are_area_weighted);
 
       divTmp_aux.FillBoundary(geom[lev].periodicity());
 
@@ -913,15 +912,14 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
       lev, advData->AofS[lev], FIRSTSPEC, divu, GetArrOfConstPtrs(fluxes[lev]),
       0, GetArrOfConstPtrs(fluxes[lev]),
       0, // This will not be used since none of rhoY/rhoH in convective
-      NUM_SPECIES + 1, AdvTypeAll_d.dataPtr(), geom[lev], -1.0,
-      fluxes_are_area_weighted);
+      NUM_SPECIES + 1, AdvTypeAll_d.dataPtr(), -1.0, fluxes_are_area_weighted);
     // repeat for auxiliaries
     if (m_nAux > 0) {
       advFluxDivergence(
         lev, advData->AofS_aux[lev], 0, divu,
         GetArrOfConstPtrs(fluxes_aux[lev]), 0,
         GetArrOfConstPtrs(fluxes_aux[lev]), 0, m_nAux, AdvTypeAux_d.dataPtr(),
-        geom[lev], -1.0, fluxes_are_area_weighted);
+        -1.0, fluxes_are_area_weighted);
     }
 #endif
 
@@ -1114,8 +1112,8 @@ PeleLM::computePassiveAdvTerms(
     divTmp.setVal(0.0);
     advFluxDivergence(
       lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
-      GetArrOfConstPtrs(edgeState[lev]), 0, ncomp, AdvTypeAll_d.dataPtr(),
-      geom[lev], -1.0, fluxes_are_area_weighted);
+      GetArrOfConstPtrs(edgeState[lev]), 0, ncomp, AdvTypeAll_d.dataPtr(), -1.0,
+      fluxes_are_area_weighted);
 
     divTmp.FillBoundary(geom[lev].periodicity());
 
@@ -1128,7 +1126,7 @@ PeleLM::computePassiveAdvTerms(
     advFluxDivergence(
       lev, advData->AofS[lev], state_comp, divu, GetArrOfConstPtrs(fluxes[lev]),
       0, GetArrOfConstPtrs(edgeState[lev]), 0, ncomp, AdvTypeAll_d.dataPtr(),
-      geom[lev], -1.0, fluxes_are_area_weighted);
+      -1.0, fluxes_are_area_weighted);
 #endif
 
     // Xi-space divergence is J.(physical divergence): restore physical units

@@ -119,15 +119,33 @@ PeleLM::fluxDivergence(
   BL_PROFILE("PeleLMeX::fluxDivergence()");
   AMREX_ASSERT(a_EBfluxes.empty() || intensiveFluxes != 0);
   for (int lev = 0; lev <= finest_level; ++lev) {
-    if (intensiveFluxes != 0) { // Fluxes are intensive -> need area scaling
-      intFluxDivergenceLevel(
-        lev, *a_divergence[lev], div_comp, a_fluxes[lev], flux_comp, ncomp,
-        scale, a_EBfluxes.empty() ? nullptr : a_EBfluxes[lev], ebflux_comp);
-    } else { // Fluxes are extensive
-      extFluxDivergenceLevel(
-        lev, *a_divergence[lev], div_comp, a_fluxes[lev], flux_comp, ncomp,
-        scale);
-    }
+    fluxDivergenceLevel(
+      lev, *a_divergence[lev], div_comp, a_fluxes[lev], flux_comp,
+      a_EBfluxes.empty() ? nullptr : a_EBfluxes[lev], ebflux_comp, ncomp,
+      intensiveFluxes, scale);
+  }
+}
+
+void
+PeleLM::fluxDivergenceLevel(
+  const int lev,
+  amrex::MultiFab& a_divergence,
+  const int div_comp,
+  const amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>& a_fluxes,
+  const int flux_comp,
+  const amrex::MultiFab* a_EBfluxes,
+  const int ebflux_comp,
+  const int ncomp,
+  const int intensiveFluxes,
+  const amrex::Real scale)
+{
+  if (intensiveFluxes != 0) { // Fluxes are intensive -> need area scaling
+    intFluxDivergenceLevel(
+      lev, a_divergence, div_comp, a_fluxes, flux_comp, ncomp, scale,
+      a_EBfluxes, ebflux_comp);
+  } else { // Fluxes are extensive
+    extFluxDivergenceLevel(
+      lev, a_divergence, div_comp, a_fluxes, flux_comp, ncomp, scale);
   }
 }
 
@@ -149,7 +167,6 @@ PeleLM::fluxDivergenceRD(
 {
   BL_PROFILE("PeleLMeX::fluxDivergenceRD()");
 #ifdef AMREX_USE_EB
-  const int have_ebfluxes = (a_EBfluxes.empty()) ? 0 : 1;
   for (int lev = 0; lev <= finest_level; ++lev) {
     //----------------------------------------------------------------
     // Use a temporary MF to hold divergence before redistribution
@@ -158,15 +175,10 @@ PeleLM::fluxDivergenceRD(
       grids[lev], dmap[lev], ncomp, nGrow_divTmp, amrex::MFInfo(),
       EBFactory(lev));
     divTmp.setVal(0.0);
-    if (intensiveFluxes != 0) { // Fluxes are intensive -> need area scaling in
-                                // div
-      intFluxDivergenceLevel(
-        lev, divTmp, 0, a_fluxes[lev], flux_comp, ncomp, scale,
-        (have_ebfluxes != 0) ? a_EBfluxes[lev] : nullptr, ebflux_comp);
-    } else { // Fluxes are extensive
-      extFluxDivergenceLevel(
-        lev, divTmp, 0, a_fluxes[lev], flux_comp, ncomp, scale);
-    }
+    fluxDivergenceLevel(
+      lev, divTmp, 0, a_fluxes[lev], flux_comp,
+      a_EBfluxes.empty() ? nullptr : a_EBfluxes[lev], ebflux_comp, ncomp,
+      intensiveFluxes, scale);
 
     // Need FillBoundary before redistribution
     divTmp.FillBoundary(geom[lev].periodicity());
@@ -440,7 +452,6 @@ PeleLM::advFluxDivergence(
   const int face_comp,
   const int ncomp,
   int const* l_conserv_d,
-  const amrex::Geometry& a_geom,
   const amrex::Real scale,
   const bool fluxes_are_area_weighted,
   const amrex::MultiFab* a_EBvelocity,
@@ -494,21 +505,21 @@ PeleLM::advFluxDivergence(
       (a_EBvelocity != nullptr)) {
       // Cut cells with an EB velocity (moving/porous walls)
       HydroUtils::EB_ComputeDivergence(
-        bx, div_arr, AMREX_D_DECL(fx, fy, fz), vfrac_arr, ncomp, a_geom, scale,
-        fluxes_are_area_weighted, a_EBvelocity->const_array(mfi),
+        bx, div_arr, AMREX_D_DECL(fx, fy, fz), vfrac_arr, ncomp, geom[a_lev],
+        scale, fluxes_are_area_weighted, a_EBvelocity->const_array(mfi),
         a_EBvalue->const_array(mfi),
         ebfact.getMultiEBCellFlagFab().const_array(mfi),
         ebfact.getBndryArea().const_array(mfi),
         ebfact.getBndryNormal().const_array(mfi));
     } else if (flagfab.getType(bx) == amrex::FabType::singlevalued) {
       HydroUtils::EB_ComputeDivergence(
-        bx, div_arr, AMREX_D_DECL(fx, fy, fz), vfrac_arr, ncomp, a_geom, scale,
-        fluxes_are_area_weighted);
+        bx, div_arr, AMREX_D_DECL(fx, fy, fz), vfrac_arr, ncomp, geom[a_lev],
+        scale, fluxes_are_area_weighted);
     } else if (flagfab.getType(bx) == amrex::FabType::regular)
 #endif
     {
       HydroUtils::ComputeDivergence(
-        bx, div_arr, AMREX_D_DECL(fx, fy, fz), ncomp, a_geom, scale,
+        bx, div_arr, AMREX_D_DECL(fx, fy, fz), ncomp, geom[a_lev], scale,
         fluxes_are_area_weighted);
     }
 
@@ -1051,18 +1062,7 @@ PeleLM::parseVars(
 amrex::Real
 PeleLM::MLNorm0(const amrex::Vector<const amrex::MultiFab*>& a_MF)
 {
-  BL_PROFILE("PeleLMeX::MLNorm0()");
-  amrex::Real r = 0.0;
-  for (int lev = 0; lev < a_MF.size(); ++lev) {
-    if (lev != finest_level) {
-      r = amrex::max<amrex::Real>(
-        r, a_MF[lev]->norm0(*m_coveredMask[lev], 0, 0, true));
-    } else {
-      r = amrex::max<amrex::Real>(r, a_MF[lev]->norm0(0, 0, true, true));
-    }
-  }
-  amrex::ParallelDescriptor::ReduceRealMax(r);
-  return r;
+  return MLNorm0(a_MF, 0, 1)[0];
 }
 
 amrex::Vector<amrex::Real>
@@ -1094,41 +1094,43 @@ PeleLM::MLNorm0(
   return r;
 }
 
+namespace {
+// Index of the component named a_name in a (index, name) list, -1 if absent
+int
+findComponent(
+  const std::list<std::tuple<int, std::string>>& a_components,
+  std::string_view a_name)
+{
+  int idx = -1;
+  for (const auto& component : a_components) {
+    if (std::get<1>(component) == a_name) {
+      idx = std::get<0>(component);
+    }
+  }
+  return idx;
+}
+} // namespace
+
 bool
 PeleLM::isStateVariable(std::string_view a_name)
 {
-  // Check state
-  return std::any_of(
-    stateComponents.begin(), stateComponents.end(),
-    [a_name](const auto& stateComponent) {
-      return std::get<1>(stateComponent) == a_name;
-    });
+  return findComponent(stateComponents, a_name) >= 0;
 }
 
 bool
 PeleLM::isReactVariable(std::string_view a_name)
 {
-  // Check reaction state
-  return std::any_of(
-    reactComponents.begin(), reactComponents.end(),
-    [a_name](const auto& reactComponent) {
-      return std::get<1>(reactComponent) == a_name;
-    });
+  return findComponent(reactComponents, a_name) >= 0;
 }
 
 int
 PeleLM::stateVariableIndex(std::string_view a_name)
 {
-  int idx = -1;
-  if (!isStateVariable(a_name)) {
+  const int idx = findComponent(stateComponents, a_name);
+  if (idx < 0) {
     amrex::Error(
       "PeleLM::stateVariableIndex(): unknown State variable: " +
       static_cast<std::string>(a_name));
-  }
-  for (const auto& stateComponent : stateComponents) {
-    if (std::get<1>(stateComponent) == a_name) {
-      idx = std::get<0>(stateComponent);
-    }
   }
   return idx;
 }
@@ -1154,16 +1156,11 @@ PeleLM::stateVariableName(int a_index)
 int
 PeleLM::reactVariableIndex(std::string_view a_name)
 {
-  int idx = -1;
-  if (!isReactVariable(a_name)) {
+  const int idx = findComponent(reactComponents, a_name);
+  if (idx < 0) {
     amrex::Error(
       "PeleLM::reactVariableIndex(): unknown Reaction variable: " +
       static_cast<std::string>(a_name));
-  }
-  for (const auto& reactComponent : reactComponents) {
-    if (std::get<1>(reactComponent) == a_name) {
-      idx = std::get<0>(reactComponent);
-    }
   }
   return idx;
 }
@@ -1623,14 +1620,11 @@ void
 PeleLM::setTypicalValues(const TimeStamp a_time, const int is_init)
 {
   // Get state Max/Min
-  auto stateMax =
-    (m_incompressible) != 0
-      ? MLmax(GetVecOfConstPtrs(getStateVect(a_time)), 0, AMREX_SPACEDIM)
-      : MLmax(GetVecOfConstPtrs(getStateVect(a_time)), 0, NVAR);
-  auto stateMin =
-    (m_incompressible) != 0
-      ? MLmin(GetVecOfConstPtrs(getStateVect(a_time)), 0, AMREX_SPACEDIM)
-      : MLmin(GetVecOfConstPtrs(getStateVect(a_time)), 0, NVAR);
+  const int nstate = (m_incompressible != 0) ? AMREX_SPACEDIM : NVAR;
+  // getStateVect returns aliases: keep them alive while reducing
+  const auto stateVect = getStateVect(a_time);
+  auto stateMax = MLmax(GetVecOfConstPtrs(stateVect), 0, nstate);
+  auto stateMin = MLmin(GetVecOfConstPtrs(stateVect), 0, nstate);
 
   // Fill typical values vector
   for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
@@ -1783,27 +1777,52 @@ maskedReduce(
 }
 } // namespace pelelmex_utils_detail
 
-// amrex::MultiFab max, excluding EB-covered/fine-covered cells, local
-amrex::Real
-PeleLM::MFmax(
-  const amrex::MultiFab* a_MF, const amrex::iMultiFab& a_mask, const int comp)
+namespace pelelmex_utils_detail {
+// MultiLevel max (Op = ReduceOpMax) or min (ReduceOpMin) of each component,
+// excluding EB-covered/fine-covered cells
+template <typename Op>
+amrex::Vector<amrex::Real>
+mlReduce(
+  const amrex::Vector<const amrex::MultiFab*>& a_MF,
+  const amrex::Vector<std::unique_ptr<amrex::iMultiFab>>& a_coveredMask,
+  const int finest_level,
+  const int scomp,
+  const int ncomp)
 {
-  BL_PROFILE("PeleLMeX::MFmax()");
-  return pelelmex_utils_detail::maskedReduce<amrex::ReduceOpMax>(
-    *a_MF, a_mask, comp, std::numeric_limits<amrex::Real>::lowest());
-}
+  AMREX_ASSERT(a_MF[0]->nComp() >= scomp + ncomp);
+  constexpr bool is_max = std::is_same_v<Op, amrex::ReduceOpMax>;
+  constexpr amrex::Real skip = is_max ? AMREX_REAL_LOWEST : AMREX_REAL_MAX;
 
-// amrex::MultiFab min, excluding EB-covered/fine-covered cells, local
-amrex::Real
-PeleLM::MFmin(
-  const amrex::MultiFab* a_MF, const amrex::iMultiFab& a_mask, const int comp)
-{
-  BL_PROFILE("PeleLMeX::MFmin()");
-  return pelelmex_utils_detail::maskedReduce<amrex::ReduceOpMin>(
-    *a_MF, a_mask, comp, std::numeric_limits<amrex::Real>::max());
-}
+  amrex::Vector<amrex::Real> r(ncomp, skip);
+  for (int lev = 0; lev < a_MF.size(); ++lev) {
+    for (int n = 0; n < ncomp; ++n) {
+      if constexpr (is_max) {
+        const amrex::Real levmax =
+          (lev != finest_level) ? maskedReduce<Op>(
+                                    *a_MF[lev], *a_coveredMask[lev], scomp + n,
+                                    std::numeric_limits<amrex::Real>::lowest())
+                                : a_MF[lev]->max(scomp + n, 0, true);
+        r[n] = amrex::max<amrex::Real>(r[n], levmax);
+      } else {
+        const amrex::Real levmin =
+          (lev != finest_level) ? maskedReduce<Op>(
+                                    *a_MF[lev], *a_coveredMask[lev], scomp + n,
+                                    std::numeric_limits<amrex::Real>::max())
+                                : a_MF[lev]->min(scomp + n, 0, true);
+        r[n] = amrex::min<amrex::Real>(r[n], levmin);
+      }
+    }
+  }
 
-// MultiLevel max, excluding EB-covered/fine-covered cells
+  if constexpr (is_max) {
+    amrex::ParallelDescriptor::ReduceRealMax(r.data(), ncomp);
+  } else {
+    amrex::ParallelDescriptor::ReduceRealMin(r.data(), ncomp);
+  }
+  return r;
+}
+} // namespace pelelmex_utils_detail
+
 amrex::Vector<amrex::Real>
 PeleLM::MLmax(
   const amrex::Vector<const amrex::MultiFab*>& a_MF,
@@ -1811,23 +1830,10 @@ PeleLM::MLmax(
   const int ncomp)
 {
   BL_PROFILE("PeleLMeX::MLmax()");
-  AMREX_ASSERT(a_MF[0]->nComp() >= scomp + ncomp);
-
-  amrex::Vector<amrex::Real> nmax(ncomp, AMREX_REAL_LOWEST);
-  for (int lev = 0; lev < a_MF.size(); ++lev) {
-    for (int n = 0; n < ncomp; ++n) {
-      const amrex::Real levmax =
-        (lev != finest_level) ? MFmax(a_MF[lev], *m_coveredMask[lev], scomp + n)
-                              : a_MF[lev]->max(scomp + n, 0, true);
-      nmax[n] = amrex::max<amrex::Real>(nmax[n], levmax);
-    }
-  }
-
-  amrex::ParallelDescriptor::ReduceRealMax(nmax.data(), ncomp);
-  return nmax;
+  return pelelmex_utils_detail::mlReduce<amrex::ReduceOpMax>(
+    a_MF, m_coveredMask, finest_level, scomp, ncomp);
 }
 
-// MultiLevel min, excluding EB-covered/fine-covered cells
 amrex::Vector<amrex::Real>
 PeleLM::MLmin(
   const amrex::Vector<const amrex::MultiFab*>& a_MF,
@@ -1835,20 +1841,8 @@ PeleLM::MLmin(
   const int ncomp)
 {
   BL_PROFILE("PeleLMeX::MLmin()");
-  AMREX_ASSERT(a_MF[0]->nComp() >= scomp + ncomp);
-
-  amrex::Vector<amrex::Real> nmin(ncomp, AMREX_REAL_MAX);
-  for (int lev = 0; lev < a_MF.size(); ++lev) {
-    for (int n = 0; n < ncomp; ++n) {
-      const amrex::Real levmin =
-        (lev != finest_level) ? MFmin(a_MF[lev], *m_coveredMask[lev], scomp + n)
-                              : a_MF[lev]->min(scomp + n, 0, true);
-      nmin[n] = amrex::min<amrex::Real>(nmin[n], levmin);
-    }
-  }
-
-  amrex::ParallelDescriptor::ReduceRealMin(nmin.data(), ncomp);
-  return nmin;
+  return pelelmex_utils_detail::mlReduce<amrex::ReduceOpMin>(
+    a_MF, m_coveredMask, finest_level, scomp, ncomp);
 }
 
 void
@@ -1949,10 +1943,10 @@ PeleLM::initMixtureFraction()
   int hasUserMF = static_cast<int>(pp.contains("mixtureFraction.format"));
   if (hasUserMF != 0) {
     pp.query("mixtureFraction.format", MFformat);
+    std::string MFCompoType;
+    pp.query("mixtureFraction.type", MFCompoType);
     if (MFformat == "Cantera") { // use a Cantera-like format with
       // <SpeciesName>:<Value>, default in 0.0
-      std::string MFCompoType;
-      pp.query("mixtureFraction.type", MFCompoType);
       amrex::Vector<std::string> compositionIn;
       int entryCount = pp.countval("mixtureFraction.oxidTank");
       compositionIn.resize(entryCount);
@@ -1965,37 +1959,22 @@ PeleLM::initMixtureFraction()
     } else if (MFformat == "RealList") { // use a list of amrex::Real. MUST
                                          // contains an entry
       // for each species in the mixture
-      std::string MFCompoType;
-      pp.query("mixtureFraction.type", MFCompoType);
-      if (MFCompoType == "mass") {
-        int entryCount = pp.countval("mixtureFraction.oxidTank");
+      auto readTank = [&pp](const std::string& a_key, amrex::Real* a_out) {
+        const int entryCount = pp.countval(a_key.c_str());
         AMREX_ALWAYS_ASSERT(entryCount == NUM_SPECIES);
         amrex::Vector<amrex::Real> compositionIn(NUM_SPECIES);
-        pp.getarr("mixtureFraction.oxidTank", compositionIn, 0, NUM_SPECIES);
+        pp.getarr(a_key.c_str(), compositionIn, 0, NUM_SPECIES);
         for (int i = 0; i < NUM_SPECIES; ++i) {
-          YO[i] = compositionIn[i];
+          a_out[i] = compositionIn[i];
         }
-        entryCount = pp.countval("mixtureFraction.fuelTank");
-        AMREX_ALWAYS_ASSERT(entryCount == NUM_SPECIES);
-        pp.getarr("mixtureFraction.fuelTank", compositionIn, 0, NUM_SPECIES);
-        for (int i = 0; i < NUM_SPECIES; ++i) {
-          YF[i] = compositionIn[i];
-        }
+      };
+      if (MFCompoType == "mass") {
+        readTank("mixtureFraction.oxidTank", YO);
+        readTank("mixtureFraction.fuelTank", YF);
       } else if (MFCompoType == "mole") {
         amrex::Real XF[NUM_SPECIES], XO[NUM_SPECIES];
-        int entryCount = pp.countval("mixtureFraction.oxidTank");
-        AMREX_ALWAYS_ASSERT(entryCount == NUM_SPECIES);
-        amrex::Vector<amrex::Real> compositionIn(NUM_SPECIES);
-        pp.getarr("mixtureFraction.oxidTank", compositionIn, 0, NUM_SPECIES);
-        for (int i = 0; i < NUM_SPECIES; ++i) {
-          XO[i] = compositionIn[i];
-        }
-        entryCount = pp.countval("mixtureFraction.fuelTank");
-        AMREX_ALWAYS_ASSERT(entryCount == NUM_SPECIES);
-        pp.getarr("mixtureFraction.fuelTank", compositionIn, 0, NUM_SPECIES);
-        for (int i = 0; i < NUM_SPECIES; ++i) {
-          XF[i] = compositionIn[i];
-        }
+        readTank("mixtureFraction.oxidTank", XO);
+        readTank("mixtureFraction.fuelTank", XF);
         eos.X2Y(XO, YO);
         eos.X2Y(XF, YF);
       } else {
@@ -2049,39 +2028,13 @@ PeleLM::parseComposition(
   const std::string& compositionType,
   amrex::Real* massFrac)
 {
-  amrex::Real compoIn[NUM_SPECIES] = {0.0};
+  amrex::Vector<amrex::Real> compoIn(NUM_SPECIES, 0.0);
 
-  // Get species names
+  // Parse the <SpeciesName>:<Value> entries
   amrex::Vector<std::string> specNames;
   pele::physics::eos::speciesNames<pele::physics::PhysicsType::eos_type>(
     specNames, &(eos_parms.host_parm()));
-
-  // For each entry in the user-provided composition, parse name and value
-  std::string delimiter = ":";
-  const int specCountIn = static_cast<int>(compositionIn.size());
-  for (int i = 0; i < specCountIn; ++i) {
-    long unsigned sep = compositionIn[i].find(delimiter);
-    if (sep == std::string::npos) {
-      amrex::Abort(
-        "Error parsing '" + compositionIn[i] +
-        "' --> unable to find delimiter :");
-    }
-    std::string specNameIn = compositionIn[i].substr(0, sep);
-    amrex::Real value =
-      std::stod(compositionIn[i].substr(sep + 1, compositionIn[i].length()));
-    int foundIt = 0;
-    for (int k = 0; k < NUM_SPECIES; ++k) {
-      if (specNameIn == specNames[k]) {
-        compoIn[k] = value;
-        foundIt = 1;
-      }
-    }
-    if (foundIt == 0) {
-      amrex::Abort(
-        "Error parsing '" + compositionIn[i] +
-        "' --> unable to match to any species name");
-    }
-  }
+  parseVars(specNames, compositionIn, compoIn);
 
   // Ensure that it sums to 1.0:
   amrex::Real sum = 0.0;
@@ -2100,7 +2053,7 @@ PeleLM::parseComposition(
   } else if (compositionType == "mole") { // mole
     auto const* leosparm = &eos_parms.host_parm();
     auto eos = pele::physics::PhysicsType::eos(leosparm);
-    eos.X2Y(compoIn, massFrac);
+    eos.X2Y(compoIn.data(), massFrac);
   } else {
     amrex::Abort("Unknown mixtureFraction.type ! Should be 'mass' or 'mole'");
   }
