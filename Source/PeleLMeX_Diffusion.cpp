@@ -666,35 +666,20 @@ PeleLM::computeDifferentialDiffusionFluxes(
   }
 
   // Add the wbar term
+  // (a_wbarfluxes/a_soretfluxes are empty when not requested)
   if (m_use_wbar != 0) {
-    const int need_wbar_fluxes = (a_wbarfluxes.empty()) ? 0 : 1;
-    if (need_wbar_fluxes == 0) {
-      addWbarTerm(
-        a_fluxes, {}, GetVecOfConstPtrs(getSpeciesVect(a_time)),
-        GetVecOfConstPtrs(getDensityVect(a_time)),
-        GetVecOfConstPtrs(getDiffusivityVect(a_time)),
-        GetVecOfConstPtrs(spec_boundary));
-    } else {
-      addWbarTerm(
-        a_fluxes, a_wbarfluxes, GetVecOfConstPtrs(getSpeciesVect(a_time)),
-        GetVecOfConstPtrs(getDensityVect(a_time)),
-        GetVecOfConstPtrs(getDiffusivityVect(a_time)),
-        GetVecOfConstPtrs(spec_boundary));
-    }
+    addWbarTerm(
+      a_fluxes, a_wbarfluxes, GetVecOfConstPtrs(getSpeciesVect(a_time)),
+      GetVecOfConstPtrs(getDensityVect(a_time)),
+      GetVecOfConstPtrs(getDiffusivityVect(a_time)),
+      GetVecOfConstPtrs(spec_boundary));
   }
 
   // Add the Soret term
   if (m_use_soret != 0) {
-    const int need_soret_fluxes = (a_soretfluxes.empty()) ? 0 : 1;
-    if (need_soret_fluxes == 0) {
-      addSoretTerm(
-        a_fluxes, {}, GetVecOfConstPtrs(getTempVect(a_time)),
-        GetVecOfConstPtrs(getDiffusivityVect(a_time)));
-    } else {
-      addSoretTerm(
-        a_fluxes, a_soretfluxes, GetVecOfConstPtrs(getTempVect(a_time)),
-        GetVecOfConstPtrs(getDiffusivityVect(a_time)));
-    }
+    addSoretTerm(
+      a_fluxes, a_soretfluxes, GetVecOfConstPtrs(getTempVect(a_time)),
+      GetVecOfConstPtrs(getDiffusivityVect(a_time)));
   }
 
   // Adjust species diffusion fluxes to ensure their sum is zero
@@ -1268,11 +1253,6 @@ PeleLM::differentialDiffusionUpdate(
     auto const& state_ma = ldata_p->state.const_arrays();
     auto const& fY_ma = advData->Forcing[lev].arrays();
 
-    auto const& aux_ma =
-      (m_nAux > 0) ? ldata_p->auxiliaries.const_arrays() : state_ma;
-    auto const& fAux_ma =
-      (m_nAux > 0) ? advData->Forcing_aux[lev].arrays() : fY_ma;
-
     amrex::ParallelFor(
       advData->Forcing[lev], amrex::IntVect(0), NUM_SPECIES,
       [state_ma, fY_ma,
@@ -1281,13 +1261,17 @@ PeleLM::differentialDiffusionUpdate(
         fY_ma[box_no](i, j, k, n) *= dt;
         fY_ma[box_no](i, j, k, n) += rhoY(i, j, k, n);
       });
-    amrex::ParallelFor(
-      advData->Forcing[lev], amrex::IntVect(0), m_nAux,
-      [aux_ma, fAux_ma,
-       dt] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
-        fAux_ma[box_no](i, j, k, n) *= dt;
-        fAux_ma[box_no](i, j, k, n) += aux_ma[box_no](i, j, k, n);
-      });
+    if (m_nAux > 0) {
+      auto const& aux_ma = ldata_p->auxiliaries.const_arrays();
+      auto const& fAux_ma = advData->Forcing_aux[lev].arrays();
+      amrex::ParallelFor(
+        advData->Forcing[lev], amrex::IntVect(0), m_nAux,
+        [aux_ma, fAux_ma,
+         dt] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
+          fAux_ma[box_no](i, j, k, n) *= dt;
+          fAux_ma[box_no](i, j, k, n) += aux_ma[box_no](i, j, k, n);
+        });
+    }
   }
   amrex::Gpu::streamSynchronize();
 
@@ -2028,16 +2012,11 @@ PeleLM::computeDivTau(
   // Get the density component BCRec to get viscosity on faces
   auto bcRec = fetchBCRecArray(DENSITY, 1);
 
-  if (use_density != 0) {
-    getDiffusionTensorOp()->compute_divtau(
-      a_divtau, GetVecOfConstPtrs(getVelocityVect(a_time)),
-      GetVecOfConstPtrs(getDensityVect(a_time)),
-      GetVecOfConstPtrs(getViscosityVect(a_time)), bcRec[0], scale);
-  } else {
-    getDiffusionTensorOp()->compute_divtau(
-      a_divtau, GetVecOfConstPtrs(getVelocityVect(a_time)), {},
-      GetVecOfConstPtrs(getViscosityVect(a_time)), bcRec[0], scale);
-  }
+  getDiffusionTensorOp()->compute_divtau(
+    a_divtau, GetVecOfConstPtrs(getVelocityVect(a_time)),
+    (use_density != 0) ? GetVecOfConstPtrs(getDensityVect(a_time))
+                       : amrex::Vector<const amrex::MultiFab*>{},
+    GetVecOfConstPtrs(getViscosityVect(a_time)), bcRec[0], scale);
 }
 
 void
@@ -2066,16 +2045,11 @@ PeleLM::diffuseVelocity()
 
   // CrankNicholson 0.5 coeff
   const amrex::Real dt_lcl = 0.5 * m_dt;
-  if (m_incompressible != 0) {
-    getDiffusionTensorOp()->diffuse_velocity(
-      GetVecOfPtrs(getVelocityVect(AmrNewTime)), {},
-      GetVecOfConstPtrs(getViscosityVect(AmrNewTime)), bcRec[0], dt_lcl);
-  } else {
-    getDiffusionTensorOp()->diffuse_velocity(
-      GetVecOfPtrs(getVelocityVect(AmrNewTime)),
-      GetVecOfConstPtrs(getDensityVect(AmrHalfTime)),
-      GetVecOfConstPtrs(getViscosityVect(AmrNewTime)), bcRec[0], dt_lcl);
-  }
+  getDiffusionTensorOp()->diffuse_velocity(
+    GetVecOfPtrs(getVelocityVect(AmrNewTime)),
+    (m_incompressible != 0) ? amrex::Vector<const amrex::MultiFab*>{}
+                            : GetVecOfConstPtrs(getDensityVect(AmrHalfTime)),
+    GetVecOfConstPtrs(getViscosityVect(AmrNewTime)), bcRec[0], dt_lcl);
 }
 
 amrex::Array<amrex::LinOpBCType, AMREX_SPACEDIM>
