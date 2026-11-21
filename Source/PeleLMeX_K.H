@@ -32,22 +32,10 @@ getTransportCoeff(
     eosparm) noexcept
 {
   auto eos = pele::physics::PhysicsType::eos(eosparm);
-  amrex::Real mwtinv[NUM_SPECIES] = {0.0};
-  eos.inv_molecular_weight(mwtinv);
 
   // Get rho & Y from rhoY
-  amrex::Real rho = 0.0;
-  for (int n = 0; n < NUM_SPECIES; ++n) {
-    rho += rhoY(i, j, k, n);
-  }
-  const amrex::Real rhoinv = 1.0 / rho;
-  amrex::Real y[NUM_SPECIES] = {0.0};
-  for (int n = 0; n < NUM_SPECIES; ++n) {
-    y[n] = rhoY(i, j, k, n) * rhoinv;
-  }
-
-  amrex::Real Wbar = 0.0;
-  eos.Y2WBAR(y, Wbar);
+  amrex::Real rho = 0.0, rhoinv = 0.0, y[NUM_SPECIES] = {0.0};
+  eos.RY2RRinvY(rhoY.cellData(i, j, k), rho, rhoinv, y);
 
   const amrex::Real rho_cgs = m2c::Rho(rho); // MKS -> CGS conversion
   amrex::Real rhoDi_cgs[NUM_SPECIES] = {0.0};
@@ -68,52 +56,53 @@ getTransportCoeff(
     chi_loc, mu_cgs, dummy_xi, lambda_cgs, trans_parm);
 
   // Do CGS -> MKS conversions
-  mu(i, j, k) = c2m::Mu(mu_cgs);
-  if (do_fixed_Pr && do_fixed_Le) { // fixed Pr and Le, transport all dependent
-                                    // on visc
-    amrex::Real cpmix_cgs = 0.0;
+  const amrex::Real mu_mks = c2m::Mu(mu_cgs);
+  mu(i, j, k) = mu_mks;
+  amrex::Real cpmix_cgs = 0.0;
+  if (do_fixed_Pr || do_fixed_Le) {
     eos.TY2Cp(T(i, j, k), y, cpmix_cgs);
-    lambda(i, j, k) = PrInv * c2m::Cp(cpmix_cgs) * mu(i, j, k);
-    const amrex::Real ScInv = PrInv * LeInv;
+  }
+
+  // Conductivity: from a fixed Pr, or mixture-averaged
+  lambda(i, j, k) =
+    do_fixed_Pr ? PrInv * c2m::Cp(cpmix_cgs) * mu_mks : c2m::Lambda(lambda_cgs);
+
+  // Species diffusivities: from a fixed Le (with the viscosity when Pr is
+  // fixed too, else with the conductivity), or mixture-averaged
+  if (do_fixed_Le) {
+    const amrex::Real rhoD_Le = do_fixed_Pr
+                                  ? PrInv * LeInv * mu_mks
+                                  : lambda_cgs * 1.0e-1 * LeInv / cpmix_cgs;
     for (int n = 0; n < NUM_SPECIES; ++n) {
-      rhoDi(i, j, k, n) = ScInv * mu(i, j, k);
+      rhoDi(i, j, k, n) = rhoD_Le;
     }
-  } else if (do_fixed_Pr) { // fixed Pr, still use species diffs
-    amrex::Real cpmix_cgs = 0.0;
-    eos.TY2Cp(T(i, j, k), y, cpmix_cgs);
-    lambda(i, j, k) = PrInv * c2m::Cp(cpmix_cgs) * mu(i, j, k);
+  } else {
+    amrex::Real mwtinv[NUM_SPECIES] = {0.0};
+    eos.inv_molecular_weight(mwtinv);
+    amrex::Real Wbar = 0.0;
+    eos.Y2WBAR(y, Wbar);
     for (int n = 0; n < NUM_SPECIES; ++n) {
       rhoDi(i, j, k, n) = rhoDi_cgs[n] * Wbar * mwtinv[n] * 1.0e-1;
     }
-  } else if (do_fixed_Le) { // fixed Le, still use thermal cond
-    lambda(i, j, k) = c2m::Lambda(lambda_cgs);
-    amrex::Real cpmix_cgs = 0.0;
-    eos.TY2Cp(T(i, j, k), y, cpmix_cgs);
+  }
+
+  // Soret, with the full mixture-averaged model only
+  if (do_soret && !do_fixed_Pr && !do_fixed_Le) {
     for (int n = 0; n < NUM_SPECIES; ++n) {
-      rhoDi(i, j, k, n) = lambda_cgs * 1.0e-1 * LeInv / cpmix_cgs;
+      rhotheta(i, j, k, n) = -rhoDi_cgs[n] * chi_loc[n] * 1.0e-1;
     }
-  } else { // full MA model, with Soret if needed
-    lambda(i, j, k) = c2m::Lambda(lambda_cgs);
-    for (int n = 0; n < NUM_SPECIES; ++n) {
-      rhoDi(i, j, k, n) = rhoDi_cgs[n] * Wbar * mwtinv[n] * 1.0e-1;
-      if (do_soret) {
-        rhotheta(i, j, k, n) = -rhoDi_cgs[n] * chi_loc[n] * 1.0e-1;
-      }
-    }
-    if (do_soret) {
-      // Soret coefficient scaling, see Howarth, Day, Pitsch & Aspden
+    // Soret coefficient scaling, see Howarth, Day, Pitsch & Aspden
 #if defined(H2_ID)
-      rhotheta(i, j, k, H2_ID) *= 0.664;
+    rhotheta(i, j, k, H2_ID) *= 0.664;
 #endif
 #if defined(H_ID)
-      rhotheta(i, j, k, H_ID) *= 0.58;
+    rhotheta(i, j, k, H_ID) *= 0.58;
 #endif
 #if !defined(H2_ID) && !defined(H_ID)
-      amrex::Abort(
-        "Running with Soret without light species, waste of time "
-        "and memory...");
+    amrex::Abort(
+      "Running with Soret without light species, waste of time "
+      "and memory...");
 #endif
-    }
   }
 }
 
@@ -144,14 +133,9 @@ getTransportCoeff<pele::physics::eos::Manifold>(
   AMREX_ASSERT(!do_soret);
 
   // Get rho & Y from rhoY
-  amrex::Real rho, rhoinv;
-  amrex::Real y[NUM_SPECIES] = {0.0};
-  amrex::Real massdens[NUM_SPECIES];
-  for (int n = 0; n < NUM_SPECIES; ++n) {
-    massdens[n] = rhoY(i, j, k, n);
-  }
   auto eos = pele::physics::PhysicsType::eos(eosparm);
-  eos.RY2RRinvY(massdens, rho, rhoinv, y);
+  amrex::Real rho = 0.0, rhoinv = 0.0, y[NUM_SPECIES] = {0.0};
+  eos.RY2RRinvY(rhoY.cellData(i, j, k), rho, rhoinv, y);
 
   const amrex::Real rho_cgs = m2c::Rho(rho); // MKS -> CGS conversion
   amrex::Real rhoDi_cgs[NUM_SPECIES] = {0.0};
@@ -194,12 +178,9 @@ getVelViscosity(
     pele::physics::PhysicsType::transport_type> const* trans_parm) noexcept
 {
   // Get rho & Y from rhoY
-  amrex::Real massdens[NUM_SPECIES];
-  for (int n = 0; n < NUM_SPECIES; ++n) {
-    massdens[n] = rhoY(i, j, k, n);
-  }
   amrex::Real rho = 0.0, rhoinv = 0.0, y[NUM_SPECIES] = {0.0};
-  pele::physics::PhysicsType::eos_type::RY2RRinvY(massdens, rho, rhoinv, y);
+  pele::physics::PhysicsType::eos_type::RY2RRinvY(
+    rhoY.cellData(i, j, k), rho, rhoinv, y);
 
   const amrex::Real rho_cgs = m2c::Rho(rho); // MKS -> CGS conversion
   amrex::Real temp = T(i, j, k);
@@ -274,15 +255,8 @@ compute_divu(
   eos.inv_molecular_weight(mwtinv);
 
   // Get rho & Y from rhoY
-  amrex::Real rho = 0.0;
-  for (int n = 0; n < NUM_SPECIES; ++n) {
-    rho += rhoY(i, j, k, n);
-  }
-  const amrex::Real rhoinv = 1.0 / rho;
-  amrex::Real y[NUM_SPECIES] = {0.0};
-  for (int n = 0; n < NUM_SPECIES; ++n) {
-    y[n] = rhoY(i, j, k, n) * rhoinv;
-  }
+  amrex::Real rho = 0.0, rhoinv = 0.0, y[NUM_SPECIES] = {0.0};
+  eos.RY2RRinvY(rhoY.cellData(i, j, k), rho, rhoinv, y);
 
   amrex::Real cpmix_cgs = 0.0;
   eos.TY2Cp(T(i, j, k), y, cpmix_cgs);
@@ -329,15 +303,9 @@ compute_divu<pele::physics::eos::Manifold>(
     eosparm) noexcept
 {
   // Get rho & Ys from rhoYs.
-  amrex::Real rho, rhoinv;
-  amrex::Real y[NUM_SPECIES] = {0.0};
-  amrex::Real massdens[NUM_SPECIES] = {0.0};
-  for (int n = 0; n < NUM_SPECIES; ++n) {
-    massdens[n] = rhoY(i, j, k, n);
-  }
-
   auto eos = pele::physics::PhysicsType::eos(eosparm);
-  eos.RY2RRinvY(massdens, rho, rhoinv, y);
+  amrex::Real rho = 0.0, rhoinv = 0.0, y[NUM_SPECIES] = {0.0};
+  eos.RY2RRinvY(rhoY.cellData(i, j, k), rho, rhoinv, y);
   amrex::Real derivs[MANIFOLD_DIM] = {0.0};
   amrex::Real rho_cgs = m2c::Rho(rho);
 
@@ -386,6 +354,35 @@ extFluxDivergence_K(
   }
 }
 
+// Net area-weighted flux out of cell (i,j,k) through its regular faces
+AMREX_GPU_DEVICE
+AMREX_FORCE_INLINE
+amrex::Real
+EB_faceFluxSum(
+  const int i,
+  const int j,
+  const int k,
+  const int n,
+  AMREX_D_DECL(
+    amrex::Array4<const amrex::Real> const& fluxX,
+    amrex::Array4<const amrex::Real> const& fluxY,
+    amrex::Array4<const amrex::Real> const& fluxZ),
+  AMREX_D_DECL(
+    amrex::Array4<const amrex::Real> const& afracX,
+    amrex::Array4<const amrex::Real> const& afracY,
+    amrex::Array4<const amrex::Real> const& afracZ),
+  AMREX_D_DECL(
+    amrex::Real areax, amrex::Real areay, amrex::Real areaz)) noexcept
+{
+  return AMREX_D_TERM(
+    (areax * afracX(i + 1, j, k) * fluxX(i + 1, j, k, n) -
+     areax * afracX(i, j, k) * fluxX(i, j, k, n)),
+    +(areay * afracY(i, j + 1, k) * fluxY(i, j + 1, k, n) -
+      areay * afracY(i, j, k) * fluxY(i, j, k, n)),
+    +(areaz * afracZ(i, j, k + 1) * fluxZ(i, j, k + 1, n) -
+      areaz * afracZ(i, j, k) * fluxZ(i, j, k, n)));
+}
+
 AMREX_GPU_DEVICE
 AMREX_FORCE_INLINE
 void
@@ -410,13 +407,9 @@ EB_intFluxDivergence_K(
   const amrex::Real factor = scaling / vol(i, j, k);
 
   for (int n = 0; n < ncomp; ++n) {
-    div(i, j, k, n) = AMREX_D_TERM(
-      (areax * afracX(i + 1, j, k) * fluxX(i + 1, j, k, n) -
-       areax * afracX(i, j, k) * fluxX(i, j, k, n)),
-      +(areay * afracY(i, j + 1, k) * fluxY(i, j + 1, k, n) -
-        areay * afracY(i, j, k) * fluxY(i, j, k, n)),
-      +(areaz * afracZ(i, j, k + 1) * fluxZ(i, j, k + 1, n) -
-        areaz * afracZ(i, j, k) * fluxZ(i, j, k, n)));
+    div(i, j, k, n) = EB_faceFluxSum(
+      i, j, k, n, AMREX_D_DECL(fluxX, fluxY, fluxZ),
+      AMREX_D_DECL(afracX, afracY, afracZ), AMREX_D_DECL(areax, areay, areaz));
     div(i, j, k, n) *= factor;
   }
 }
@@ -450,13 +443,9 @@ EB_intFluxDivergence_K(
     AMREX_D_TERM(1.0, *a_dx, *a_dx) * ebAreaFrac(i, j, k);
 
   for (int n = 0; n < ncomp; ++n) {
-    div(i, j, k, n) = AMREX_D_TERM(
-      (areax * afracX(i + 1, j, k) * fluxX(i + 1, j, k, n) -
-       areax * afracX(i, j, k) * fluxX(i, j, k, n)),
-      +(areay * afracY(i, j + 1, k) * fluxY(i, j + 1, k, n) -
-        areay * afracY(i, j, k) * fluxY(i, j, k, n)),
-      +(areaz * afracZ(i, j, k + 1) * fluxZ(i, j, k + 1, n) -
-        areaz * afracZ(i, j, k) * fluxZ(i, j, k, n)));
+    div(i, j, k, n) = EB_faceFluxSum(
+      i, j, k, n, AMREX_D_DECL(fluxX, fluxY, fluxZ),
+      AMREX_D_DECL(afracX, afracY, afracZ), AMREX_D_DECL(areax, areay, areaz));
     div(i, j, k, n) += eb_area * ebFlux(i, j, k, n);
     div(i, j, k, n) *= factor;
   }
@@ -570,6 +559,33 @@ getGradMwmixGivengradYMwmix(
   gradMwmix(i, j, k) *= -Mwmix(i, j, k) * Mwmix(i, j, k);
 }
 
+// Cells (id_l, id_h) on the low and high side of face (i,j,k) normal to dir.
+// On a Dirichlet domain face, both are the ghost cell holding the boundary
+// value: the low ghost (i-1 in dir) on a low face, cell (i,j,k) on a high one.
+AMREX_GPU_DEVICE
+AMREX_FORCE_INLINE
+void
+faceStencil(
+  const int i,
+  const int j,
+  const int k,
+  const int dir,
+  const bool on_lo,
+  const bool on_hi,
+  int (&id_l)[3],
+  int (&id_h)[3]) noexcept
+{
+  id_l[0] = id_h[0] = i;
+  id_l[1] = id_h[1] = j;
+  id_l[2] = id_h[2] = k;
+  if (on_lo || !on_hi) {
+    id_l[dir] -= 1;
+  }
+  if (on_lo) {
+    id_h[dir] -= 1;
+  }
+}
+
 AMREX_GPU_DEVICE
 AMREX_FORCE_INLINE
 void
@@ -585,20 +601,8 @@ cen2edg_cpp(
   amrex::Array4<const amrex::Real> const& cfab,
   amrex::Array4<amrex::Real> const& efab) noexcept
 {
-  // Default behavior: id_l -1 in dir
-  // Handle the BCs
-  // Need -1 in id_l and id_h in dir on low Dirichlet BC
-  // Need nothing on high Dirichlet BC
-  int id_l[3] = {i, j, k};
-  int id_h[3] = {i, j, k};
-  if (!on_lo) {
-    if (!on_hi) {
-      id_l[dir] -= 1;
-    }
-  } else {
-    id_l[dir] -= 1;
-    id_h[dir] -= 1;
-  }
+  int id_l[3], id_h[3];
+  faceStencil(i, j, k, dir, on_lo, on_hi, id_l, id_h);
   if (do_harmonic) {
     for (int n = 0; n < ncomp; ++n) {
       if (
@@ -634,19 +638,8 @@ repair_flux(
   amrex::Array4<const amrex::Real> const& rhoY,
   amrex::Array4<amrex::Real> const& flux) noexcept
 {
-  // Handle the BCs : need a -1 on id_l in dir away from the BC
-  // Need -1 in id_l and id_h in dir on low Dirichlet BC
-  // Need nothing on high Dirichlet BC
-  int id_l[3] = {i, j, k};
-  int id_h[3] = {i, j, k};
-  if (!on_lo) {
-    if (!on_hi) {
-      id_l[dir] -= 1;
-    }
-  } else {
-    id_l[dir] -= 1;
-    id_h[dir] -= 1;
-  }
+  int id_l[3], id_h[3];
+  faceStencil(i, j, k, dir, on_lo, on_hi, id_l, id_h);
 
   amrex::Real sumFlux = 0.0;
   amrex::Real sumRhoYe = 0.0;
@@ -1119,28 +1112,13 @@ check_divu_dt(
   amrex::Array4<const amrex::Real> const& divu,
   amrex::Real const& a_dt) noexcept
 {
-  amrex::Real dtcell = 1.0e12;
-  amrex::Real denom = 0.0;
-  const bool rho_is_okay = (rho(i, j, k) > rhomin);
-  const auto dxinv = mapped_inv_dx_array(i, j, k, dxinv_uniform, mmap, gd);
-
-  if (check_type == 1) { // Check based on divU
-    if (divu(i, j, k) > 0.0) {
-      dtcell = (rho_is_okay) ? (1.0 - rhomin / rho(i, j, k)) / divu(i, j, k)
-                             : 1.0 / divu(i, j, k);
-    }
-  } else if (check_type == 2) { // Check based rho * divU + u \cdot grad rho
-    denom =
-      rho(i, j, k) * divu(i, j, k) +
-      AMREX_D_TERM(
-        vel(i, j, k, 0) * (rho(i + 1, j, k) - rho(i - 1, j, k)) * dxinv[0],
-        +vel(i, j, k, 1) * (rho(i, j + 1, k) - rho(i, j - 1, k)) * dxinv[1],
-        +vel(i, j, k, 2) * (rho(i, j, k + 1) - rho(i, j, k - 1)) * dxinv[2]);
-    if (denom > 0.0) {
-      dtcell = (rho_is_okay) ? (rho(i, j, k) - rhomin) / denom
-                             : std::abs(rho(i, j, k)) / denom;
-    }
-  }
+  // Unscaled estimates; no constraint for other check types
+  const amrex::Real dtcell =
+    (check_type == 1) ? est_divu_dt_1(i, j, k, 1.0, rhomin, rho, divu)
+    : (check_type == 2)
+      ? est_divu_dt_2(
+          i, j, k, 1.0, rhomin, dxinv_uniform, mmap, gd, rho, vel, divu)
+      : 1.0e20;
   if (a_dt > dtcell) {
     amrex::Abort("Error: divU dtcell larger than actual dt !");
   } else if (a_dt > dtcell * dtfactor) {
@@ -1162,15 +1140,8 @@ getGammaInv(
 {
   auto eos = pele::physics::PhysicsType::eos(eosparm);
   // Get rho & Y from rhoY
-  amrex::Real rho = 0.0;
-  for (int n = 0; n < NUM_SPECIES; ++n) {
-    rho += rhoY(i, j, k, n);
-  }
-  const amrex::Real rhoinv = 1.0 / rho;
-  amrex::Real y[NUM_SPECIES] = {0.0};
-  for (int n = 0; n < NUM_SPECIES; ++n) {
-    y[n] = rhoY(i, j, k, n) * rhoinv;
-  }
+  amrex::Real rho = 0.0, rhoinv = 0.0, y[NUM_SPECIES] = {0.0};
+  eos.RY2RRinvY(rhoY.cellData(i, j, k), rho, rhoinv, y);
 
   amrex::Real cpmix = 0.0;
   eos.TY2Cp(T(i, j, k), y, cpmix);
@@ -1314,7 +1285,7 @@ getTurbViscSigma(
   // smallnum included to make sure denom is nonzero
   // where sig_* are the singular values of G = g^tg
 
-  constexpr amrex::Real Pi = 3.14159265358979323846264338327950288;
+  constexpr amrex::Real Pi = amrex::Math::pi<amrex::Real>();
 
   amrex::Real D_sig = 0.0;
 
