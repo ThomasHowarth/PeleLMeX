@@ -55,22 +55,22 @@ PeleLM::makeEBGeometry()
 }
 
 void
-PeleLM::redistributeAofS(
+PeleLM::redistribute(
   const int a_lev,
   const amrex::Real a_dt,
   amrex::MultiFab& a_tmpDiv,
   const int div_comp,
-  amrex::MultiFab& a_AofS,
-  const int aofs_comp,
-  amrex::MultiFab& a_state,
+  amrex::MultiFab& a_out,
+  const int out_comp,
+  const amrex::MultiFab& a_state,
   const int state_comp,
   const int ncomp,
   const amrex::BCRec* d_bc,
-  const amrex::Geometry& a_geom) const
+  const amrex::Geometry& a_geom,
+  const std::string& a_redist_type) const
 {
-  BL_PROFILE("PeleLMeX::redistributeAofS()");
   AMREX_ASSERT(a_tmpDiv.nComp() >= div_comp + ncomp);
-  AMREX_ASSERT(a_AofS.nComp() >= aofs_comp + ncomp);
+  AMREX_ASSERT(a_out.nComp() >= out_comp + ncomp);
   AMREX_ASSERT(a_state.nComp() >= state_comp + ncomp);
 
   //----------------------------------------------------------------
@@ -86,7 +86,7 @@ PeleLM::redistributeAofS(
     auto const& flagfab = ebfact.getMultiEBCellFlagFab()[mfi];
     auto const& flag = flagfab.const_array();
     auto const& divT_ar = a_tmpDiv.array(mfi, div_comp);
-    auto const& aofs_ar = a_AofS.array(mfi, aofs_comp);
+    auto const& out_ar = a_out.array(mfi, out_comp);
 
     if (flagfab.getType(bx) != amrex::FabType::covered) {
       if (flagfab.getType(grow(bx, 4)) != amrex::FabType::regular) {
@@ -109,15 +109,15 @@ PeleLM::redistributeAofS(
         // FluxRedistribute
         amrex::Box gbx = bx;
 
-        if (m_adv_redist_type == "StateRedist") {
+        if (a_redist_type == "StateRedist") {
           gbx.grow(3);
-        } else if (m_adv_redist_type == "FluxRedist") {
+        } else if (a_redist_type == "FluxRedist") {
           gbx.grow(2);
         }
 
         amrex::FArrayBox tmpfab(gbx, ncomp, amrex::The_Async_Arena());
         amrex::Array4<amrex::Real> scratch = tmpfab.array(0);
-        if (m_adv_redist_type == "FluxRedist") {
+        if (a_redist_type == "FluxRedist") {
           amrex::ParallelFor(
             amrex::Box(scratch),
             [scratch] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
@@ -125,21 +125,60 @@ PeleLM::redistributeAofS(
             });
         }
         ApplyRedistribution(
-          bx, ncomp, aofs_ar, divT_ar, a_state.const_array(mfi, state_comp),
+          bx, ncomp, out_ar, divT_ar, a_state.const_array(mfi, state_comp),
           scratch, flag, AMREX_D_DECL(apx, apy, apz), vfrac_arr,
-          AMREX_D_DECL(fcx, fcy, fcz), ccc, d_bc, a_geom, a_dt,
-          m_adv_redist_type);
+          AMREX_D_DECL(fcx, fcy, fcz), ccc, d_bc, a_geom, a_dt, a_redist_type);
       } else {
-        // Move data to AofS for regular bx
+        // Move data to the output for regular bx
         amrex::ParallelFor(
           bx, ncomp,
-          [aofs_ar,
+          [out_ar,
            divT_ar] AMREX_GPU_DEVICE(int i, int j, int k, int n) noexcept {
-            aofs_ar(i, j, k, n) = divT_ar(i, j, k, n);
+            out_ar(i, j, k, n) = divT_ar(i, j, k, n);
           });
       }
     }
   }
+}
+
+void
+PeleLM::redistributeAofS(
+  const int a_lev,
+  const amrex::Real a_dt,
+  amrex::MultiFab& a_tmpDiv,
+  const int div_comp,
+  amrex::MultiFab& a_AofS,
+  const int aofs_comp,
+  const amrex::MultiFab& a_state,
+  const int state_comp,
+  const int ncomp,
+  const amrex::BCRec* d_bc,
+  const amrex::Geometry& a_geom) const
+{
+  BL_PROFILE("PeleLMeX::redistributeAofS()");
+  redistribute(
+    a_lev, a_dt, a_tmpDiv, div_comp, a_AofS, aofs_comp, a_state, state_comp,
+    ncomp, d_bc, a_geom, m_adv_redist_type);
+}
+
+void
+PeleLM::redistributeDiff(
+  const int a_lev,
+  const amrex::Real a_dt,
+  amrex::MultiFab& a_tmpDiv,
+  const int div_comp,
+  amrex::MultiFab& a_diff,
+  const int diff_comp,
+  const amrex::MultiFab& a_state,
+  const int state_comp,
+  const int ncomp,
+  const amrex::BCRec* d_bc,
+  const amrex::Geometry& a_geom) const
+{
+  BL_PROFILE("PeleLMeX::redistributeDiff()");
+  redistribute(
+    a_lev, a_dt, a_tmpDiv, div_comp, a_diff, diff_comp, a_state, state_comp,
+    ncomp, d_bc, a_geom, m_diff_redist_type);
 }
 
 void
@@ -189,94 +228,6 @@ PeleLM::getCoveredIMask(const int a_lev, amrex::iMultiFab& a_imask) const
       });
     }
     a_imask.ParallelCopy(mask_tmp, 0, 0, 1);
-  }
-}
-
-void
-PeleLM::redistributeDiff(
-  const int a_lev,
-  const amrex::Real a_dt,
-  amrex::MultiFab& a_tmpDiv,
-  const int div_comp,
-  amrex::MultiFab& a_diff,
-  const int diff_comp,
-  const amrex::MultiFab& a_state,
-  const int state_comp,
-  const int ncomp,
-  const amrex::BCRec* d_bc,
-  const amrex::Geometry& a_geom) const
-{
-  BL_PROFILE("PeleLMeX::redistributeDiff()");
-  AMREX_ASSERT(a_tmpDiv.nComp() >= div_comp + ncomp);
-  AMREX_ASSERT(a_diff.nComp() >= diff_comp + ncomp);
-  AMREX_ASSERT(a_state.nComp() >= state_comp + ncomp);
-
-  //----------------------------------------------------------------
-  const auto& ebfact = EBFactory(a_lev);
-
-#ifdef AMREX_USE_OMP
-#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
-#endif
-  for (amrex::MFIter mfi(a_tmpDiv, amrex::TilingIfNotGPU()); mfi.isValid();
-       ++mfi) {
-
-    amrex::Box const& bx = mfi.tilebox();
-    auto const& flagfab = ebfact.getMultiEBCellFlagFab()[mfi];
-    auto const& flag = flagfab.const_array();
-    auto const& divT_ar = a_tmpDiv.array(mfi, div_comp);
-    auto const& diff_ar = a_diff.array(mfi, diff_comp);
-
-    if (flagfab.getType(bx) != amrex::FabType::covered) {
-      if (flagfab.getType(grow(bx, 4)) != amrex::FabType::regular) {
-        AMREX_D_TERM(
-          auto apx = ebfact.getAreaFrac()[0]->const_array(mfi);
-          , auto apy = ebfact.getAreaFrac()[1]->const_array(mfi);
-          , auto apz = ebfact.getAreaFrac()[2]->const_array(mfi););
-        AMREX_D_TERM(
-          amrex::Array4<amrex::Real const> fcx =
-            ebfact.getFaceCent()[0]->const_array(mfi);
-          , amrex::Array4<amrex::Real const> fcy =
-              ebfact.getFaceCent()[1]->const_array(mfi);
-          , amrex::Array4<amrex::Real const> fcz =
-              ebfact.getFaceCent()[2]->const_array(mfi););
-        auto const& ccc = ebfact.getCentroid().const_array(mfi);
-        auto const& vfrac_arr = ebfact.getVolFrac().const_array(mfi);
-
-        // This is scratch space if calling StateRedistribute,
-        // but is used as the weights (here set to 1) if calling
-        // FluxRedistribute
-        amrex::Box gbx = bx;
-
-        if (m_diff_redist_type == "StateRedist") {
-          gbx.grow(3);
-        } else if (m_diff_redist_type == "FluxRedist") {
-          gbx.grow(2);
-        }
-
-        amrex::FArrayBox tmpfab(gbx, ncomp, amrex::The_Async_Arena());
-        amrex::Array4<amrex::Real> scratch = tmpfab.array(0);
-        if (m_diff_redist_type == "FluxRedist") {
-          amrex::ParallelFor(
-            amrex::Box(scratch),
-            [scratch] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-              scratch(i, j, k) = 1.;
-            });
-        }
-        ApplyRedistribution(
-          bx, ncomp, diff_ar, divT_ar, a_state.const_array(mfi, state_comp),
-          scratch, flag, AMREX_D_DECL(apx, apy, apz), vfrac_arr,
-          AMREX_D_DECL(fcx, fcy, fcz), ccc, d_bc, a_geom, a_dt,
-          m_diff_redist_type);
-      } else {
-        // Move data to AofS for regular bx
-        amrex::ParallelFor(
-          bx, ncomp,
-          [diff_ar,
-           divT_ar] AMREX_GPU_DEVICE(int i, int j, int k, int n) noexcept {
-            diff_ar(i, j, k, n) = divT_ar(i, j, k, n);
-          });
-      }
-    }
   }
 }
 
@@ -479,16 +430,10 @@ amrex::Vector<std::unique_ptr<amrex::MultiFab>>
 PeleLM::getEBState(
   const int first_comp, const int ncomp, const TimeStamp a_time)
 {
-  AMREX_ASSERT(first_comp >= VELX);
-  AMREX_ASSERT(first_comp + ncomp <= NVAR);
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> r;
   r.reserve(finest_level + 1);
   for (int lev = 0; lev <= finest_level; ++lev) {
-    r.push_back(
-      std::make_unique<amrex::MultiFab>(
-        grids[lev], dmap[lev], ncomp, m_nGrowState, amrex::MFInfo(),
-        Factory(lev)));
-    getEBState(lev, a_time, *r[lev], first_comp, ncomp);
+    r.push_back(getEBState(lev, first_comp, ncomp, a_time));
   }
   return r;
 }
@@ -599,10 +544,10 @@ PeleLM::getEBState(
     auto const& flag = flagfab.const_array();
     const auto& ebState = a_EBstate.array(mfi);
 
-    if (flagfab.getType(bx) == amrex::FabType::covered) { // Set to zero
-      AMREX_PARALLEL_FOR_4D(
-        bx, nComp, i, j, k, n, { ebState(i, j, k, n) = 0.0; });
-    } else if (flagfab.getType(bx) == amrex::FabType::regular) { // Set to zero
+    const auto fabtype = flagfab.getType(bx);
+    if (
+      fabtype == amrex::FabType::covered ||
+      fabtype == amrex::FabType::regular) { // No cut cells: set to zero
       AMREX_PARALLEL_FOR_4D(
         bx, nComp, i, j, k, n, { ebState(i, j, k, n) = 0.0; });
     } else {
@@ -662,9 +607,10 @@ PeleLM::getEBDiff(
     const auto& ebdiff = a_EBDiff.array(mfi);
     const auto& diff_cc = ldata_p->diff_cc.const_array(mfi, diffComp);
 
-    if (flagfab.getType(bx) == amrex::FabType::covered) { // Set to zero
-      AMREX_PARALLEL_FOR_3D(bx, i, j, k, { ebdiff(i, j, k) = 0.0; });
-    } else if (flagfab.getType(bx) == amrex::FabType::regular) { // Set to zero
+    const auto fabtype = flagfab.getType(bx);
+    if (
+      fabtype == amrex::FabType::covered ||
+      fabtype == amrex::FabType::regular) { // No cut cells: set to zero
       AMREX_PARALLEL_FOR_3D(bx, i, j, k, { ebdiff(i, j, k) = 0.0; });
     } else {
       const PeleLMFillBCTypeEB<
