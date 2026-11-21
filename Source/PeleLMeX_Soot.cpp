@@ -75,22 +75,4 @@ PeleLM::clipSootMoments()
   amrex::Gpu::streamSynchronize();
 }
 
-// TODO: This isn't working yet
-/*
-void
-PeleLM::addSootDerivePlotVars(PeleLMDeriveList& derive_lst)
-{
-  // Add in soot variables
-  amrex::Vector<std::string> sootNames = {"rho_soot", "sum_rho_soot"};
-  derive_lst.add(
-    "soot_vars", IndexType::TheCellType(), sootNames.size(), sootNames,
-    soot_genvars, PeleLMDeriveRec::TheSameBox);
-
-  // Variables associated with the second mode (large particles)
-  amrex::Vector<std::string> large_part_names = {"NL", "soot_V_L", "soot_S_L"};
-  derive_lst.add(
-    "soot_large_particles", IndexType::TheCellType(), large_part_names.size(),
-    large_part_names, soot_largeparticledata, PeleLMDeriveRec::TheSameBox);
-}
-*/
 #endif
