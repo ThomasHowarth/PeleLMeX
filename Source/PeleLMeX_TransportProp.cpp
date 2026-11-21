@@ -378,8 +378,10 @@ PeleLM::calcDiffusivity(const TimeStamp a_time)
           });
       }
     }
+    // cp_cc is freed at the end of this iteration: the kernels using it
+    // must be done before its memory can be reused
+    amrex::Gpu::streamSynchronize();
   }
-  amrex::Gpu::streamSynchronize();
 }
 
 amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
