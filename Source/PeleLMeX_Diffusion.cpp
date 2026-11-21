@@ -859,10 +859,10 @@ PeleLM::addWbarTerm(
     const auto& ba = grids[lev];
     const auto& factory = Factory(lev);
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+      // computeGradient writes every face of its single component
       gradWbar[lev][idim].define(
         amrex::convert(ba, amrex::IntVect::TheDimensionVector(idim)), dmap[lev],
-        NUM_SPECIES, nGrow, amrex::MFInfo(), factory);
-      gradWbar[lev][idim].setVal(0.0);
+        1, nGrow, amrex::MFInfo(), factory);
     }
   }
   getDiffusionOp()->computeGradient(
@@ -995,8 +995,7 @@ PeleLM::addSoretTerm(
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
       gradT[lev][idim].define(
         amrex::convert(ba, amrex::IntVect::TheDimensionVector(idim)), dmap[lev],
-        1, nGrow, amrex::MFInfo(), factory);
-      gradT[lev][idim].setVal(0.0);
+        1, nGrow, amrex::MFInfo(), factory); // computeGradient fills it
     }
   }
   getDiffusionOp()->computeGradient(
@@ -1675,7 +1674,7 @@ PeleLM::differentialDiffusionUpdate(
       rhs.emplace_back(
         grids[lev], dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
       Tsave.emplace_back(
-        grids[lev], dmap[lev], 1, 1, amrex::MFInfo(), Factory(lev));
+        grids[lev], dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
       RhoCp.emplace_back(
         grids[lev], dmap[lev], 1, 0, amrex::MFInfo(), Factory(lev));
     }
