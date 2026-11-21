@@ -1902,6 +1902,55 @@ public:
     int a_comp,
     int a_ncomp);
 
+  //! Divergence the face velocity satisfies (mac_divu, 0 if incompressible),
+  //! with m_nGrowdivu ghost cells; times J under mesh mapping if a_timesJ
+  amrex::MultiFab getAdvectionDivu(
+    int a_lev, const std::unique_ptr<AdvanceAdvData>& advData, bool a_timesJ);
+
+  //! Godunov edge states and fluxes of a_ncomp components of a_state on the
+  //! tile of a_mfi; a_ebInflowComp >= 0 passes the EB inflow state of the
+  //! a_ncomp state components from there (when there is EB inflow)
+  void predictAdvFluxesOnBox(
+    int a_lev,
+    amrex::MFIter& a_mfi,
+    const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_umac,
+    int a_umac_comp,
+    const amrex::MultiFab& a_state,
+    int a_state_comp,
+    int a_ncomp,
+    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& a_fluxes,
+    int a_flux_comp,
+    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& a_edges,
+    int a_edge_comp,
+    bool a_knownEdgeState,
+    bool a_isVelocity,
+    const amrex::MultiFab& a_divu,
+    const amrex::MultiFab& a_force,
+    int a_force_comp,
+    const amrex::Vector<amrex::BCRec>& a_bcRec,
+    const amrex::BCRec* a_bcRec_d,
+    const int* a_advType_d,
+    int a_ebInflowComp = -1);
+
+  //! Advection term -div(F) (convective form where a_advType_d is 0) into
+  //! a_aofs on one level: through a redistributed temporary with EB, set to 0
+  //! in covered cells if a_setCovered, and divided by J under mesh mapping
+  void advDivergenceToAofS(
+    int a_lev,
+    amrex::MultiFab& a_divu,
+    const amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& a_fluxes,
+    const amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& a_faceState,
+    int a_ncomp,
+    const int* a_advType_d,
+    amrex::MultiFab& a_aofs,
+    int a_aofs_comp,
+    const amrex::MultiFab& a_state,
+    int a_state_comp,
+    const amrex::BCRec* a_bcRec_d,
+    bool a_setCovered,
+    const amrex::MultiFab* a_ebVel = nullptr,
+    const amrex::MultiFab* a_ebVal = nullptr);
+
   void getScalarAdvForce(
     const std::unique_ptr<AdvanceAdvData>& advData,
     const std::unique_ptr<AdvanceDiffData>& diffData);

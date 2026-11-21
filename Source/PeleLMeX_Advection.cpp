@@ -67,17 +67,8 @@ PeleLM::computeVelocityAdvTerm(const std::unique_ptr<AdvanceAdvData>& advData)
 
     //----------------------------------------------------------------
     // Get divU
-    amrex::MultiFab divu(
-      grids[lev], dmap[lev], 1, m_nGrowdivu, amrex::MFInfo(), Factory(lev));
-    // The face velocity satisfies div(umac) = mac_divu (S at t^{n+1/2},
-    // less theta dp0/dt in a closed chamber), so the prediction's divu is
-    // taken from it rather than from the old-time S, which differs by the
-    // time centering and, in a closed chamber, by theta dp0/dt.
-    if (m_incompressible != 0) {
-      divu.setVal(0.0);
-    } else {
-      amrex::MultiFab::Copy(divu, advData->mac_divu[lev], 0, 0, 1, m_nGrowdivu);
-    }
+    constexpr bool divuTimesJ = false;
+    amrex::MultiFab divu = getAdvectionDivu(lev, advData, divuTimesJ);
 
     // Under mesh mapping the extrapolation is done in Xi with the
     // Xi-velocity u~ = umac / J_fc and the physical divU; the fluxes
@@ -90,51 +81,18 @@ PeleLM::computeVelocityAdvTerm(const std::unique_ptr<AdvanceAdvData>& advData)
     }
 
     //----------------------------------------------------------------
-#ifdef AMREX_USE_EB
-    const auto& ebfact = EBFactory(lev);
-#endif
-
-    //----------------------------------------------------------------
     // Compute the velocity fluxes
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
 #endif
     for (amrex::MFIter mfi(ldata_p->state, amrex::TilingIfNotGPU());
          mfi.isValid(); ++mfi) {
-
-      amrex::Box const& bx = mfi.tilebox();
-      AMREX_D_TERM(
-        auto const& umac = umacE[0]->const_array(mfi);
-        , auto const& vmac = umacE[1]->const_array(mfi);
-        , auto const& wmac = umacE[2]->const_array(mfi);)
-      AMREX_D_TERM(
-        auto const& fx = fluxes[lev][0].array(mfi);
-        , auto const& fy = fluxes[lev][1].array(mfi);
-        , auto const& fz = fluxes[lev][2].array(mfi);)
-      AMREX_D_TERM(
-        auto const& facex = faces[lev][0].array(mfi);
-        , auto const& facey = faces[lev][1].array(mfi);
-        , auto const& facez = faces[lev][2].array(mfi);)
-      auto const& divu_arr = divu.const_array(mfi);
-      auto const& vel_arr = ldata_p->state.const_array(mfi, VELX);
-      auto const& force_arr = velForces[lev].const_array(mfi);
-
-      constexpr bool is_velocity = true;
-      constexpr bool fluxes_are_area_weighted = false;
       constexpr bool knownEdgeState = false;
-      HydroUtils::ComputeFluxesOnBoxFromState(
-        bx, AMREX_SPACEDIM, mfi, vel_arr, AMREX_D_DECL(fx, fy, fz),
-        AMREX_D_DECL(facex, facey, facez), knownEdgeState,
-        AMREX_D_DECL(umac, vmac, wmac), divu_arr, force_arr, geom[lev], m_dt,
-        bcRecVel, bcRecVel_d.dataPtr(), AdvTypeVel_d.dataPtr(),
-#ifdef AMREX_USE_EB
-        ebfact,
-        (m_useEBinflow != 0)
-          ? getEBState(mfi, lev, VELX, AMREX_SPACEDIM, AmrOldTime).const_array()
-          : amrex::Array4<amrex::Real const>{},
-#endif
-        m_Godunov_ppm != 0, m_Godunov_ForceInTrans != 0, is_velocity,
-        fluxes_are_area_weighted, m_advection_type, m_Godunov_ppm_limiter);
+      constexpr bool is_velocity = true;
+      predictAdvFluxesOnBox(
+        lev, mfi, umacE, 0, ldata_p->state, VELX, AMREX_SPACEDIM, fluxes[lev],
+        0, faces[lev], 0, knownEdgeState, is_velocity, divu, velForces[lev], 0,
+        bcRecVel, bcRecVel_d.dataPtr(), AdvTypeVel_d.dataPtr(), VELX);
     }
     scaleMappedAdvFluxes(lev, fluxes[lev], 0, AMREX_SPACEDIM);
 #ifdef AMREX_USE_EB
@@ -149,68 +107,23 @@ PeleLM::computeVelocityAdvTerm(const std::unique_ptr<AdvanceAdvData>& advData)
   averageDownFaces(faces);
 
   //----------------------------------------------------------------
-  // Fluxes divergence to get the velocity advection term
+  // Fluxes divergence to get the velocity advection term. Convective form:
+  // u.grad(u) = div(umac u) - u div(umac), with the divergence umac satisfies
   for (int lev = 0; lev <= finest_level; ++lev) {
-
-    amrex::MultiFab divu(
-      grids[lev], dmap[lev], 1, m_nGrowdivu, amrex::MFInfo(), Factory(lev));
-    // Convective form: u.grad(u) = div(umac u) - u div(umac).  The identity
-    // needs the divergence umac actually satisfies, which is mac_divu.
-    if (m_incompressible != 0) {
-      divu.setVal(0.0);
-    } else {
-      amrex::MultiFab::Copy(divu, advData->mac_divu[lev], 0, 0, 1, m_nGrowdivu);
-    }
-    if (m_mesh_mapping) {
-      m_mesh_map->multiply_by_detJ_cc(lev, divu, 0, 1, m_nGrowdivu);
-    }
-
-    constexpr bool fluxes_are_area_weighted = false;
-#ifdef AMREX_USE_EB
+    constexpr bool divuTimesJ = true;
+    amrex::MultiFab divu = getAdvectionDivu(lev, advData, divuTimesJ);
     auto* ldata_p = getLevelDataPtr(lev, AmrOldTime);
-    //----------------------------------------------------------------
-    // Use a temporary MF to hold divergence before redistribution
-    constexpr int nGrow_divT = 3;
-    amrex::MultiFab divTmp(
-      grids[lev], dmap[lev], AMREX_SPACEDIM, nGrow_divT, amrex::MFInfo(),
-      EBFactory(lev));
-    divTmp.setVal(0.0);
+    std::unique_ptr<amrex::MultiFab> ebVel;
+#ifdef AMREX_USE_EB
     if (m_useEBinflow != 0) {
-      advFluxDivergence(
-        lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
-        GetArrOfConstPtrs(faces[lev]), 0, AMREX_SPACEDIM,
-        AdvTypeVel_d.dataPtr(), -1.0, fluxes_are_area_weighted,
-        getEBState(lev, VELX, AMREX_SPACEDIM, AmrOldTime).get(),
-        getEBState(lev, VELX, AMREX_SPACEDIM, AmrOldTime).get());
-    } else {
-      advFluxDivergence(
-        lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
-        GetArrOfConstPtrs(faces[lev]), 0, AMREX_SPACEDIM,
-        AdvTypeVel_d.dataPtr(), -1.0, fluxes_are_area_weighted);
+      ebVel = getEBState(lev, VELX, AMREX_SPACEDIM, AmrOldTime);
     }
-
-    divTmp.FillBoundary(geom[lev].periodicity());
-
-    redistribute(
-      lev, m_dt, divTmp, 0, advData->AofS[lev], VELX, ldata_p->state, VELX,
-      AMREX_SPACEDIM, bcRecVel_d.dataPtr(), geom[lev], m_adv_redist_type);
-    EB_set_covered(advData->AofS[lev], 0.0);
-#else
-    //----------------------------------------------------------------
-    // Otherwise go directly into AofS
-    advFluxDivergence(
-      lev, advData->AofS[lev], VELX, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
-      GetArrOfConstPtrs(faces[lev]), 0, AMREX_SPACEDIM, AdvTypeVel_d.dataPtr(),
-      -1.0, fluxes_are_area_weighted);
 #endif
-
-    // Under mesh mapping, the flux divergence was computed in uniform
-    // (Xi) space with umac = u_bar, giving J . (physical divergence).
-    // Restore the physical-space advection term by dividing by J.
-    if (m_mesh_mapping) {
-      m_mesh_map->divide_by_detJ_cc(
-        lev, advData->AofS[lev], VELX, AMREX_SPACEDIM);
-    }
+    constexpr bool setCovered = true;
+    advDivergenceToAofS(
+      lev, divu, fluxes[lev], faces[lev], AMREX_SPACEDIM,
+      AdvTypeVel_d.dataPtr(), advData->AofS[lev], VELX, ldata_p->state, VELX,
+      bcRecVel_d.dataPtr(), setCovered, ebVel.get(), ebVel.get());
   }
 }
 
@@ -357,6 +270,9 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
   auto AdvTypeTemp_d = convertToDeviceVector(AdvTypeTemp);
   auto bcRecRhoH = fetchBCRecArray(RHOH, 1);
   auto bcRecRhoH_d = convertToDeviceVector(bcRecRhoH);
+  // Species and the adjacent RhoH, for the divergence step
+  auto bcRecSpecRhoH = fetchBCRecArray(FIRSTSPEC, NUM_SPECIES + 1);
+  auto bcRecSpecRhoH_d = convertToDeviceVector(bcRecSpecRhoH);
   auto AdvTypeRhoH = fetchAdvTypeArray(RHOH, 1);
   auto AdvTypeRhoH_d = convertToDeviceVector(AdvTypeRhoH);
   auto bcRecAux = fetchBCRecAuxArray(0, m_nAux);
@@ -414,13 +330,8 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
 
     //----------------------------------------------------------------
     // Get divU
-    amrex::MultiFab divu(
-      grids[lev], dmap[lev], 1, m_nGrowdivu, amrex::MFInfo(), Factory(lev));
-    if (m_incompressible != 0) {
-      divu.setVal(0.0);
-    } else {
-      amrex::MultiFab::Copy(divu, advData->mac_divu[lev], 0, 0, 1, m_nGrowdivu);
-    }
+    constexpr bool divuTimesJ = false;
+    amrex::MultiFab divu = getAdvectionDivu(lev, advData, divuTimesJ);
 
     // Under mesh mapping the extrapolation is done in Xi with the
     // Xi-velocity u~ = umac / J_fc and the physical divU; the fluxes
@@ -437,106 +348,41 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
 #endif
 
     // Get the species edge state and advection term
+    constexpr bool knownEdgeState = false;
+    constexpr bool is_velocity = false;
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
 #endif
     for (amrex::MFIter mfi(ldata_p->state, amrex::TilingIfNotGPU());
          mfi.isValid(); ++mfi) {
-
-      amrex::Box const& bx = mfi.tilebox();
-      AMREX_D_TERM(
-        auto const& umac = umacE[0]->const_array(mfi);
-        , auto const& vmac = umacE[1]->const_array(mfi);
-        , auto const& wmac = umacE[2]->const_array(mfi);)
-      AMREX_D_TERM(
-        auto const& fx = fluxes[lev][0].array(mfi, 0);
-        , auto const& fy = fluxes[lev][1].array(mfi, 0);
-        , auto const& fz = fluxes[lev][2].array(mfi, 0);)
-      AMREX_D_TERM(
-        auto const& edgex = edgeState[0].array(mfi, 1);
-        , auto const& edgey = edgeState[1].array(mfi, 1);
-        , auto const& edgez = edgeState[2].array(mfi, 1);)
-      auto const& divu_arr = divu.const_array(mfi);
-      auto const& rhoY_arr = ldata_p->state.const_array(mfi, FIRSTSPEC);
-      auto const& force_arr = advData->Forcing[lev].const_array(mfi, 0);
-
 #ifdef PELE_USE_PLASMA
       // Uncharged species all at once
-      constexpr bool is_velocity = false;
-      constexpr bool fluxes_are_area_weighted = false;
-      constexpr bool knownEdgeState = false;
-      HydroUtils::ComputeFluxesOnBoxFromState(
-        bx, NUM_SPECIES - NUM_IONS, mfi, rhoY_arr, AMREX_D_DECL(fx, fy, fz),
-        AMREX_D_DECL(edgex, edgey, edgez), knownEdgeState,
-        AMREX_D_DECL(umac, vmac, wmac), divu_arr, force_arr, geom[lev], m_dt,
-        bcRecSpec, bcRecSpec_d.dataPtr(), AdvTypeSpec_d.dataPtr(),
-#ifdef AMREX_USE_EB
-        ebfact,
-        (m_useEBinflow != 0)
-          ? getEBState(mfi, lev, FIRSTSPEC, NUM_SPECIES - NUM_IONS, AmrOldTime)
-              .const_array()
-          : amrex::Array4<amrex::Real const>{},
-#endif
-        m_Godunov_ppm != 0, m_Godunov_ForceInTrans != 0, is_velocity,
-        fluxes_are_area_weighted, m_advection_type, m_Godunov_ppm_limiter);
+      predictAdvFluxesOnBox(
+        lev, mfi, umacE, 0, ldata_p->state, FIRSTSPEC, NUM_SPECIES - NUM_IONS,
+        fluxes[lev], 0, edgeState, 1, knownEdgeState, is_velocity, divu,
+        advData->Forcing[lev], 0, bcRecSpec, bcRecSpec_d.dataPtr(),
+        AdvTypeSpec_d.dataPtr(), FIRSTSPEC);
 
-      // Ions one by one
+      // Ions one by one, with the drift velocity
+      const auto uDrift = GetArrOfConstPtrs(advData->uDrift[lev]);
       for (int n = 0; n < NUM_IONS; ++n) {
         const int ion_idx = NUM_SPECIES - NUM_IONS + n;
         auto bcRecIons = fetchBCRecArray(FIRSTSPEC + ion_idx, 1);
         auto bcRecIons_d = convertToDeviceVector(bcRecIons);
         auto AdvTypeIons = fetchAdvTypeArray(FIRSTSPEC + ion_idx, 1);
         auto AdvTypeIons_d = convertToDeviceVector(AdvTypeIons);
-        AMREX_D_TERM(
-          auto const& udrift = advData->uDrift[lev][0].const_array(mfi, n);
-          , auto const& vdrift = advData->uDrift[lev][1].const_array(mfi, n);
-          , auto const& wdrift = advData->uDrift[lev][2].const_array(mfi, n);)
-        AMREX_D_TERM(
-          auto const& fx_ions = fluxes[lev][0].array(mfi, ion_idx);
-          , auto const& fy_ions = fluxes[lev][1].array(mfi, ion_idx);
-          , auto const& fz_ions = fluxes[lev][2].array(mfi, ion_idx);)
-        AMREX_D_TERM(
-          auto const& edgex_ions = edgeState[0].array(mfi, 1 + ion_idx);
-          , auto const& edgey_ions = edgeState[1].array(mfi, 1 + ion_idx);
-          , auto const& edgez_ions = edgeState[2].array(mfi, 1 + ion_idx);)
-        auto const& rhoYions_arr =
-          ldata_p->state.const_array(mfi, FIRSTSPEC + ion_idx);
-        auto const& forceions_arr =
-          advData->Forcing[lev].const_array(mfi, ion_idx);
-        HydroUtils::ComputeFluxesOnBoxFromState(
-          bx, 1, mfi, rhoYions_arr, AMREX_D_DECL(fx_ions, fy_ions, fz_ions),
-          AMREX_D_DECL(edgex_ions, edgey_ions, edgez_ions), knownEdgeState,
-          AMREX_D_DECL(udrift, vdrift, wdrift), divu_arr, forceions_arr,
-          geom[lev], m_dt, bcRecIons, bcRecIons_d.dataPtr(),
-          AdvTypeIons_d.dataPtr(),
-#ifdef AMREX_USE_EB
-          ebfact,
-          (m_useEBinflow != 0)
-            ? getEBState(mfi, lev, FIRSTSPEC + ion_idx, 1, AmrOldTime)
-                .const_array()
-            : amrex::Array4<amrex::Real const>{},
-#endif
-          m_Godunov_ppm != 0, m_Godunov_ForceInTrans != 0, is_velocity,
-          fluxes_are_area_weighted, m_advection_type, m_Godunov_ppm_limiter);
+        predictAdvFluxesOnBox(
+          lev, mfi, uDrift, n, ldata_p->state, FIRSTSPEC + ion_idx, 1,
+          fluxes[lev], ion_idx, edgeState, 1 + ion_idx, knownEdgeState,
+          is_velocity, divu, advData->Forcing[lev], ion_idx, bcRecIons,
+          bcRecIons_d.dataPtr(), AdvTypeIons_d.dataPtr(), FIRSTSPEC + ion_idx);
       }
 #else
-      constexpr bool is_velocity = false;
-      constexpr bool fluxes_are_area_weighted = false;
-      constexpr bool knownEdgeState = false;
-      HydroUtils::ComputeFluxesOnBoxFromState(
-        bx, NUM_SPECIES, mfi, rhoY_arr, AMREX_D_DECL(fx, fy, fz),
-        AMREX_D_DECL(edgex, edgey, edgez), knownEdgeState,
-        AMREX_D_DECL(umac, vmac, wmac), divu_arr, force_arr, geom[lev], m_dt,
-        bcRecSpec, bcRecSpec_d.dataPtr(), AdvTypeSpec_d.dataPtr(),
-#ifdef AMREX_USE_EB
-        ebfact,
-        (m_useEBinflow != 0)
-          ? getEBState(mfi, lev, FIRSTSPEC, NUM_SPECIES, AmrOldTime)
-              .const_array()
-          : amrex::Array4<amrex::Real const>{},
-#endif
-        m_Godunov_ppm != 0, m_Godunov_ForceInTrans != 0, is_velocity,
-        fluxes_are_area_weighted, m_advection_type, m_Godunov_ppm_limiter);
+      predictAdvFluxesOnBox(
+        lev, mfi, umacE, 0, ldata_p->state, FIRSTSPEC, NUM_SPECIES, fluxes[lev],
+        0, edgeState, 1, knownEdgeState, is_velocity, divu,
+        advData->Forcing[lev], 0, bcRecSpec, bcRecSpec_d.dataPtr(),
+        AdvTypeSpec_d.dataPtr(), FIRSTSPEC);
 #endif
     }
     // get the edge state for auxiliary components
@@ -546,37 +392,11 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
 #endif
       for (amrex::MFIter mfi(ldata_p->auxiliaries, amrex::TilingIfNotGPU());
            mfi.isValid(); ++mfi) {
-        amrex::Box const& bx = mfi.tilebox();
-        AMREX_D_TERM(
-          auto const& umac = umacE[0]->const_array(mfi);
-          , auto const& vmac = umacE[1]->const_array(mfi);
-          , auto const& wmac = umacE[2]->const_array(mfi);)
-        AMREX_D_TERM(
-          auto const& fx = fluxes_aux[lev][0].array(mfi, 0);
-          , auto const& fy = fluxes_aux[lev][1].array(mfi, 0);
-          , auto const& fz = fluxes_aux[lev][2].array(mfi, 0);)
-        AMREX_D_TERM(
-          auto const& edgex = edgeState_aux[lev][0].array(mfi, 0);
-          , auto const& edgey = edgeState_aux[lev][1].array(mfi, 0);
-          , auto const& edgez = edgeState_aux[lev][2].array(mfi, 0);)
-        auto const& divu_arr = divu.const_array(mfi);
-        auto const& aux_arr = ldata_p->auxiliaries.const_array(mfi, 0);
-        auto const& force_arr = advData->Forcing_aux[lev].const_array(mfi, 0);
-
-        constexpr bool is_velocity = false;
-        constexpr bool fluxes_are_area_weighted = false;
-        constexpr bool knownEdgeState = false;
-
-        HydroUtils::ComputeFluxesOnBoxFromState(
-          bx, m_nAux, mfi, aux_arr, AMREX_D_DECL(fx, fy, fz),
-          AMREX_D_DECL(edgex, edgey, edgez), knownEdgeState,
-          AMREX_D_DECL(umac, vmac, wmac), divu_arr, force_arr, geom[lev], m_dt,
-          bcRecAux, bcRecAux_d.dataPtr(), AdvTypeAux_d.dataPtr(),
-#ifdef AMREX_USE_EB
-          ebfact,
-#endif
-          m_Godunov_ppm != 0, m_Godunov_ForceInTrans != 0, is_velocity,
-          fluxes_are_area_weighted, m_advection_type, m_Godunov_ppm_limiter);
+        predictAdvFluxesOnBox(
+          lev, mfi, umacE, 0, ldata_p->auxiliaries, 0, m_nAux, fluxes_aux[lev],
+          0, edgeState_aux[lev], 0, knownEdgeState, is_velocity, divu,
+          advData->Forcing_aux[lev], 0, bcRecAux, bcRecAux_d.dataPtr(),
+          AdvTypeAux_d.dataPtr());
       }
       // Zero out fluxes, and the face states of the convective correction,
       // for non-advected auxiliaries
@@ -590,47 +410,18 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
       }
     }
 
-    // Get the edge temperature
+    // Get the edge temperature, with its fluxes in place of RhoH's (they are
+    // overwritten below)
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
 #endif
     for (amrex::MFIter mfi(ldata_p->state, amrex::TilingIfNotGPU());
          mfi.isValid(); ++mfi) {
-      amrex::Box const& bx = mfi.tilebox();
-      AMREX_D_TERM(
-        auto const& umac = umacE[0]->const_array(mfi);
-        , auto const& vmac = umacE[1]->const_array(mfi);
-        , auto const& wmac = umacE[2]->const_array(mfi);)
-      AMREX_D_TERM(
-        auto const& fx = fluxes[lev][0].array(mfi, NUM_SPECIES);
-        , // Put temp fluxes in place of rhoH
-        auto const& fy = fluxes[lev][1].array(mfi, NUM_SPECIES);
-        , // will be overwritten later
-        auto const& fz = fluxes[lev][2].array(mfi, NUM_SPECIES);)
-      AMREX_D_TERM(
-        auto const& edgex = edgeState[0].array(mfi, NUM_SPECIES + 2);
-        , auto const& edgey = edgeState[1].array(mfi, NUM_SPECIES + 2);
-        , auto const& edgez = edgeState[2].array(mfi, NUM_SPECIES + 2);)
-      auto const& divu_arr = divu.const_array(mfi);
-      auto const& temp_arr = ldata_p->state.const_array(mfi, TEMP);
-      auto const& force_arr =
-        advData->Forcing[lev].const_array(mfi, NUM_SPECIES);
-      constexpr bool is_velocity = false;
-      constexpr bool fluxes_are_area_weighted = false;
-      constexpr bool knownEdgeState = false;
-      HydroUtils::ComputeFluxesOnBoxFromState(
-        bx, 1, mfi, temp_arr, AMREX_D_DECL(fx, fy, fz),
-        AMREX_D_DECL(edgex, edgey, edgez), knownEdgeState,
-        AMREX_D_DECL(umac, vmac, wmac), divu_arr, force_arr, geom[lev], m_dt,
-        bcRecTemp, bcRecTemp_d.dataPtr(), AdvTypeTemp_d.dataPtr(),
-#ifdef AMREX_USE_EB
-        ebfact,
-        (m_useEBinflow != 0)
-          ? getEBState(mfi, lev, TEMP, 1, AmrOldTime).const_array()
-          : amrex::Array4<amrex::Real const>{},
-#endif
-        m_Godunov_ppm != 0, m_Godunov_ForceInTrans != 0, is_velocity,
-        fluxes_are_area_weighted, m_advection_type, m_Godunov_ppm_limiter);
+      predictAdvFluxesOnBox(
+        lev, mfi, umacE, 0, ldata_p->state, TEMP, 1, fluxes[lev], NUM_SPECIES,
+        edgeState, NUM_SPECIES + 2, knownEdgeState, is_velocity, divu,
+        advData->Forcing[lev], NUM_SPECIES, bcRecTemp, bcRecTemp_d.dataPtr(),
+        AdvTypeTemp_d.dataPtr(), TEMP);
     }
 
     // Get the edge density, summing over the species, and the edge RhoH
@@ -689,46 +480,19 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
       }
     }
 
-    // Finally get the RhoH advection term
-    // Pass the Temp forces again here, but they aren't used.
+    // Finally get the RhoH fluxes from the known edge RhoH. Pass the Temp
+    // forces again here, but they aren't used.
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
 #endif
     for (amrex::MFIter mfi(ldata_p->state, amrex::TilingIfNotGPU());
          mfi.isValid(); ++mfi) {
-      amrex::Box const& bx = mfi.tilebox();
-      AMREX_D_TERM(
-        auto const& umac = umacE[0]->const_array(mfi);
-        , auto const& vmac = umacE[1]->const_array(mfi);
-        , auto const& wmac = umacE[2]->const_array(mfi);)
-      AMREX_D_TERM(
-        auto const& fx = fluxes[lev][0].array(mfi, NUM_SPECIES);
-        , auto const& fy = fluxes[lev][1].array(mfi, NUM_SPECIES);
-        , auto const& fz = fluxes[lev][2].array(mfi, NUM_SPECIES);)
-      AMREX_D_TERM(
-        auto const& edgex = edgeState[0].array(mfi, NUM_SPECIES + 1);
-        , auto const& edgey = edgeState[1].array(mfi, NUM_SPECIES + 1);
-        , auto const& edgez = edgeState[2].array(mfi, NUM_SPECIES + 1);)
-      auto const& divu_arr = divu.const_array(mfi);
-      auto const& rhoh_arr = ldata_p->state.const_array(mfi, RHOH);
-      auto const& force_arr =
-        advData->Forcing[lev].const_array(mfi, NUM_SPECIES);
-      constexpr bool is_velocity = false;
-      constexpr bool fluxes_are_area_weighted = false;
-      constexpr bool knownEdgeState = true;
-      HydroUtils::ComputeFluxesOnBoxFromState(
-        bx, 1, mfi, rhoh_arr, AMREX_D_DECL(fx, fy, fz),
-        AMREX_D_DECL(edgex, edgey, edgez), knownEdgeState,
-        AMREX_D_DECL(umac, vmac, wmac), divu_arr, force_arr, geom[lev], m_dt,
-        bcRecRhoH, bcRecRhoH_d.dataPtr(), AdvTypeRhoH_d.dataPtr(),
-#ifdef AMREX_USE_EB
-        ebfact,
-        (m_useEBinflow != 0)
-          ? getEBState(mfi, lev, RHOH, 1, AmrOldTime).const_array()
-          : amrex::Array4<amrex::Real const>{},
-#endif
-        m_Godunov_ppm != 0, m_Godunov_ForceInTrans != 0, is_velocity,
-        fluxes_are_area_weighted, m_advection_type, m_Godunov_ppm_limiter);
+      constexpr bool knownEdgeRhoH = true;
+      predictAdvFluxesOnBox(
+        lev, mfi, umacE, 0, ldata_p->state, RHOH, 1, fluxes[lev], NUM_SPECIES,
+        edgeState, NUM_SPECIES + 1, knownEdgeRhoH, is_velocity, divu,
+        advData->Forcing[lev], NUM_SPECIES, bcRecRhoH, bcRecRhoH_d.dataPtr(),
+        AdvTypeRhoH_d.dataPtr(), RHOH);
     }
     scaleMappedAdvFluxes(lev, fluxes[lev], 0, NUM_SPECIES + 1);
     if (m_nAux > 0) {
@@ -789,109 +553,31 @@ PeleLM::computeScalarAdvTerms(const std::unique_ptr<AdvanceAdvData>& advData)
     fetchAdvTypeArray(FIRSTSPEC, NUM_SPECIES + 1); // Species+RhoH
   auto AdvTypeAll_d = convertToDeviceVector(AdvTypeAll);
   for (int lev = 0; lev <= finest_level; ++lev) {
-    amrex::MultiFab divu(
-      grids[lev], dmap[lev], 1, m_nGrowdivu, amrex::MFInfo(), Factory(lev));
-    if (m_incompressible != 0) {
-      divu.setVal(0.0);
-    } else {
-      // The convective form needs the divergence umac satisfies: mac_divu
-      amrex::MultiFab::Copy(divu, advData->mac_divu[lev], 0, 0, 1, m_nGrowdivu);
-    }
-    if (m_mesh_mapping) {
-      m_mesh_map->multiply_by_detJ_cc(lev, divu, 0, 1, m_nGrowdivu);
-    }
-
-    constexpr bool fluxes_are_area_weighted = false;
-#ifdef AMREX_USE_EB
+    constexpr bool divuTimesJ = true;
+    amrex::MultiFab divu = getAdvectionDivu(lev, advData, divuTimesJ);
     auto* ldata_p = getLevelDataPtr(lev, AmrOldTime);
-    //----------------------------------------------------------------
-    // Use a temporary MF to hold divergence before redistribution
-    constexpr int nGrow_divTmp = 3;
-    amrex::MultiFab divTmp(
-      grids[lev], dmap[lev], NUM_SPECIES + 1, nGrow_divTmp, amrex::MFInfo(),
-      EBFactory(lev));
-    divTmp.setVal(0.0);
+    constexpr bool setCovered = true;
+
+    // Species and RhoH, all conservative: the face states are not used
+    std::unique_ptr<amrex::MultiFab> ebVel, ebVal;
+#ifdef AMREX_USE_EB
     if (m_useEBinflow != 0) {
-      advFluxDivergence(
-        lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
-        GetArrOfConstPtrs(fluxes[lev]),
-        0, // This will not be used since none of rhoY/rhoH in convective
-        NUM_SPECIES + 1, AdvTypeAll_d.dataPtr(), -1.0, fluxes_are_area_weighted,
-        getEBState(lev, VELX, AMREX_SPACEDIM, AmrOldTime).get(),
-        getEBState(lev, FIRSTSPEC, NUM_SPECIES + 1, AmrOldTime).get());
-    } else {
-      advFluxDivergence(
-        lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
-        GetArrOfConstPtrs(fluxes[lev]),
-        0, // This will not be used since none of rhoY/rhoH in convective
-        NUM_SPECIES + 1, AdvTypeAll_d.dataPtr(), -1.0,
-        fluxes_are_area_weighted);
-    }
-
-    divTmp.FillBoundary(geom[lev].periodicity());
-
-    // Need separate redistribution of rhoYs/rhoH
-    redistribute(
-      lev, m_dt, divTmp, 0, advData->AofS[lev], FIRSTSPEC, ldata_p->state,
-      FIRSTSPEC, NUM_SPECIES, bcRecSpec_d.dataPtr(), geom[lev],
-      m_adv_redist_type);
-
-    redistribute(
-      lev, m_dt, divTmp, NUM_SPECIES, advData->AofS[lev], RHOH, ldata_p->state,
-      RHOH, 1, bcRecRhoH_d.dataPtr(), geom[lev], m_adv_redist_type);
-
-    EB_set_covered(advData->AofS[lev], 0.0);
-
-    // repeat process for auxiliaries
-    if (m_nAux > 0) {
-      amrex::MultiFab divTmp_aux(
-        grids[lev], dmap[lev], m_nAux, nGrow_divTmp, amrex::MFInfo(),
-        EBFactory(lev));
-      divTmp_aux.setVal(0.0);
-      advFluxDivergence(
-        lev, divTmp_aux, 0, divu, GetArrOfConstPtrs(fluxes_aux[lev]), 0,
-        GetArrOfConstPtrs(edgeState_aux[lev]), 0, m_nAux,
-        AdvTypeAux_d.dataPtr(), -1.0, fluxes_are_area_weighted);
-
-      divTmp_aux.FillBoundary(geom[lev].periodicity());
-
-      redistribute(
-        lev, m_dt, divTmp_aux, 0, advData->AofS_aux[lev], 0,
-        ldata_p->auxiliaries, 0, m_nAux, bcRecAux_d.dataPtr(), geom[lev],
-        m_adv_redist_type);
-
-      EB_set_covered(advData->AofS_aux[lev], 0.0);
-    }
-#else
-    //----------------------------------------------------------------
-    // Otherwise go directly into AofS
-    advFluxDivergence(
-      lev, advData->AofS[lev], FIRSTSPEC, divu, GetArrOfConstPtrs(fluxes[lev]),
-      0, GetArrOfConstPtrs(fluxes[lev]),
-      0, // This will not be used since none of rhoY/rhoH in convective
-      NUM_SPECIES + 1, AdvTypeAll_d.dataPtr(), -1.0, fluxes_are_area_weighted);
-    // repeat for auxiliaries
-    if (m_nAux > 0) {
-      advFluxDivergence(
-        lev, advData->AofS_aux[lev], 0, divu,
-        GetArrOfConstPtrs(fluxes_aux[lev]), 0,
-        GetArrOfConstPtrs(edgeState_aux[lev]), 0, m_nAux,
-        AdvTypeAux_d.dataPtr(), -1.0, fluxes_are_area_weighted);
+      ebVel = getEBState(lev, VELX, AMREX_SPACEDIM, AmrOldTime);
+      ebVal = getEBState(lev, FIRSTSPEC, NUM_SPECIES + 1, AmrOldTime);
     }
 #endif
+    advDivergenceToAofS(
+      lev, divu, fluxes[lev], fluxes[lev], NUM_SPECIES + 1,
+      AdvTypeAll_d.dataPtr(), advData->AofS[lev], FIRSTSPEC, ldata_p->state,
+      FIRSTSPEC, bcRecSpecRhoH_d.dataPtr(), setCovered, ebVel.get(),
+      ebVal.get());
 
-    // Under mesh mapping, the flux divergence was computed in uniform
-    // (Xi) space with umac = u_bar, giving J . (physical divergence).
-    // Restore physical-space AofS for species (FIRSTSPEC..FIRSTSPEC+NSPEC-1)
-    // and the adjacent enthalpy (RHOH) by dividing by J.  The density
-    // component of AofS is re-derived from the species sum below, so it
-    // inherits the scaling automatically.
-    if (m_mesh_mapping) {
-      m_mesh_map->divide_by_detJ_cc(
-        lev, advData->AofS[lev], FIRSTSPEC, NUM_SPECIES + 1);
-      if (m_nAux > 0) {
-        m_mesh_map->divide_by_detJ_cc(lev, advData->AofS_aux[lev], 0, m_nAux);
-      }
+    // Auxiliaries
+    if (m_nAux > 0) {
+      advDivergenceToAofS(
+        lev, divu, fluxes_aux[lev], edgeState_aux[lev], m_nAux,
+        AdvTypeAux_d.dataPtr(), advData->AofS_aux[lev], 0, ldata_p->auxiliaries,
+        0, bcRecAux_d.dataPtr(), setCovered);
     }
   }
 
@@ -956,13 +642,8 @@ PeleLM::computePassiveAdvTerms(
 
     //----------------------------------------------------------------
     // Get divU
-    amrex::MultiFab divu(
-      grids[lev], dmap[lev], 1, m_nGrowdivu, amrex::MFInfo(), Factory(lev));
-    if (m_incompressible != 0) {
-      divu.setVal(0.0);
-    } else {
-      amrex::MultiFab::Copy(divu, advData->mac_divu[lev], 0, 0, 1, m_nGrowdivu);
-    }
+    constexpr bool divuTimesJ = false;
+    amrex::MultiFab divu = getAdvectionDivu(lev, advData, divuTimesJ);
 
     // Under mesh mapping the extrapolation is done in Xi with the
     // Xi-velocity u~ = umac / J_fc and the physical divU; the fluxes
@@ -970,49 +651,20 @@ PeleLM::computePassiveAdvTerms(
     amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> umac_xi;
     const auto umacE = getExtrapUmac(lev, advData, umac_xi);
 
-    //----------------------------------------------------------------
-#ifdef AMREX_USE_EB
-    // Get EBFact
-    const auto& ebfact = EBFactory(lev);
-#endif
-
     // Get the passive variables edge state and advection term
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
 #endif
     for (amrex::MFIter mfi(ldata_p->state, amrex::TilingIfNotGPU());
          mfi.isValid(); ++mfi) {
-      amrex::Box const& bx = mfi.tilebox();
-      AMREX_D_TERM(
-        auto const& umac = umacE[0]->const_array(mfi);
-        , auto const& vmac = umacE[1]->const_array(mfi);
-        , auto const& wmac = umacE[2]->const_array(mfi);)
-      AMREX_D_TERM(
-        auto const& fx = fluxes[lev][0].array(mfi, 0);
-        , auto const& fy = fluxes[lev][1].array(mfi, 0);
-        , auto const& fz = fluxes[lev][2].array(mfi, 0);)
-      AMREX_D_TERM(
-        auto const& edgex = edgeState[lev][0].array(mfi, 0);
-        , auto const& edgey = edgeState[lev][1].array(mfi, 0);
-        , auto const& edgez = edgeState[lev][2].array(mfi, 0);)
-      auto const& divu_arr = divu.const_array(mfi);
-      auto const& pass_arr = ldata_p->state.const_array(mfi, state_comp);
       // TODO: Find way to include diffusive forces for passive scalars that
       // diffuse
-      auto const& force_arr = m_extSource[lev]->const_array(mfi, state_comp);
-      constexpr bool is_velocity = false;
-      constexpr bool fluxes_are_area_weighted = false;
       constexpr bool knownEdgeState = false;
-      HydroUtils::ComputeFluxesOnBoxFromState(
-        bx, ncomp, mfi, pass_arr, AMREX_D_DECL(fx, fy, fz),
-        AMREX_D_DECL(edgex, edgey, edgez), knownEdgeState,
-        AMREX_D_DECL(umac, vmac, wmac), divu_arr, force_arr, geom[lev], m_dt,
-        bcRecPass, bcRecPass_d.dataPtr(), AdvTypePass_d.dataPtr(),
-#ifdef AMREX_USE_EB
-        ebfact,
-#endif
-        m_Godunov_ppm != 0, m_Godunov_ForceInTrans != 0, is_velocity,
-        fluxes_are_area_weighted, m_advection_type, m_Godunov_ppm_limiter);
+      constexpr bool is_velocity = false;
+      predictAdvFluxesOnBox(
+        lev, mfi, umacE, 0, ldata_p->state, state_comp, ncomp, fluxes[lev], 0,
+        edgeState[lev], 0, knownEdgeState, is_velocity, divu, *m_extSource[lev],
+        state_comp, bcRecPass, bcRecPass_d.dataPtr(), AdvTypePass_d.dataPtr());
     }
     scaleMappedAdvFluxes(lev, fluxes[lev], 0, ncomp);
 #ifdef AMREX_USE_EB
@@ -1026,53 +678,14 @@ PeleLM::computePassiveAdvTerms(
   //----------------------------------------------------------------
   // Fluxes divergence to get the scalars advection term
   for (int lev = 0; lev <= finest_level; ++lev) {
-
-    amrex::MultiFab divu(
-      grids[lev], dmap[lev], 1, m_nGrowdivu, amrex::MFInfo(), Factory(lev));
-    if (m_incompressible != 0) {
-      divu.setVal(0.0);
-    } else {
-      // The convective form needs the divergence umac satisfies: mac_divu
-      amrex::MultiFab::Copy(divu, advData->mac_divu[lev], 0, 0, 1, m_nGrowdivu);
-    }
-    // Fluxes are J.u~.q: the non-conservative correction needs J.divU
-    if (m_mesh_mapping) {
-      m_mesh_map->multiply_by_detJ_cc(lev, divu, 0, 1, m_nGrowdivu);
-    }
-
-    constexpr bool fluxes_are_area_weighted = false;
-#ifdef AMREX_USE_EB
+    constexpr bool divuTimesJ = true;
+    amrex::MultiFab divu = getAdvectionDivu(lev, advData, divuTimesJ);
     auto* ldata_p = getLevelDataPtr(lev, AmrOldTime);
-    //----------------------------------------------------------------
-    // Use a temporary MF to hold divergence before redistribution
-    constexpr int nGrow_divTmp = 3;
-    amrex::MultiFab divTmp(
-      grids[lev], dmap[lev], ncomp, nGrow_divTmp, amrex::MFInfo(),
-      EBFactory(lev));
-    divTmp.setVal(0.0);
-    advFluxDivergence(
-      lev, divTmp, 0, divu, GetArrOfConstPtrs(fluxes[lev]), 0,
-      GetArrOfConstPtrs(edgeState[lev]), 0, ncomp, AdvTypePass_d.dataPtr(),
-      -1.0, fluxes_are_area_weighted);
-
-    divTmp.FillBoundary(geom[lev].periodicity());
-
-    redistribute(
-      lev, m_dt, divTmp, 0, advData->AofS[lev], state_comp, ldata_p->state,
-      state_comp, ncomp, bcRecPass_d.dataPtr(), geom[lev], m_adv_redist_type);
-#else
-    //----------------------------------------------------------------
-    // Otherwise go directly into AofS
-    advFluxDivergence(
-      lev, advData->AofS[lev], state_comp, divu, GetArrOfConstPtrs(fluxes[lev]),
-      0, GetArrOfConstPtrs(edgeState[lev]), 0, ncomp, AdvTypePass_d.dataPtr(),
-      -1.0, fluxes_are_area_weighted);
-#endif
-
-    // Xi-space divergence is J.(physical divergence): restore physical units
-    if (m_mesh_mapping) {
-      m_mesh_map->divide_by_detJ_cc(lev, advData->AofS[lev], state_comp, ncomp);
-    }
+    constexpr bool setCovered = false;
+    advDivergenceToAofS(
+      lev, divu, fluxes[lev], edgeState[lev], ncomp, AdvTypePass_d.dataPtr(),
+      advData->AofS[lev], state_comp, ldata_p->state, state_comp,
+      bcRecPass_d.dataPtr(), setCovered);
   }
   // TODO: This assumes passive variables have no diffusive fluxes
   updateScalarComp(advData, state_comp, ncomp);
@@ -1173,4 +786,136 @@ PeleLM::scaleMappedAdvFluxes(
       });
   }
   amrex::Gpu::streamSynchronize();
+}
+
+amrex::MultiFab
+PeleLM::getAdvectionDivu(
+  int a_lev, const std::unique_ptr<AdvanceAdvData>& advData, bool a_timesJ)
+{
+  amrex::MultiFab divu(
+    grids[a_lev], dmap[a_lev], 1, m_nGrowdivu, amrex::MFInfo(), Factory(a_lev));
+  // The face velocity satisfies div(umac) = mac_divu (S at t^{n+1/2}, less
+  // theta dp0/dt in a closed chamber): the prediction and the convective-form
+  // correction both need that divergence, not the old-time S.
+  if (m_incompressible != 0) {
+    divu.setVal(0.0);
+  } else {
+    amrex::MultiFab::Copy(divu, advData->mac_divu[a_lev], 0, 0, 1, m_nGrowdivu);
+  }
+  // Mapped fluxes are J.u~.q: the convective-form correction needs J.divU
+  if (a_timesJ && m_mesh_mapping) {
+    m_mesh_map->multiply_by_detJ_cc(a_lev, divu, 0, 1, m_nGrowdivu);
+  }
+  return divu;
+}
+
+void
+PeleLM::predictAdvFluxesOnBox(
+  int a_lev,
+  amrex::MFIter& a_mfi,
+  const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_umac,
+  int a_umac_comp,
+  const amrex::MultiFab& a_state,
+  int a_state_comp,
+  int a_ncomp,
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& a_fluxes,
+  int a_flux_comp,
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& a_edges,
+  int a_edge_comp,
+  bool a_knownEdgeState,
+  bool a_isVelocity,
+  const amrex::MultiFab& a_divu,
+  const amrex::MultiFab& a_force,
+  int a_force_comp,
+  const amrex::Vector<amrex::BCRec>& a_bcRec,
+  const amrex::BCRec* a_bcRec_d,
+  const int* a_advType_d,
+  int a_ebInflowComp)
+{
+  const amrex::Box& bx = a_mfi.tilebox();
+  AMREX_D_TERM(
+    auto const& umac = a_umac[0]->const_array(a_mfi, a_umac_comp);
+    , auto const& vmac = a_umac[1]->const_array(a_mfi, a_umac_comp);
+    , auto const& wmac = a_umac[2]->const_array(a_mfi, a_umac_comp);)
+  AMREX_D_TERM(
+    auto const& fx = a_fluxes[0].array(a_mfi, a_flux_comp);
+    , auto const& fy = a_fluxes[1].array(a_mfi, a_flux_comp);
+    , auto const& fz = a_fluxes[2].array(a_mfi, a_flux_comp);)
+  AMREX_D_TERM(
+    auto const& edgex = a_edges[0].array(a_mfi, a_edge_comp);
+    , auto const& edgey = a_edges[1].array(a_mfi, a_edge_comp);
+    , auto const& edgez = a_edges[2].array(a_mfi, a_edge_comp);)
+  constexpr bool fluxes_are_area_weighted = false;
+#ifdef AMREX_USE_EB
+  // State on EB inflow faces, when there is EB inflow and the caller asks
+  amrex::FArrayBox ebInflow;
+  amrex::Array4<amrex::Real const> ebInflow_arr{};
+  if (m_useEBinflow != 0 && a_ebInflowComp >= 0) {
+    ebInflow = getEBState(a_mfi, a_lev, a_ebInflowComp, a_ncomp, AmrOldTime);
+    ebInflow_arr = ebInflow.const_array();
+  }
+#else
+  amrex::ignore_unused(a_ebInflowComp);
+#endif
+  HydroUtils::ComputeFluxesOnBoxFromState(
+    bx, a_ncomp, a_mfi, a_state.const_array(a_mfi, a_state_comp),
+    AMREX_D_DECL(fx, fy, fz), AMREX_D_DECL(edgex, edgey, edgez),
+    a_knownEdgeState, AMREX_D_DECL(umac, vmac, wmac), a_divu.const_array(a_mfi),
+    a_force.const_array(a_mfi, a_force_comp), geom[a_lev], m_dt, a_bcRec,
+    a_bcRec_d, a_advType_d,
+#ifdef AMREX_USE_EB
+    EBFactory(a_lev), ebInflow_arr,
+#endif
+    m_Godunov_ppm != 0, m_Godunov_ForceInTrans != 0, a_isVelocity,
+    fluxes_are_area_weighted, m_advection_type, m_Godunov_ppm_limiter);
+}
+
+void
+PeleLM::advDivergenceToAofS(
+  int a_lev,
+  amrex::MultiFab& a_divu,
+  const amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& a_fluxes,
+  const amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& a_faceState,
+  int a_ncomp,
+  const int* a_advType_d,
+  amrex::MultiFab& a_aofs,
+  int a_aofs_comp,
+  const amrex::MultiFab& a_state,
+  int a_state_comp,
+  const amrex::BCRec* a_bcRec_d,
+  bool a_setCovered,
+  const amrex::MultiFab* a_ebVel,
+  const amrex::MultiFab* a_ebVal)
+{
+  constexpr bool fluxes_are_area_weighted = false;
+#ifdef AMREX_USE_EB
+  // Divergence in a temporary with ghost cells, then redistributed into AofS
+  constexpr int nGrow_divTmp = 3;
+  amrex::MultiFab divTmp(
+    grids[a_lev], dmap[a_lev], a_ncomp, nGrow_divTmp, amrex::MFInfo(),
+    EBFactory(a_lev));
+  divTmp.setVal(0.0);
+  advFluxDivergence(
+    a_lev, divTmp, 0, a_divu, GetArrOfConstPtrs(a_fluxes), 0,
+    GetArrOfConstPtrs(a_faceState), 0, a_ncomp, a_advType_d, -1.0,
+    fluxes_are_area_weighted, a_ebVel, a_ebVal);
+  divTmp.FillBoundary(geom[a_lev].periodicity());
+  redistribute(
+    a_lev, m_dt, divTmp, 0, a_aofs, a_aofs_comp, a_state, a_state_comp, a_ncomp,
+    a_bcRec_d, geom[a_lev], m_adv_redist_type);
+  if (a_setCovered) {
+    EB_set_covered(a_aofs, 0.0);
+  }
+#else
+  amrex::ignore_unused(a_state, a_state_comp, a_bcRec_d, a_setCovered);
+  advFluxDivergence(
+    a_lev, a_aofs, a_aofs_comp, a_divu, GetArrOfConstPtrs(a_fluxes), 0,
+    GetArrOfConstPtrs(a_faceState), 0, a_ncomp, a_advType_d, -1.0,
+    fluxes_are_area_weighted, a_ebVel, a_ebVal);
+#endif
+  // Under mesh mapping the Xi-space divergence is J.(physical divergence):
+  // restore the physical advection term
+  if (m_mesh_mapping) {
+    m_mesh_map->divide_by_detJ_cc(a_lev, a_aofs, a_aofs_comp, a_ncomp);
+  }
 }
