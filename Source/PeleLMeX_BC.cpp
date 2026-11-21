@@ -220,7 +220,7 @@ PeleLM::setBoundaryConditions()
         m_bcrec_divu.setHi(idim, divu_bc[hi_bc[idim]]);
       }
     }
-    // auxiliaries - assumed to be the same as species
+    // auxiliaries - assumed to be the same as temperature
     for (int n = 0; n < m_nAux; ++n) {
       for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
         m_bcrec_aux[n].setLo(idim, aux_bc[lo_bc[idim]]);
@@ -246,18 +246,12 @@ PeleLM::setBoundaryConditions()
     // Hack charged species BCs
     int FIRSTIONinVar = FIRSTSPEC + NUM_SPECIES - NUM_IONS;
     int FIRSTIONinSpec = NUM_SPECIES - NUM_IONS;
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      for (int n = 0; n < NUM_IONS; ++n) {
-        auto const bcIonSave = m_bcrec_state[FIRSTIONinVar + n];
-        m_bcrec_state[FIRSTIONinVar + n] =
-          hackBCChargedParticle(zk[FIRSTIONinSpec + n], bcIonSave);
-      }
+    for (int n = 0; n < NUM_IONS; ++n) {
+      m_bcrec_state[FIRSTIONinVar + n] = hackBCChargedParticle(
+        zk[FIRSTIONinSpec + n], m_bcrec_state[FIRSTIONinVar + n]);
     }
     // Need to hack nE too actually ...
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      auto const bcnESave = m_bcrec_state[NE];
-      m_bcrec_state[NE] = hackBCChargedParticle(-1.0, bcnESave);
-    }
+    m_bcrec_state[NE] = hackBCChargedParticle(-1.0, m_bcrec_state[NE]);
 #endif
 #ifdef PELE_USE_SOOT
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
