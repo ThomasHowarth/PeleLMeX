@@ -1312,38 +1312,15 @@ PeleLM::initLevelDataFromPlt(int a_lev, const std::string& a_dataPltFile)
   }
 
   // Find required data in pltfile
-  amrex::Vector<std::string> spec_names;
-  pele::physics::eos::speciesNames<pele::physics::PhysicsType::eos_type>(
-    spec_names, &(eos_parms.host_parm()));
-  int idT = -1, idV = -1, idY = -1, nSpecPlt = 0;
+  const PltVarIndices ids = findPltVariables(plt_vars);
 #ifdef PELE_USE_PLASMA
   int inE = -1, iPhiV = -1;
 #endif
 #ifdef PELE_USE_SOOT
   int inSoot = -1;
 #endif
+#if defined(PELE_USE_PLASMA) || defined(PELE_USE_SOOT)
   for (int i = 0; i < plt_vars.size(); ++i) {
-    std::string firstChars = plt_vars[i].substr(0, 2);
-
-    if (pltfileSource == "LM") {
-      if (plt_vars[i] == "temp") {
-        idT = i;
-      }
-    } else if (pltfileSource == "C") {
-      if (plt_vars[i] == "Temp") {
-        idT = i;
-      }
-    }
-    if (plt_vars[i] == "x_velocity") {
-      idV = i;
-    }
-    if (firstChars == "Y(" && idY < 0) { // species might not be ordered in the
-                                         // order of the current mech.
-      idY = i;
-    }
-    if (firstChars == "Y(") {
-      nSpecPlt += 1;
-    }
 #ifdef PELE_USE_PLASMA
     if (plt_vars[i] == "nE")
       inE = i;
@@ -1356,11 +1333,7 @@ PeleLM::initLevelDataFromPlt(int a_lev, const std::string& a_dataPltFile)
     }
 #endif
   }
-  if (idY < 0) {
-    amrex::Abort("Couldn't find species mass fractions in pltfile");
-  } else if (idT < 0) {
-    amrex::Abort("Couldn't find temperature in pltfile");
-  }
+#endif
 #ifdef PELE_USE_PLASMA
   if (inE < 0 || iPhiV < 0) {
     amrex::Print() << "WARNING: nE and/or phiV not found in pltfile, "
@@ -1368,9 +1341,9 @@ PeleLM::initLevelDataFromPlt(int a_lev, const std::string& a_dataPltFile)
   }
 #endif
   if (m_verbose > 0) {
-    amrex::Print() << " " << nSpecPlt
+    amrex::Print() << " " << ids.nSpec
                    << " species found in pltfile, starting with "
-                   << plt_vars[idY] << "\n";
+                   << plt_vars[ids.Y] << "\n";
   }
 
   // Get level data
@@ -1395,61 +1368,8 @@ PeleLM::initLevelDataFromPlt(int a_lev, const std::string& a_dataPltFile)
   }
 
   if (!skip_plt_fill) {
-    // Velocity
-    pltData.fillPatchFromPlt(
-      source_plt_level, geom[a_lev], idV, VELX, AMREX_SPACEDIM, ldata_p->state);
-
-    // Temperature
-    pltData.fillPatchFromPlt(
-      source_plt_level, geom[a_lev], idT, TEMP, 1, ldata_p->state);
-
-    // Species
-    // Hold the species in temporary MF before copying to level data
-    // in case the number of species differs.
-    amrex::MultiFab speciesPlt(grids[a_lev], dmap[a_lev], nSpecPlt, 0);
-    pltData.fillPatchFromPlt(
-      source_plt_level, geom[a_lev], idY, 0, nSpecPlt, speciesPlt);
-    for (int i = 0; i < NUM_SPECIES; ++i) {
-      std::string specName = "Y(" + spec_names[i] + ")";
-      std::string specString = specName;
-      if (!m_initDataPlt_specname_map.empty()) {
-        specString = m_initDataPlt_specname_map[i];
-      }
-      int foundSpec = 0;
-      for (int iplt = 0; iplt < nSpecPlt; ++iplt) {
-        if (specString == plt_vars[idY + iplt]) {
-          amrex::MultiFab::Copy(
-            ldata_p->state, speciesPlt, iplt, FIRSTSPEC + i, 1, 0);
-          foundSpec = 1;
-          if (m_verbose > 0) {
-            amrex::Print() << "Loading species " << specName
-                           << " from plotfile species " << specString << "\n";
-          }
-        }
-      }
-      if (foundSpec == 0) {
-        for (int iplt = 0; iplt < plt_vars.size(); ++iplt) {
-          if (specString == plt_vars[iplt]) {
-            foundSpec = 1;
-            if (m_verbose > 0) {
-              amrex::Print() << "Loading species " << specName
-                             << " from plotfile entry " << specString << "\n";
-            }
-            pltData.fillPatchFromPlt(
-              source_plt_level, geom[a_lev], iplt, FIRSTSPEC + i, 1,
-              ldata_p->state);
-          }
-        }
-      }
-      if (foundSpec == 0) {
-        ldata_p->state.setVal(0.0, FIRSTSPEC + i, 1);
-        if (m_verbose > 0) {
-          amrex::Print() << "For species " << specName << " entry "
-                         << specString
-                         << " not found in plot file, setting to 0\n";
-        }
-      }
-    }
+    fillStateFromPlt(
+      pltData, plt_vars, ids, source_plt_level, geom[a_lev], ldata_p->state);
 
     // Converting units when pltfile is coming from PeleC solution
     if (pltfileSource == "C") {
@@ -1585,6 +1505,97 @@ PeleLM::initLevelDataFromPlt(int a_lev, const std::string& a_dataPltFile)
   }
 }
 
+PeleLM::PltVarIndices
+PeleLM::findPltVariables(const amrex::Vector<std::string>& plt_vars) const
+{
+  PltVarIndices ids;
+  const std::string tempName = (pltfileSource == "C") ? "Temp" : "temp";
+  for (int i = 0; i < plt_vars.size(); ++i) {
+    if (plt_vars[i] == tempName) {
+      ids.T = i;
+    }
+    if (plt_vars[i] == "x_velocity") {
+      ids.vel = i;
+    }
+    if (plt_vars[i].substr(0, 2) == "Y(") {
+      // Species might not be in the order of the current mechanism
+      if (ids.Y < 0) {
+        ids.Y = i;
+      }
+      ids.nSpec += 1;
+    }
+  }
+  if (ids.Y < 0) {
+    amrex::Abort("Couldn't find species mass fractions in pltfile");
+  }
+  if (ids.T < 0) {
+    amrex::Abort("Couldn't find temperature (" + tempName + ") in pltfile");
+  }
+  if (ids.vel < 0) {
+    amrex::Abort("Couldn't find x_velocity in pltfile");
+  }
+  return ids;
+}
+
+void
+PeleLM::fillStateFromPlt(
+  pele::physics::pltfilemanager::PltFileManager& pltData,
+  const amrex::Vector<std::string>& plt_vars,
+  const PltVarIndices& ids,
+  const int srcLev,
+  const amrex::Geometry& a_geom,
+  amrex::MultiFab& a_dst)
+{
+  // Velocity and temperature
+  pltData.fillPatchFromPlt(
+    srcLev, a_geom, ids.vel, VELX, AMREX_SPACEDIM, a_dst);
+  pltData.fillPatchFromPlt(srcLev, a_geom, ids.T, TEMP, 1, a_dst);
+
+  // Species: hold the contiguous plotfile species in a temporary, since
+  // their number and order can differ from the current mechanism
+  amrex::Vector<std::string> spec_names;
+  pele::physics::eos::speciesNames<pele::physics::PhysicsType::eos_type>(
+    spec_names, &(eos_parms.host_parm()));
+  amrex::MultiFab speciesPlt(
+    a_dst.boxArray(), a_dst.DistributionMap(), ids.nSpec, 0);
+  pltData.fillPatchFromPlt(srcLev, a_geom, ids.Y, 0, ids.nSpec, speciesPlt);
+  for (int i = 0; i < NUM_SPECIES; ++i) {
+    const std::string specName = "Y(" + spec_names[i] + ")";
+    const std::string specString = m_initDataPlt_specname_map.empty()
+                                     ? specName
+                                     : m_initDataPlt_specname_map[i];
+    bool foundSpec = false;
+    for (int iplt = 0; iplt < ids.nSpec && !foundSpec; ++iplt) {
+      if (specString == plt_vars[ids.Y + iplt]) {
+        amrex::MultiFab::Copy(a_dst, speciesPlt, iplt, FIRSTSPEC + i, 1, 0);
+        foundSpec = true;
+        if (m_verbose > 0) {
+          amrex::Print() << "Loading species " << specName
+                         << " from plotfile species " << specString << "\n";
+        }
+      }
+    }
+    // Otherwise look through all the plotfile entries
+    for (int iplt = 0; iplt < plt_vars.size() && !foundSpec; ++iplt) {
+      if (specString == plt_vars[iplt]) {
+        foundSpec = true;
+        if (m_verbose > 0) {
+          amrex::Print() << "Loading species " << specName
+                         << " from plotfile entry " << specString << "\n";
+        }
+        pltData.fillPatchFromPlt(srcLev, a_geom, iplt, FIRSTSPEC + i, 1, a_dst);
+      }
+    }
+    if (!foundSpec) {
+      a_dst.setVal(0.0, FIRSTSPEC + i, 1);
+      if (m_verbose > 0) {
+        amrex::Print() << "For species " << specName << " entry " << specString
+                       << " not found in plot file, setting to 0\n";
+      }
+    }
+  }
+}
+
 int
 PeleLM::computeLevelShift(
   pele::physics::pltfilemanager::PltFileManager& pltData)
@@ -1652,91 +1663,10 @@ PeleLM::coarsenLevelFromPlt(
 
   // Fill fine data from plotfile level 0 using standard fillPatchFromPlt
   // This bypasses the coarsening restriction in PltFileManager
-  amrex::Vector<std::string> spec_names;
-  pele::physics::eos::speciesNames<pele::physics::PhysicsType::eos_type>(
-    spec_names, &(eos_parms.host_parm()));
   amrex::Vector<std::string> plt_vars = pltData.getVariableList();
-
-  // Find required variable indices in plotfile
-  int idT = -1, idV = -1, idY = -1;
-  for (int i = 0; i < plt_vars.size(); ++i) {
-    if (
-      (pltfileSource == "LM" && plt_vars[i] == "temp") ||
-      (pltfileSource == "C" && plt_vars[i] == "Temp")) {
-      idT = i;
-    }
-    if (plt_vars[i] == "x_velocity") {
-      idV = i;
-    }
-    std::string firstChars = plt_vars[i].substr(0, 2);
-    if (firstChars == "Y(" && idY < 0) {
-      idY = i;
-    }
-  }
-
-  if (idT < 0 || idV < 0 || idY < 0) {
-    amrex::Abort(
-      "coarsenLevelFromPlt: Could not find required variables in plotfile");
-  }
-
-  // Create fine geometry for interpolation
-  amrex::Geometry fineGeom = amrex::refine(geom[a_lev], coarsen_ratio);
-
-  // Fill velocity
-  pltData.fillPatchFromPlt(0, fineGeom, idV, VELX, AMREX_SPACEDIM, fineData);
-
-  // Fill temperature
-  pltData.fillPatchFromPlt(0, fineGeom, idT, TEMP, 1, fineData);
-
-  // Fill species
-  int nSpecPlt = 0;
-  for (const auto& var : plt_vars) {
-    if (var.substr(0, 2) == "Y(") {
-      nSpecPlt++;
-    }
-  }
-
-  amrex::MultiFab fineSpecies(fineBA, fineDM, nSpecPlt, 0);
-  pltData.fillPatchFromPlt(0, fineGeom, idY, 0, nSpecPlt, fineSpecies);
-
-  // Map species to current mechanism
-  for (int i = 0; i < NUM_SPECIES; ++i) {
-    std::string specName = "Y(" + spec_names[i] + ")";
-    std::string specString = specName;
-    if (!m_initDataPlt_specname_map.empty()) {
-      specString = m_initDataPlt_specname_map[i];
-    }
-
-    int foundSpec = 0;
-    for (int iplt = 0; iplt < nSpecPlt; ++iplt) {
-      if (specString == plt_vars[idY + iplt]) {
-        amrex::MultiFab::Copy(fineData, fineSpecies, iplt, FIRSTSPEC + i, 1, 0);
-        foundSpec = 1;
-        break;
-      }
-    }
-
-    if (foundSpec == 0) {
-      // Try searching full variable list
-      for (int iplt = 0; iplt < plt_vars.size(); ++iplt) {
-        if (specString == plt_vars[iplt]) {
-          amrex::MultiFab tmpSpec(fineBA, fineDM, 1, 0);
-          pltData.fillPatchFromPlt(0, fineGeom, iplt, 0, 1, tmpSpec);
-          amrex::MultiFab::Copy(fineData, tmpSpec, 0, FIRSTSPEC + i, 1, 0);
-          foundSpec = 1;
-          break;
-        }
-      }
-    }
-
-    if (foundSpec == 0) {
-      fineData.setVal(0.0, FIRSTSPEC + i, 1, 0);
-      if (m_verbose > 0) {
-        amrex::Print() << "  Species " << specName
-                       << " not found, setting to 0\n";
-      }
-    }
-  }
+  const PltVarIndices ids = findPltVariables(plt_vars);
+  const amrex::Geometry fineGeom = amrex::refine(geom[a_lev], coarsen_ratio);
+  fillStateFromPlt(pltData, plt_vars, ids, 0, fineGeom, fineData);
 
   // Get level data pointer
   auto* ldata_p = getLevelDataPtr(a_lev, AmrNewTime);

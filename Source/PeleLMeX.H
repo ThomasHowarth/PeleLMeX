@@ -338,6 +338,32 @@ public:
    */
   int computeLevelShift(pele::physics::pltfilemanager::PltFileManager& pltData);
 
+  //! Plotfile indices of temperature, x_velocity and the first species, and
+  //! the number of species, for initializing from a plotfile. Aborts if any
+  //! of them is missing.
+  struct PltVarIndices
+  {
+    int T = -1;
+    int vel = -1;
+    int Y = -1;
+    int nSpec = 0;
+  };
+  PltVarIndices
+  findPltVariables(const amrex::Vector<std::string>& plt_vars) const;
+
+  /**
+   * \brief Fill velocity, temperature and species (mapped onto the current
+   * mechanism, missing species set to 0) of the state-layout a_dst on a_geom
+   * from plotfile level srcLev.
+   */
+  void fillStateFromPlt(
+    pele::physics::pltfilemanager::PltFileManager& pltData,
+    const amrex::Vector<std::string>& plt_vars,
+    const PltVarIndices& ids,
+    const int srcLev,
+    const amrex::Geometry& a_geom,
+    amrex::MultiFab& a_dst);
+
   /**
    * \brief Coarsen level data from plotfile using conservative averaging
    * \param a_lev target level index
