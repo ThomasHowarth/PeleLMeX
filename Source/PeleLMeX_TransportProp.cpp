@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <PeleLMeX.H>
 #include <PeleLMeX_K.H>
 #include <pelelmex_prob.H>
@@ -331,27 +332,27 @@ PeleLM::calcDiffusivity(const TimeStamp a_time)
 
     // Fill the diff_aux MF with specified Schmidt number, or assuming unity
     // Lewis number (lambda / cp) when the Schmidt number is <= 0
-    std::unique_ptr<amrex::MultiFab> cp_cc;
-    for (int n = 0; n < m_nAux; ++n) {
-      if (m_aux_Schmidt[n] <= 0 && !cp_cc) {
-        // Mixture cp, computed once and shared by all such auxiliaries
-        cp_cc = std::make_unique<amrex::MultiFab>(
-          ldata_p->state.boxArray(), ldata_p->state.DistributionMap(), 1,
-          ldata_p->diff_cc.nGrow(), amrex::MFInfo(), ldata_p->state.Factory());
-        auto const& state_arr = ldata_p->state.const_arrays();
-        auto const& cp_arr = cp_cc->arrays();
-        amrex::ParallelFor(
-          ldata_p->diff_aux_cc, ldata_p->diff_aux_cc.nGrowVect(),
-          [state_arr, cp_arr,
-           leosparm] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
-            getCpmixGivenRYT(
-              i, j, k,
-              amrex::Array4<amrex::Real const>(state_arr[box_no], DENSITY),
-              amrex::Array4<amrex::Real const>(state_arr[box_no], FIRSTSPEC),
-              amrex::Array4<amrex::Real const>(state_arr[box_no], TEMP),
-              amrex::Array4<amrex::Real>(cp_arr[box_no]), leosparm);
-          });
-      }
+    // Mixture cp, computed once if any auxiliary needs it
+    amrex::MultiFab cp_cc;
+    if (std::any_of(
+          m_aux_Schmidt.begin(), m_aux_Schmidt.begin() + m_nAux,
+          [](amrex::Real sc) { return sc <= 0; })) {
+      cp_cc.define(
+        ldata_p->state.boxArray(), ldata_p->state.DistributionMap(), 1,
+        ldata_p->diff_cc.nGrow(), amrex::MFInfo(), ldata_p->state.Factory());
+      auto const& state_arr = ldata_p->state.const_arrays();
+      auto const& cp_arr = cp_cc.arrays();
+      amrex::ParallelFor(
+        ldata_p->diff_aux_cc, ldata_p->diff_aux_cc.nGrowVect(),
+        [state_arr, cp_arr,
+         leosparm] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+          getCpmixGivenRYT(
+            i, j, k,
+            amrex::Array4<amrex::Real const>(state_arr[box_no], DENSITY),
+            amrex::Array4<amrex::Real const>(state_arr[box_no], FIRSTSPEC),
+            amrex::Array4<amrex::Real const>(state_arr[box_no], TEMP),
+            amrex::Array4<amrex::Real>(cp_arr[box_no]), leosparm);
+        });
     }
     for (int n = 0; n < m_nAux; ++n) {
       auto const& diff_aux_arr = ldata_p->diff_aux_cc.arrays();
@@ -367,7 +368,7 @@ PeleLM::calcDiffusivity(const TimeStamp a_time)
               diff_arr[box_no](i, j, k, NUM_SPECIES + 1) * inv_sc;
           });
       } else {
-        auto const& cp_arr = cp_cc->const_arrays();
+        auto const& cp_arr = cp_cc.const_arrays();
         amrex::ParallelFor(
           ldata_p->diff_aux_cc, ldata_p->diff_aux_cc.nGrowVect(),
           [cp_arr, diff_aux_arr, diff_arr,
