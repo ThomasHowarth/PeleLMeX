@@ -423,6 +423,20 @@ public:
    */
   void loadBalanceChemLev(const int a_lev);
 
+  /**
+   * \brief Try a better DMap for the given box costs
+   * \param a_cost cost of each box
+   * \param a_method LoadBalanceMethod (SFC or Knapsack)
+   * \param a_dmap the new DMap, set only when it is adopted
+   * \return whether the new DMap is adopted (on every rank)
+   */
+  bool tryLoadBalance(
+    const amrex::LayoutData<amrex::Real>& a_cost,
+    const int a_method,
+    amrex::DistributionMapping& a_dmap,
+    amrex::Real& a_currentEfficiency,
+    amrex::Real& a_testEfficiency);
+
   //-----------------------------------------------------------------------------
 
   //-----------------------------------------------------------------------------

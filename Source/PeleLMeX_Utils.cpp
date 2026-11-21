@@ -787,66 +787,17 @@ PeleLM::loadBalanceChemLev(const int a_lev)
   amrex::LayoutData<amrex::Real> new_cost(*m_baChem[a_lev], *m_dmapChem[a_lev]);
   computeCosts(a_lev, new_cost, m_loadBalanceCostChem);
 
-  // Use efficiency: average MPI rank cost / max cost
   amrex::Real currentEfficiency = 0.0;
   amrex::Real testEfficiency = 0.0;
-
   amrex::DistributionMapping test_dmap;
-  // Build the test dmap, w/o braodcasting
-  if (m_loadBalanceMethodChem == LoadBalanceMethod::SFC) {
-    test_dmap = amrex::DistributionMapping::makeSFC(
-      new_cost, currentEfficiency, testEfficiency, false,
-      amrex::ParallelDescriptor::IOProcessorNumber());
-
-  } else if (m_loadBalanceMethodChem == LoadBalanceMethod::Knapsack) {
-
-    const amrex::Real navg =
-      static_cast<amrex::Real>(m_baChem[a_lev]->size()) /
-      static_cast<amrex::Real>(amrex::ParallelDescriptor::NProcs());
-    const int nmax = static_cast<int>(amrex::max<amrex::Real>(
-      std::round(m_loadBalanceKSfactor * navg), std::ceil(navg)));
-    test_dmap = amrex::DistributionMapping::makeKnapSack(
-      new_cost, currentEfficiency, testEfficiency, nmax, false,
-      amrex::ParallelDescriptor::IOProcessorNumber());
-  }
-
-  // IO proc determine if the test dmap offers significant improvements
-  int updateDmap = 0;
-  if (
-    (m_loadBalanceEffRatioThreshold > 0.0) &&
-    (amrex::ParallelDescriptor::MyProc() ==
-     amrex::ParallelDescriptor::IOProcessorNumber())) {
-    updateDmap = static_cast<int>(
-      testEfficiency > m_loadBalanceEffRatioThreshold * currentEfficiency);
-  }
-  amrex::ParallelDescriptor::Bcast(
-    &updateDmap, 1, amrex::ParallelDescriptor::IOProcessorNumber());
-
-  if (m_verbose > 2 && (updateDmap != 0)) {
-    amrex::Print() << "   Old Chem LoadBalancing efficiency on a_lev " << a_lev
-                   << ": " << currentEfficiency << "\n"
-                   << "   New Chem LoadBalancing efficiency: " << testEfficiency
-                   << " \n";
-  }
-
-  // Bcast the test dmap if better
-  if (updateDmap != 0) {
-    amrex::Vector<int> pmap;
-    if (
-      amrex::ParallelDescriptor::MyProc() ==
-      amrex::ParallelDescriptor::IOProcessorNumber()) {
-      pmap = test_dmap.ProcessorMap();
-    } else {
-#pragma GCC diagnostic ignored "-Wnull-dereference"
-      pmap.resize(static_cast<std::size_t>(m_baChem[a_lev]->size()));
-    }
-    amrex::ParallelDescriptor::Bcast(
-      pmap.data(), pmap.size(), amrex::ParallelDescriptor::IOProcessorNumber());
-
-    if (
-      amrex::ParallelDescriptor::MyProc() !=
-      amrex::ParallelDescriptor::IOProcessorNumber()) {
-      test_dmap = amrex::DistributionMapping(pmap);
+  if (tryLoadBalance(
+        new_cost, m_loadBalanceMethodChem, test_dmap, currentEfficiency,
+        testEfficiency)) {
+    if (m_verbose > 2) {
+      amrex::Print() << "   Old Chem LoadBalancing efficiency on a_lev "
+                     << a_lev << ": " << currentEfficiency << "\n"
+                     << "   New Chem LoadBalancing efficiency: "
+                     << testEfficiency << " \n";
     }
     m_dmapChem[a_lev] = std::make_unique<amrex::DistributionMapping>(test_dmap);
   }
