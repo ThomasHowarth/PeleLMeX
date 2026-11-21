@@ -158,11 +158,9 @@ PeleLM::MLevaluate(
         *a_MFVec[lev], amrex::make_alias, a_comp, AMREX_SPACEDIM);
     }
     computeDivTau(AmrNewTime, GetVecOfPtrs(aliasDivTau), use_density);
-#ifdef AMREX_USE_EB
     for (int lev = 0; lev <= finest_level; ++lev) {
-      EB_set_covered(*aliasDivTau[lev], 0.0);
+      eb_set_covered(*aliasDivTau[lev], 0.0);
     }
-#endif
     nComp = AMREX_SPACEDIM;
   } else if (a_var == "diffTerm") {
     // Use the diffusion data holder, get diffusivity and calc D

@@ -14,6 +14,7 @@
 #include "PeleLMeX_BPatch.H"
 #include "PeleLMeX_MeshMap.H"
 #include "PeleLMeX_MeshMappedCellConsInterp.H"
+#include "PeleLMeX_Utils.H"
 
 #ifdef AMREX_USE_ASCENT
 #include <AMReX_Conduit_Blueprint.H>
@@ -1397,9 +1398,29 @@ public:
   //! Derived TEMP/RHORT are not touched; recompute via setTemperature /
   //! setThermoPress afterward.
   void averageDownConservedDensities(const PeleLM::TimeStamp a_time);
+  //! Restrict state components [scomp, scomp + ncomp) under mesh mapping,
+  //! weighted by detJ (and divided by fac_n when divide_by_fac).
+  void averageDownMetricWeighted(
+    const PeleLM::TimeStamp a_time,
+    const int scomp,
+    const int ncomp,
+    const bool divide_by_fac);
   void averageDownAux(const PeleLM::TimeStamp a_time);
+  // Average down components [scomp, scomp + ncomp) of a LevelData field
+  // (the state by default) from the finest level to level 0
   void averageDown(
-    const PeleLM::TimeStamp a_time, const int state_comp, const int ncomp);
+    const PeleLM::TimeStamp a_time,
+    const int scomp,
+    const int ncomp,
+    amrex::MultiFab LevelData::* a_field = &LevelData::state);
+  // Average down components [scomp, scomp + ncomp) of per-level cell data
+  void averageDown(
+    amrex::Vector<amrex::MultiFab*> const& a_mf,
+    const int scomp,
+    const int ncomp);
+  // Average down per-level face data, all components
+  void averageDownFaces(
+    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>>& a_faces);
   void averageDownReaction();
   //-----------------------------------------------------------------------------
 

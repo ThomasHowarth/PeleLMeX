@@ -515,9 +515,7 @@ PeleLM::velocityProjection(
   for (int lev = 0; lev <= finest_level; ++lev) {
     vel[lev] = std::make_unique<amrex::MultiFab>(
       m_leveldata_new[lev]->state, amrex::make_alias, VELX, AMREX_SPACEDIM);
-#ifdef AMREX_USE_EB
-    EB_set_covered(*vel[lev], 0.0);
-#endif
+    eb_set_covered(*vel[lev], 0.0);
     vel[lev]->setBndry(0.0);
     if (incremental == 0) {
       setInflowBoundaryVel(*vel[lev], lev, AmrNewTime);
@@ -557,9 +555,7 @@ PeleLM::velocityProjection(
           rhs_cc[lev].plus(-SbarNew, 0, 1);
         }
         rhs_cc[lev].mult(-1.0, 0, 1, ldata_p->divu.nGrow());
-#ifdef AMREX_USE_EB
-        EB_set_covered(rhs_cc[lev], 0.0);
-#endif
+        eb_set_covered(rhs_cc[lev], 0.0);
 #if AMREX_SPACEDIM == 2
         if (geom[lev].IsRZ()) {
           scaleProj_RZ(lev, rhs_cc[lev]);
@@ -902,17 +898,7 @@ PeleLM::doNodalProject(
   // the Xi-space gradient (dphi/dxi), so plain average_down on the uniform
   // Xi mesh is already mass-conservative; an extra Xi-space transform here
   // would double-weight gp and worsen the drift.
-  for (int lev = finest_level - 1; lev >= 0; --lev) {
-    auto* ldataFine_p = getLevelDataPtr(lev + 1, AmrNewTime);
-    auto* ldataCrse_p = getLevelDataPtr(lev, AmrNewTime);
-#ifdef AMREX_USE_EB
-    amrex::EB_average_down(
-      ldataFine_p->gp, ldataCrse_p->gp, 0, AMREX_SPACEDIM, refRatio(lev));
-#else
-    amrex::average_down(
-      ldataFine_p->gp, ldataCrse_p->gp, 0, AMREX_SPACEDIM, refRatio(lev));
-#endif
-  }
+  averageDown(AmrNewTime, 0, AMREX_SPACEDIM, &LevelData::gp);
 }
 
 #if AMREX_SPACEDIM == 2

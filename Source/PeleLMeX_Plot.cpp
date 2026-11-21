@@ -647,11 +647,9 @@ PeleLM::WritePlotFile()
       amrex::MultiFab::Copy(mf_plt[lev], *m_extSource[lev], 0, cnt, NVAR, 0);
     }
 
-#ifdef AMREX_USE_EB
     if (m_plot_zeroEBcovered != 0) {
-      EB_set_covered(mf_plt[lev], 0.0);
+      eb_set_covered(mf_plt[lev], 0.0);
     }
-#endif
   }
 
   // No SubCycling, all levels the same step.

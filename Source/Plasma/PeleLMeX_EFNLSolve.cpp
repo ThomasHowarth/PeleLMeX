@@ -249,39 +249,13 @@ PeleLM::testExitNewton(
 void
 PeleLM::updateNLState(const amrex::Vector<amrex::MultiFab*>& a_update)
 {
-  // AverageDown the newton direction
-  /*
-  for (int lev = finest_level; lev > 0; --lev) {
-#ifdef AMREX_USE_EB
-     EB_average_down(*a_update[lev],
-                     *a_update[lev-1],
-                     0,2,refRatio(lev-1));
-#else
-     average_down(*a_update[lev],
-                  *a_update[lev-1],
-                  0,2,refRatio(lev-1));
-#endif
-  }
-  */
   for (int lev = 0; lev <= finest_level; ++lev) {
     auto ldataNLs_p = getLevelDataNLSolvePtr(lev); // NL data
     ldataNLs_p->nlState.plus(*a_update[lev], 0, 2, 0);
   }
 
   // AverageDown the new state
-  for (int lev = finest_level; lev > 0; --lev) {
-    auto ldataNLsFine_p = getLevelDataNLSolvePtr(lev);     // NL data
-    auto ldataNLsCrse_p = getLevelDataNLSolvePtr(lev - 1); // NL data
-#ifdef AMREX_USE_EB
-    EB_average_down(
-      ldataNLsFine_p->nlState, ldataNLsCrse_p->nlState, 0, 2,
-      refRatio(lev - 1));
-#else
-    average_down(
-      ldataNLsFine_p->nlState, ldataNLsCrse_p->nlState, 0, 2,
-      refRatio(lev - 1));
-#endif
-  }
+  averageDown(getNLstateVect(), 0, 2);
 
   // FillBoundary NLState
   /*
@@ -532,17 +506,8 @@ PeleLM::nonLinearResidual(
   }
   // WriteDebugPlotFile(GetVecOfConstPtrs(a_nlresid),"UnscalednlResid");
 
-  //   /*
   // AverageDown the NLresiduals
-  for (int lev = finest_level; lev > 0; --lev) {
-#ifdef AMREX_USE_EB
-    EB_average_down(
-      *a_nlresid[lev], *a_nlresid[lev - 1], 0, 2, refRatio(lev - 1));
-#else
-    average_down(*a_nlresid[lev], *a_nlresid[lev - 1], 0, 2, refRatio(lev - 1));
-#endif
-  }
-  //   */
+  averageDown(a_nlresid, 0, 2);
 
   // Update the residual scale if necessary
   if (updateScaling) {
@@ -622,23 +587,6 @@ PeleLM::getAdvectionTerm(
     }
   }
 
-  // Average down the Ueff
-  /*
-  for (int lev = finest_level; lev > 0; --lev) {
-     auto ldataNLFine_p = getLevelDataNLSolvePtr(lev);
-     auto ldataNLCrse_p = getLevelDataNLSolvePtr(lev-1);
-#ifdef AMREX_USE_EB
-     EB_average_down_faces(GetArrOfConstPtrs(ldataNLFine_p->uEffnE),
-                           GetArrOfPtrs(ldataNLCrse_p->uEffnE),
-                           refRatio(lev-1),nGrow);
-#else
-     average_down_faces(GetArrOfConstPtrs(ldataNLFine_p->uEffnE),
-                        GetArrOfPtrs(ldataNLCrse_p->uEffnE),
-                        refRatio(lev-1),nGrow);
-#endif
-  }
-  */
-
   for (int lev = 0; lev <= finest_level; ++lev) {
     // Get nl solve data pointer
     auto ldataNLs_p = getLevelDataNLSolvePtr(lev);
@@ -649,17 +597,7 @@ PeleLM::getAdvectionTerm(
   }
 
   // Average down the fluxes
-  for (int lev = finest_level; lev > 0; --lev) {
-#ifdef AMREX_USE_EB
-    EB_average_down_faces(
-      GetArrOfConstPtrs(fluxes[lev]), GetArrOfPtrs(fluxes[lev - 1]),
-      refRatio(lev - 1), geom[lev - 1]);
-#else
-    average_down_faces(
-      GetArrOfConstPtrs(fluxes[lev]), GetArrOfPtrs(fluxes[lev - 1]),
-      refRatio(lev - 1), geom[lev - 1]);
-#endif
-  }
+  averageDownFaces(fluxes);
 
   // Compute divergence
   constexpr int intensiveFluxes = 1;
