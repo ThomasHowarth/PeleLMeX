@@ -22,75 +22,20 @@ PeleLM::regrid(const int lbase, const amrex::Real time, const bool initial)
         amrex::Print() << " Load balancing level 0 \n";
       }
 
-      int remakeLevel = 0;
-
       computeCosts(0);
 
-      // Use efficiency: average MPI rank cost / max cost
       amrex::Real currentEfficiency = 0.0;
       amrex::Real testEfficiency = 0.0;
-
       amrex::DistributionMapping test_dmap;
-      // Build the test dmap, w/o braodcasting
-      if (m_loadBalanceMethod == LoadBalanceMethod::SFC) {
-
-        test_dmap = amrex::DistributionMapping::makeSFC(
-          *m_costs[0], currentEfficiency, testEfficiency, false,
-          amrex::ParallelDescriptor::IOProcessorNumber());
-
-      } else if (m_loadBalanceMethod == LoadBalanceMethod::Knapsack) {
-
-        const amrex::Real navg =
-          static_cast<amrex::Real>(grids[0].size()) /
-          static_cast<amrex::Real>(amrex::ParallelDescriptor::NProcs());
-        const int nmax = static_cast<int>(amrex::max<amrex::Real>(
-          std::round(m_loadBalanceKSfactor * navg), std::ceil(navg)));
-        test_dmap = amrex::DistributionMapping::makeKnapSack(
-          *m_costs[0], currentEfficiency, testEfficiency, nmax, false,
-          amrex::ParallelDescriptor::IOProcessorNumber());
-      }
-
-      // IO proc determine if the test dmap offers significant improvements
-      if (
-        (m_loadBalanceEffRatioThreshold > 0.0) &&
-        (amrex::ParallelDescriptor::MyProc() ==
-         amrex::ParallelDescriptor::IOProcessorNumber())) {
-        remakeLevel = static_cast<int>(
-          (remakeLevel != 0) ||
-          (testEfficiency >
-           m_loadBalanceEffRatioThreshold * currentEfficiency));
-      }
-      amrex::ParallelDescriptor::Bcast(
-        &remakeLevel, 1, amrex::ParallelDescriptor::IOProcessorNumber());
-
-      if (m_verbose > 1 && (remakeLevel != 0)) {
-        amrex::Print() << " Current LoadBalancing efficiency: "
-                       << currentEfficiency << "\n"
-                       << " Test LoadBalancing efficiency: " << testEfficiency
-                       << " \n";
-      }
-
-      // Bcast the test dmap and remake level
-      if (remakeLevel != 0) {
-        amrex::Vector<int> pmap;
-        if (
-          amrex::ParallelDescriptor::MyProc() ==
-          amrex::ParallelDescriptor::IOProcessorNumber()) {
-          pmap = test_dmap.ProcessorMap();
-        } else {
-#pragma GCC diagnostic ignored "-Wnull-dereference"
-          pmap.resize(static_cast<std::size_t>(grids[0].size()));
+      if (tryLoadBalance(
+            *m_costs[0], m_loadBalanceMethod, test_dmap, currentEfficiency,
+            testEfficiency)) {
+        if (m_verbose > 1) {
+          amrex::Print() << " Current LoadBalancing efficiency: "
+                         << currentEfficiency << "\n"
+                         << " Test LoadBalancing efficiency: " << testEfficiency
+                         << " \n";
         }
-        amrex::ParallelDescriptor::Bcast(
-          pmap.data(), pmap.size(),
-          amrex::ParallelDescriptor::IOProcessorNumber());
-
-        if (
-          amrex::ParallelDescriptor::MyProc() !=
-          amrex::ParallelDescriptor::IOProcessorNumber()) {
-          test_dmap = amrex::DistributionMapping(pmap);
-        }
-
         RemakeLevel(0, time, grids[0], test_dmap);
         SetDistributionMap(0, test_dmap);
       }
@@ -191,76 +136,21 @@ PeleLM::regrid(const int lbase, const amrex::Real time, const bool initial)
 
             // Try to build a new dmap with the same old grid
             new_ba = grids[lev];
-            amrex::DistributionMapping test_dmap;
-
             computeCosts(lev);
 
-            // Use efficiency: average MPI rank cost / max cost
             amrex::Real currentEfficiency = 0.0;
             amrex::Real testEfficiency = 0.0;
-
-            // Build the test dmap, w/o braodcasting
-            if (m_loadBalanceMethod == LoadBalanceMethod::SFC) {
-
-              test_dmap = amrex::DistributionMapping::makeSFC(
-                *m_costs[lev], currentEfficiency, testEfficiency, false,
-                amrex::ParallelDescriptor::IOProcessorNumber());
-
-            } else if (m_loadBalanceMethod == LoadBalanceMethod::Knapsack) {
-
-              const amrex::Real navg =
-                static_cast<amrex::Real>(new_ba.size()) /
-                static_cast<amrex::Real>(amrex::ParallelDescriptor::NProcs());
-              const int nmax = static_cast<int>(amrex::max<amrex::Real>(
-                std::round(m_loadBalanceKSfactor * navg), std::ceil(navg)));
-              test_dmap = amrex::DistributionMapping::makeKnapSack(
-                *m_costs[lev], currentEfficiency, testEfficiency, nmax, false,
-                amrex::ParallelDescriptor::IOProcessorNumber());
-            }
-
-            // IO proc determine if the test dmap offers significant
-            // improvements
-            if (
-              (m_loadBalanceEffRatioThreshold > 0.0) &&
-              (amrex::ParallelDescriptor::MyProc() ==
-               amrex::ParallelDescriptor::IOProcessorNumber())) {
-              remakeLevel = static_cast<int>(
-                (remakeLevel != 0) ||
-                (testEfficiency >
-                 m_loadBalanceEffRatioThreshold * currentEfficiency));
-            }
-            amrex::ParallelDescriptor::Bcast(
-              &remakeLevel, 1, amrex::ParallelDescriptor::IOProcessorNumber());
-
-            if (m_verbose > 1 && (remakeLevel != 0)) {
-              amrex::Print()
-                << " Current LoadBalancing efficiency: " << currentEfficiency
-                << "\n"
-                << " Test LoadBalancing efficiency: " << testEfficiency
-                << " \n";
-            }
-
-            // Bcast the test dmap if we plan on remaking the level
-            if (remakeLevel != 0) {
-              amrex::Vector<int> pmap;
-              if (
-                amrex::ParallelDescriptor::MyProc() ==
-                amrex::ParallelDescriptor::IOProcessorNumber()) {
-                pmap = test_dmap.ProcessorMap();
-              } else {
-#pragma GCC diagnostic ignored "-Wnull-dereference"
-                pmap.resize(static_cast<std::size_t>(new_ba.size()));
+            if (tryLoadBalance(
+                  *m_costs[lev], m_loadBalanceMethod, new_dmap,
+                  currentEfficiency, testEfficiency)) {
+              remakeLevel = 1;
+              if (m_verbose > 1) {
+                amrex::Print()
+                  << " Current LoadBalancing efficiency: " << currentEfficiency
+                  << "\n"
+                  << " Test LoadBalancing efficiency: " << testEfficiency
+                  << " \n";
               }
-              amrex::ParallelDescriptor::Bcast(
-                pmap.data(), pmap.size(),
-                amrex::ParallelDescriptor::IOProcessorNumber());
-
-              if (
-                amrex::ParallelDescriptor::MyProc() !=
-                amrex::ParallelDescriptor::IOProcessorNumber()) {
-                test_dmap = amrex::DistributionMapping(pmap);
-              }
-              new_dmap = test_dmap;
             }
           }
 
@@ -662,4 +552,62 @@ PeleLM::regridFromGridFile(
   }
 
   finest_level = new_finest;
+}
+
+// Try a distribution of the boxes of a_cost over the ranks (SFC or knapsack):
+// built and assessed on the IO rank, it is kept if its efficiency (average
+// rank cost / max cost) beats the current one by
+// m_loadBalanceEffRatioThreshold. Returns the decision on every rank; a_dmap is
+// set (on every rank) only then.
+bool
+PeleLM::tryLoadBalance(
+  const amrex::LayoutData<amrex::Real>& a_cost,
+  const int a_method,
+  amrex::DistributionMapping& a_dmap,
+  amrex::Real& a_currentEfficiency,
+  amrex::Real& a_testEfficiency)
+{
+  const int ioProc = amrex::ParallelDescriptor::IOProcessorNumber();
+  const bool isIOProc = amrex::ParallelDescriptor::MyProc() == ioProc;
+  const auto nboxes = a_cost.boxArray().size();
+
+  // Build the test dmap, w/o broadcasting
+  a_currentEfficiency = 0.0;
+  a_testEfficiency = 0.0;
+  amrex::DistributionMapping test_dmap;
+  if (a_method == LoadBalanceMethod::SFC) {
+    test_dmap = amrex::DistributionMapping::makeSFC(
+      a_cost, a_currentEfficiency, a_testEfficiency, false, ioProc);
+  } else if (a_method == LoadBalanceMethod::Knapsack) {
+    const amrex::Real navg =
+      static_cast<amrex::Real>(nboxes) /
+      static_cast<amrex::Real>(amrex::ParallelDescriptor::NProcs());
+    const int nmax = static_cast<int>(amrex::max<amrex::Real>(
+      std::round(m_loadBalanceKSfactor * navg), std::ceil(navg)));
+    test_dmap = amrex::DistributionMapping::makeKnapSack(
+      a_cost, a_currentEfficiency, a_testEfficiency, nmax, false, ioProc);
+  }
+
+  // IO proc determines if the test dmap offers significant improvements
+  int update = 0;
+  if (m_loadBalanceEffRatioThreshold > 0.0 && isIOProc) {
+    update = static_cast<int>(
+      a_testEfficiency > m_loadBalanceEffRatioThreshold * a_currentEfficiency);
+  }
+  amrex::ParallelDescriptor::Bcast(&update, 1, ioProc);
+  if (update == 0) {
+    return false;
+  }
+
+  // Bcast the test dmap
+  amrex::Vector<int> pmap;
+  if (isIOProc) {
+    pmap = test_dmap.ProcessorMap();
+  } else {
+#pragma GCC diagnostic ignored "-Wnull-dereference"
+    pmap.resize(static_cast<std::size_t>(nboxes));
+  }
+  amrex::ParallelDescriptor::Bcast(pmap.data(), pmap.size(), ioProc);
+  a_dmap = isIOProc ? test_dmap : amrex::DistributionMapping(pmap);
+  return true;
 }
