@@ -291,22 +291,22 @@ compute_divu(
   amrex::Real hi_cgs[NUM_SPECIES] = {0.0};
   eos.T2Hi(T(i, j, k), hi_cgs);
   amrex::Real cpmix = c2m::Cp(cpmix_cgs); // CGS -> MKS conversion
-  amrex::Real hi[NUM_SPECIES] = {0.0};
-  for (int n = 0; n < NUM_SPECIES; ++n) {
-    hi[n] = c2m::H(hi_cgs[n]); // CGS -> MKS conversion
-  }
 
   // Note: divu does not depend on extRho. See docs and PR #428 for details.
+  // Accumulate in a register: divu is written once.
   const amrex::Real denominv = 1.0 / (rho * cpmix * T(i, j, k));
-  divu(i, j, k) =
+  amrex::Real divu_loc =
     (specEnthDiff(i, j, k) + tempDiff(i, j, k) + extRhoH(i, j, k)) * denominv;
   for (int n = 0; n < NUM_SPECIES; ++n) {
     amrex::Real specTerm = specDiff(i, j, k, n) + extRhoY(i, j, k, n);
     if (do_react != 0) {
       specTerm += rhoYdot(i, j, k, n);
     }
-    divu(i, j, k) += specTerm * (mwtinv[n] * Wbar * rhoinv - hi[n] * denominv);
+    // hi in CGS -> MKS
+    divu_loc +=
+      specTerm * (mwtinv[n] * Wbar * rhoinv - c2m::H(hi_cgs[n]) * denominv);
   }
+  divu(i, j, k) = divu_loc;
 }
 
 template <>
@@ -343,20 +343,19 @@ compute_divu<pele::physics::eos::Manifold>(
 
   eos.RY2dRdY(rho_cgs, y, derivs);
 
-  divu(i, j, k) = 0.0;
-
+  amrex::Real divu_loc = 0.0;
   for (int n = 0; n < MANIFOLD_DIM; ++n) {
     derivs[n] *= 1.0e3; // Unit conversion CGS -> MKS
-    divu(i, j, k) += derivs[n] * specDiff(i, j, k, n);
+    divu_loc += derivs[n] * specDiff(i, j, k, n);
     if (do_react != 0) {
-      divu(i, j, k) += derivs[n] * (rhoYdot(i, j, k, n));
+      divu_loc += derivs[n] * (rhoYdot(i, j, k, n));
     }
-    divu(i, j, k) += derivs[n] * (extRhoY(i, j, k, n));
+    divu_loc += derivs[n] * (extRhoY(i, j, k, n));
   }
   // First -rhoinv: from divu = -1/rho Drho/Dt
   // Second rhoinv: convert from rho*Dxi/Dt (which RHS terms are evaluated for)
   // to Dxi/Dt
-  divu(i, j, k) *= -rhoinv * rhoinv;
+  divu(i, j, k) = divu_loc * (-rhoinv * rhoinv);
 }
 
 AMREX_GPU_DEVICE
@@ -884,23 +883,22 @@ buildAdvectionForcing(
   const amrex::Real rhoinv = 1.0 / rho(i, j, k);
   amrex::Real y[NUM_SPECIES] = {0.0};
 
-  forceT(i, j, k) = dn(i, j, k, NUM_SPECIES) + ddn(i, j, k);
+  // Accumulate in registers: each force is written once
+  amrex::Real fT = dn(i, j, k, NUM_SPECIES) + ddn(i, j, k);
   for (int n = 0; n < NUM_SPECIES; ++n) {
-    y[n] = rhoY(i, j, k, n) * rhoinv;    // get y
-    forceY(i, j, k, n) = dn(i, j, k, n); // forceY = Dnk
+    y[n] = rhoY(i, j, k, n) * rhoinv; // get y
+    amrex::Real fY = dn(i, j, k, n);  // forceY = Dnk
     if (do_react != 0) {
-      forceY(i, j, k, n) += r(i, j, k, n); //         + Rk
+      fY += r(i, j, k, n); //         + Rk
     }
-    forceT(i, j, k) -=
-      forceY(i, j, k, n) *
-      c2m::H(hi_spec_cgs[n]); // forceT -= Sum{ hk. (Rk + Dnk) } with CGS ->
-                              // MKS conversion of hk
-    forceY(i, j, k, n) += extRhoY(i, j, k, n);
+    fT -= fY * c2m::H(hi_spec_cgs[n]); // forceT -= Sum{ hk. (Rk + Dnk) } with
+                                       // CGS -> MKS conversion of hk
+    forceY(i, j, k, n) = fY + extRhoY(i, j, k, n);
   }
 
-  forceT(i, j, k) += extRhoH(i, j, k);
+  fT += extRhoH(i, j, k);
   if (closed_chamber == 1) {
-    forceT(i, j, k) += dp0dt; // Add dp0/dt
+    fT += dp0dt; // Add dp0/dt
   }
 
   for (int n = 0; n < nAux; ++n) {
@@ -916,7 +914,7 @@ buildAdvectionForcing(
   eos.TY2Cp(T(i, j, k), y, cpmix_cgs);
   const amrex::Real cpmixinv =
     1.0 / c2m::Cp(cpmix_cgs); // CGS -> MKS conversion
-  forceT(i, j, k) *= rhoinv * cpmixinv;
+  forceT(i, j, k) = fT * (rhoinv * cpmixinv);
 }
 
 AMREX_GPU_DEVICE
@@ -951,28 +949,30 @@ buildDiffusionForcing(
   const int* aux_diffuse,
   const int nAux) noexcept
 {
+  // Accumulate in registers: each force is written once
   for (int n = 0; n < NUM_SPECIES; ++n) {
-    forceY(i, j, k, n) = a(i, j, k, n) +
-                         0.5 * (dn(i, j, k, n) - dnp1k(i, j, k, n)) +
-                         extRhoY(i, j, k, n);
+    amrex::Real fY = a(i, j, k, n) +
+                     0.5 * (dn(i, j, k, n) - dnp1k(i, j, k, n)) +
+                     extRhoY(i, j, k, n);
     if (do_react != 0) {
-      forceY(i, j, k, n) += r(i, j, k, n);
+      fY += r(i, j, k, n);
     }
     if (use_wbar != 0) {
-      forceY(i, j, k, n) += dwbar(i, j, k, n);
+      fY += dwbar(i, j, k, n);
     }
     if (use_soret != 0) {
-      forceY(i, j, k, n) += dT(i, j, k, n);
+      fY += dT(i, j, k, n);
     }
+    forceY(i, j, k, n) = fY;
   }
-  forceT(i, j, k) = a(i, j, k, NUM_SPECIES) +
-                    0.5 * (dn(i, j, k, NUM_SPECIES) + ddn(i, j, k) -
-                           dnp1k(i, j, k, NUM_SPECIES) - ddnp1k(i, j, k)) +
-                    extRhoH(i, j, k);
-
+  amrex::Real fT = a(i, j, k, NUM_SPECIES) +
+                   0.5 * (dn(i, j, k, NUM_SPECIES) + ddn(i, j, k) -
+                          dnp1k(i, j, k, NUM_SPECIES) - ddnp1k(i, j, k)) +
+                   extRhoH(i, j, k);
   if (closed_chamber == 1) {
-    forceT(i, j, k) += dp0dt;
+    fT += dp0dt;
   }
+  forceT(i, j, k) = fT;
 
   for (int n = 0; n < nAux; ++n) {
     forceAux(i, j, k, n) = 0.0;
