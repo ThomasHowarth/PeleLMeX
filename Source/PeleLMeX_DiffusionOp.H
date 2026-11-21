@@ -131,6 +131,45 @@ public:
   // hypre, PETSc or AlgMG solves (bottom, level 0 or composite)
   [[nodiscard]] bool useMatrixSolver() const;
 
+  // Shared bodies of the diffuse_scalar and computeDiffFluxes overloads; empty
+  // EB vectors leave the EB Dirichlet condition unset
+  void diffuseScalarImpl(
+    amrex::Vector<amrex::MultiFab*> const& a_phi,
+    const int phi_comp,
+    amrex::Vector<amrex::MultiFab const*> const& a_rhs,
+    const int rhs_comp,
+    amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>> const& a_flux,
+    const int flux_comp,
+    amrex::Vector<amrex::MultiFab const*> const& a_acoeff,
+    amrex::Vector<amrex::MultiFab const*> const& a_density,
+    amrex::Vector<amrex::MultiFab const*> const& a_bcoeff,
+    const int bcoeff_comp,
+    amrex::Vector<amrex::BCRec> a_bcrec,
+    const int ncomp,
+    const int isPoissonSolve,
+    const amrex::Real a_dt,
+    amrex::Vector<amrex::MultiFab const*> const& a_boundary,
+    amrex::Vector<amrex::MultiFab const*> const& a_phiEB,
+    amrex::Vector<amrex::MultiFab const*> const& a_bcoeffEB,
+    const std::string& a_label);
+
+  void computeDiffFluxesImpl(
+    amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>> const& a_flux,
+    const int flux_comp,
+    amrex::Vector<amrex::MultiFab const*> const& a_phi,
+    const int phi_comp,
+    amrex::Vector<amrex::MultiFab const*> const& a_density,
+    amrex::Vector<amrex::MultiFab const*> const& a_bcoeff,
+    const int bcoeff_comp,
+    amrex::Vector<amrex::BCRec> a_bcrec,
+    const int ncomp,
+    const int do_avgDown,
+    amrex::Vector<amrex::MultiFab const*> const& a_boundary,
+    amrex::Vector<amrex::MultiFab*> const& a_EBflux,
+    const int ebflux_comp,
+    amrex::Vector<amrex::MultiFab const*> const& a_EBvalue,
+    amrex::Vector<amrex::MultiFab const*> const& a_EBbcoeff);
+
   // Data and parameters
   PeleLM* m_pelelm;
 

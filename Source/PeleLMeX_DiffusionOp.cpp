@@ -231,7 +231,7 @@ DiffusionOp::DiffusionOp(PeleLM* a_pelelm, const int ncomp)
 }
 
 void
-DiffusionOp::diffuse_scalar(
+DiffusionOp::diffuseScalarImpl(
   amrex::Vector<amrex::MultiFab*> const& a_phi,
   const int phi_comp,
   amrex::Vector<amrex::MultiFab const*> const& a_rhs,
@@ -247,9 +247,12 @@ DiffusionOp::diffuse_scalar(
   const int isPoissonSolve,
   const amrex::Real a_dt,
   amrex::Vector<amrex::MultiFab const*> const& a_boundary,
+  amrex::Vector<amrex::MultiFab const*> const& a_phiEB,
+  amrex::Vector<amrex::MultiFab const*> const& a_bcoeffEB,
   const std::string& a_label)
 {
   BL_PROFILE("DiffusionOp::diffuse_scalar()");
+  amrex::ignore_unused(a_phiEB, a_bcoeffEB); // used in EB builds only
 
   //----------------------------------------------------------------
   // What are we dealing with ?
@@ -402,6 +405,11 @@ DiffusionOp::diffuse_scalar(
         boundary.emplace_back(phi[lev], amrex::make_alias, comp, m_ncomp_solve);
       }
       m_scal_solve_op->setLevelBC(lev, &boundary[lev]);
+#ifdef AMREX_USE_EB
+      if (!a_phiEB.empty()) {
+        m_scal_solve_op->setEBDirichlet(lev, *a_phiEB[lev], *a_bcoeffEB[lev]);
+      }
+#endif
     }
 
     // Setup linear solver
@@ -483,7 +491,6 @@ DiffusionOp::diffuse_scalar(
     // solves (alpha = 0, e.g. the plasma electric field, which can be
     // singular and have beta < 0) stay with MLMG
     const bool use_composite = m_use_mlhypre && (isPoissonSolve == 0);
-    amrex::ignore_unused(use_composite); // EB builds without hypre
 
     // Solve
 #ifdef AMREX_USE_HYPRE
@@ -600,7 +607,8 @@ DiffusionOp::diffuse_scalar(
       } catch (const std::exception& e) {
         amrex::Print() << "\n"
                        << "  *** " << mg_variable
-                       << " diffusion MLMG solve failed (non-EB)! ***\n"
+                       << " diffusion MLMG solve failed ("
+                       << (a_phiEB.empty() ? "non-EB" : "EB") << ")! ***\n"
                        << "  Error: " << e.what() << "\n"
                        << "  Dumping residuals for debugging...\n";
         std::string m_solver_type = mg_variable + "_diffusion";
@@ -618,29 +626,47 @@ DiffusionOp::diffuse_scalar(
     // Need to get the fluxes
     if (have_fluxes != 0) {
 #ifdef AMREX_USE_EB
-      if (m_use_gmres) {
-        mlmg.getFluxes(
-          GetVecOfArrOfPtrs(fluxes), GetVecOfPtrs(component),
-          amrex::MLMG::Location::FaceCentroid);
-      } else {
-        mlmg.getFluxes(
-          GetVecOfArrOfPtrs(fluxes), amrex::MLMG::Location::FaceCentroid);
-      }
+      constexpr auto flux_loc = amrex::MLMG::Location::FaceCentroid;
 #else
+      constexpr auto flux_loc = amrex::MLMG::Location::FaceCenter;
+#endif
+      // Solvers other than MLMG leave no solution in the MLMG object
       if (m_use_gmres || use_composite) {
         mlmg.getFluxes(
-          GetVecOfArrOfPtrs(fluxes), GetVecOfPtrs(component),
-          amrex::MLMG::Location::FaceCenter);
+          GetVecOfArrOfPtrs(fluxes), GetVecOfPtrs(component), flux_loc);
       } else {
-        mlmg.getFluxes(
-          GetVecOfArrOfPtrs(fluxes), amrex::MLMG::Location::FaceCenter);
+        mlmg.getFluxes(GetVecOfArrOfPtrs(fluxes), flux_loc);
       }
-#endif
     }
   }
 
   //----------------------------------------------------------------
   storeTimesDensity(a_phi, phi_comp, phi, a_density, ncomp, finest_level);
+}
+
+void
+DiffusionOp::diffuse_scalar(
+  amrex::Vector<amrex::MultiFab*> const& a_phi,
+  const int phi_comp,
+  amrex::Vector<amrex::MultiFab const*> const& a_rhs,
+  const int rhs_comp,
+  amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>> const& a_flux,
+  const int flux_comp,
+  amrex::Vector<amrex::MultiFab const*> const& a_acoeff,
+  amrex::Vector<amrex::MultiFab const*> const& a_density,
+  amrex::Vector<amrex::MultiFab const*> const& a_bcoeff,
+  const int bcoeff_comp,
+  amrex::Vector<amrex::BCRec> a_bcrec,
+  const int ncomp,
+  const int isPoissonSolve,
+  const amrex::Real a_dt,
+  amrex::Vector<amrex::MultiFab const*> const& a_boundary,
+  const std::string& a_label)
+{
+  diffuseScalarImpl(
+    a_phi, phi_comp, a_rhs, rhs_comp, a_flux, flux_comp, a_acoeff, a_density,
+    a_bcoeff, bcoeff_comp, std::move(a_bcrec), ncomp, isPoissonSolve, a_dt,
+    a_boundary, {}, {}, a_label);
 }
 
 #ifdef AMREX_USE_EB
@@ -665,253 +691,10 @@ DiffusionOp::diffuse_scalar(
   amrex::Vector<amrex::MultiFab const*> const& a_boundary,
   const std::string& a_label)
 {
-  BL_PROFILE("DiffusionOp::diffuse_scalar()");
-
-  //----------------------------------------------------------------
-  // What are we dealing with ?
-  const int have_density = (a_density.empty()) ? 0 : 1;
-  const int have_fluxes = (a_flux.empty()) ? 0 : 1;
-  const int have_acoeff = (a_acoeff.empty()) ? 0 : 1;
-  const int have_bcoeff = (a_bcoeff.empty()) ? 0 : 1;
-  const int have_boundary = (a_boundary.empty()) ? 0 : 1;
-
-  //----------------------------------------------------------------
-  // Checks
-  AMREX_ASSERT(m_ncomp == 1 || m_ncomp == ncomp);
-  AMREX_ASSERT(a_phi[0]->nComp() >= phi_comp + ncomp);
-  AMREX_ASSERT(a_rhs[0]->nComp() >= rhs_comp + ncomp);
-  if (have_fluxes != 0) {
-    AMREX_ASSERT(a_flux[0][0]->nComp() >= flux_comp + ncomp);
-  }
-  if (have_bcoeff != 0) {
-    AMREX_ASSERT(a_bcoeff[0]->nComp() >= bcoeff_comp + ncomp);
-    AMREX_ASSERT(a_bcrec.size() >= ncomp);
-  }
-
-  const int finest_level = m_pelelm->finestLevel();
-
-  //----------------------------------------------------------------
-  // Duplicate phi_old to include rho scaling
-  // include 1 ghost cell to provide levelBC
-  // NOTE: this is a bit weird for species: since we already updated the density
-  // after adv., when we divide by \rho, it is inconsistent. But it only matters
-  // if it screws up the ghost cell values 'cause interiors are just an initial
-  // solution for the solve.
-  amrex::Vector<amrex::MultiFab> phi =
-    copyOverDensity(a_phi, phi_comp, a_density, ncomp, finest_level);
-  //----------------------------------------------------------------
-  // Setup solve LinearOp coefficients
-  // LinOp is \alpha A \phi - \beta \nabla \cdot B \nabla \phi = rhs
-  // => \alpha = 1.0, A is a_acoeff if provided, 1.0 otherwise
-  // => \beta = a_dt, B face centered diffusivity bcoeff^{np1,k}
-
-  const amrex::Real alpha = (isPoissonSolve != 0) ? 0.0 : 1.0;
-  const amrex::Real beta = a_dt;
-  m_scal_solve_op->setScalars(alpha, beta);
-  if (have_acoeff != 0) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      m_scal_solve_op->setACoeffs(lev, *a_acoeff[lev]);
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      m_scal_solve_op->setACoeffs(lev, 1.0);
-    }
-  }
-
-  //----------------------------------------------------------------
-  // Solve and get fluxes on a m_ncomp_solve component basis
-  for (int comp = 0; comp < ncomp; comp += m_ncomp_solve) {
-
-    // Aliases
-    amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> fluxes(
-      finest_level + 1);
-    amrex::Vector<amrex::MultiFab> component;
-    amrex::Vector<amrex::MultiFab> rhs;
-    amrex::Vector<amrex::MultiFab> boundary;
-
-    // Allow for component specific LinOp BC
-    m_scal_solve_op->setDomainBC(
-      m_pelelm->getDiffusionLinOpBC(amrex::Orientation::low, a_bcrec[comp]),
-      m_pelelm->getDiffusionLinOpBC(amrex::Orientation::high, a_bcrec[comp]));
-
-    // Set aliases and bcoeff comp
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      if (have_fluxes != 0) {
-        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-          fluxes[lev][idim] = amrex::MultiFab(
-            *a_flux[lev][idim], amrex::make_alias, flux_comp + comp,
-            m_ncomp_solve);
-        }
-      }
-
-      if (have_bcoeff != 0) {
-        constexpr int doZeroVisc = 1;
-        constexpr int addTurbContrib = 1;
-        amrex::Vector<amrex::BCRec> subBCRec = {
-          a_bcrec.begin() + comp, a_bcrec.begin() + comp + m_ncomp_solve};
-        amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> bcoeff_ec =
-          m_pelelm->getDiffusivity(
-            lev, bcoeff_comp + comp, m_ncomp_solve, doZeroVisc, subBCRec,
-            *a_bcoeff[lev], addTurbContrib);
-        m_scal_solve_op->setBCoeffs(
-          lev, GetArrOfConstPtrs(bcoeff_ec),
-          amrex::MLMG::Location::FaceCentroid);
-      } else {
-        m_scal_solve_op->setBCoeffs(lev, 1.0);
-      }
-
-      component.emplace_back(phi[lev], amrex::make_alias, comp, m_ncomp_solve);
-      rhs.emplace_back(
-        *a_rhs[lev], amrex::make_alias, rhs_comp + comp, m_ncomp_solve);
-      if (have_boundary != 0) {
-        boundary.emplace_back(
-          *a_boundary[lev], amrex::make_alias, comp, m_ncomp_solve);
-      } else {
-        boundary.emplace_back(phi[lev], amrex::make_alias, comp, m_ncomp_solve);
-      }
-      m_scal_solve_op->setLevelBC(lev, &boundary[lev]);
-      m_scal_solve_op->setEBDirichlet(lev, *a_phiEB[lev], *a_bcoeffEB[lev]);
-    }
-
-    // Setup linear solver
-    amrex::MLMG mlmg(*m_scal_solve_op);
-
-    const std::string& mg_variable = a_label;
-    const bool is_species = (mg_variable == "Species");
-    const bool is_temperature = (mg_variable == "Temperature");
-    if (m_mg_verbose > 0) {
-      if (!is_temperature) {
-        amrex::Print() << "MLMG: " << mg_variable << " Diffusion\n";
-      } else {
-        amrex::Print() << "MLMG: DeltaT solve [" << m_pelelm->m_deltaTIter
-                       << "]\n";
-      }
-    }
-
-    // Maximum iterations for MultiGrid / ConjugateGradients may change for
-    // debugging purposes
-    int max_iter = m_mg_max_iter;
-    if (m_pelelm->m_mlmg_fail_plt_residuals) {
-
-      bool sdc_iters_met = (m_pelelm->m_sdcIter >= m_mg_fail_sdc_miniter);
-      bool limit_max_iter = false;
-
-      if (is_species) {
-        // Species diffusion: only SDC iter matters
-        if (
-          sdc_iters_met && (m_mg_fail_species_maxiter_after_sdc_miniter > 0)) {
-          limit_max_iter = true;
-          max_iter = m_mg_fail_species_maxiter_after_sdc_miniter;
-        }
-      } else if (is_temperature) {
-#ifndef USE_MANIFOLD_EOS
-        // Temperature diffusion: check both SDC and deltaT iters
-        bool dT_iters_met =
-          (m_pelelm->m_deltaTIter >= m_mg_fail_deltaT_miniter);
-        limit_max_iter = sdc_iters_met && dT_iters_met &&
-                         (m_mg_fail_temp_maxiter_after_sdc_deltaT_miniter > 0);
-        if (limit_max_iter) {
-          max_iter = m_mg_fail_temp_maxiter_after_sdc_deltaT_miniter;
-        }
-#endif
-      }
-
-      // Print diagnostic message if limit was applied
-      if (limit_max_iter) {
-        if (is_species) {
-          amrex::Print() << "      Limiting species diffusion MLMG max_iter to "
-                         << max_iter << " (SDC iter [" << m_pelelm->m_sdcIter
-                         << "] >= " << m_mg_fail_sdc_miniter << ")\n";
-        } else {
-          amrex::Print()
-            << "      Limiting temperature diffusion MLMG max_iter to "
-            << max_iter << " (SDC iter [" << m_pelelm->m_sdcIter
-            << "] >= " << m_mg_fail_sdc_miniter << ", deltaT solve ["
-            << m_pelelm->m_deltaTIter << "] >= " << m_mg_fail_deltaT_miniter
-            << ")\n";
-        }
-      }
-    }
-
-    mlmg.setMaxIter(max_iter);
-    mlmg.setMaxFmgIter(m_mg_max_fmg_iter);
-    mlmg.setBottomMaxIter(m_mg_bottom_maxiter);
-    setBottomSolver(
-      mlmg, m_mg_bottom_solver, "diffusion", m_hypre_namespace,
-      m_mg_bottom_rtol);
-    mlmg.setMultigridType(m_mg_type);
-
-    // Verbosity
-    mlmg.setVerbose(m_mg_verbose);
-    mlmg.setBottomVerbose(m_mg_bottom_verbose);
-
-    mlmg.setPreSmooth(m_num_pre_smooth);
-    mlmg.setPostSmooth(m_num_post_smooth);
-
-    // Solve
-    if (m_use_gmres) {
-      // GMRES preconditioned by MLMG, e.g. for stretched meshes with AMR
-      amrex::GMRESMLMG gmsolver(mlmg);
-      gmsolver.setVerbose(m_mg_verbose);
-      gmsolver.setMaxIters(max_iter);
-      gmsolver.setPrecondNumIters(m_gmres_precond_iters);
-      gmsolver.solve(
-        GetVecOfPtrs(component), GetVecOfConstPtrs(rhs), m_mg_rtol, m_mg_atol);
-      if (m_mg_verbose > 0) {
-        amrex::Print() << "GMRES(MLMG): " << mg_variable
-                       << " diffusion: " << gmsolver.getNumIters()
-                       << " iterations, residual " << gmsolver.getResidualNorm()
-                       << "\n";
-      }
-      if (gmsolver.getGMRES().getStatus() != 0) {
-        amrex::Abort(
-          "GMRES(MLMG) for " + mg_variable + " diffusion failed to converge");
-      }
-      mlmg.prepareForFluxes(GetVecOfConstPtrs(component));
-    } else if (!m_pelelm->m_mlmg_fail_plt_residuals) {
-      mlmg.solve(
-        GetVecOfPtrs(component), GetVecOfConstPtrs(rhs), m_mg_rtol, m_mg_atol);
-    } else {
-      mlmg.setThrowException(true);
-      mlmg.setConvergenceNormType(amrex::MLMGNormType::bnorm);
-
-      try {
-        mlmg.solve(
-          GetVecOfPtrs(component), GetVecOfConstPtrs(rhs), m_mg_rtol,
-          m_mg_atol);
-      } catch (const std::exception& e) {
-        amrex::Print() << "\n"
-                       << "  *** " << mg_variable
-                       << " diffusion MLMG solve failed (EB)! ***\n"
-                       << "  Error: " << e.what() << "\n"
-                       << "  Dumping residuals for debugging...\n";
-        std::string m_solver_type = mg_variable + "_diffusion";
-        std::transform(
-          m_solver_type.begin(), m_solver_type.end(), m_solver_type.begin(),
-          [](unsigned char c) { return std::tolower(c); });
-        m_pelelm->WriteMLMGResidual(
-          mlmg, GetVecOfPtrs(component), GetVecOfConstPtrs(rhs), m_solver_type,
-          m_pelelm->m_nstep);
-
-        amrex::Abort("MLMG solve for scalar diffusion failed");
-      }
-    }
-
-    // Need to get the fluxes
-    if (have_fluxes != 0) {
-      if (m_use_gmres) {
-        mlmg.getFluxes(
-          GetVecOfArrOfPtrs(fluxes), GetVecOfPtrs(component),
-          amrex::MLMG::Location::FaceCentroid);
-      } else {
-        mlmg.getFluxes(
-          GetVecOfArrOfPtrs(fluxes), amrex::MLMG::Location::FaceCentroid);
-      }
-    }
-  }
-
-  //----------------------------------------------------------------
-  storeTimesDensity(a_phi, phi_comp, phi, a_density, ncomp, finest_level);
+  diffuseScalarImpl(
+    a_phi, phi_comp, a_rhs, rhs_comp, a_flux, flux_comp, a_acoeff, a_density,
+    a_bcoeff, bcoeff_comp, std::move(a_bcrec), ncomp, isPoissonSolve, a_dt,
+    a_boundary, a_phiEB, a_bcoeffEB, a_label);
 }
 #endif
 
@@ -1010,7 +793,7 @@ DiffusionOp::computeDiffLap(
 }
 
 void
-DiffusionOp::computeDiffFluxes(
+DiffusionOp::computeDiffFluxesImpl(
   amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>> const& a_flux,
   const int flux_comp,
   amrex::Vector<amrex::MultiFab const*> const& a_phi,
@@ -1021,9 +804,16 @@ DiffusionOp::computeDiffFluxes(
   amrex::Vector<amrex::BCRec> a_bcrec,
   const int ncomp,
   const int do_avgDown,
-  amrex::Vector<amrex::MultiFab const*> const& a_boundary)
+  amrex::Vector<amrex::MultiFab const*> const& a_boundary,
+  amrex::Vector<amrex::MultiFab*> const& a_EBflux,
+  const int ebflux_comp,
+  amrex::Vector<amrex::MultiFab const*> const& a_EBvalue,
+  amrex::Vector<amrex::MultiFab const*> const& a_EBbcoeff)
 {
   BL_PROFILE("DiffusionOp::computeDiffFluxes()");
+  // used in EB builds only
+  amrex::ignore_unused(a_EBflux, ebflux_comp, a_EBvalue, a_EBbcoeff);
+  const bool have_EB = !a_EBflux.empty();
 
   //----------------------------------------------------------------
   // Checks
@@ -1059,6 +849,7 @@ DiffusionOp::computeDiffFluxes(
     // Component based vector of data
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> fluxes(
       finest_level + 1);
+    amrex::Vector<amrex::MultiFab> ebfluxes;
     amrex::Vector<amrex::MultiFab> component;
     amrex::Vector<amrex::MultiFab> laps;
     amrex::Vector<amrex::MultiFab> boundary;
@@ -1072,6 +863,10 @@ DiffusionOp::computeDiffFluxes(
       for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
         fluxes[lev][idim] = amrex::MultiFab(
           *a_flux[lev][idim], amrex::make_alias, flux_comp + comp, m_ncomp);
+      }
+      if (have_EB) {
+        ebfluxes.emplace_back(
+          *a_EBflux[lev], amrex::make_alias, ebflux_comp + comp, m_ncomp);
       }
       component.emplace_back(phi[lev], amrex::make_alias, comp, m_ncomp);
       if (have_boundary != 0) {
@@ -1105,6 +900,11 @@ DiffusionOp::computeDiffFluxes(
       m_scal_apply_op->setBCoeffs(lev, GetArrOfConstPtrs(bcoeff_ec));
 #endif
       m_scal_apply_op->setLevelBC(lev, &boundary[lev]);
+#ifdef AMREX_USE_EB
+      if (have_EB) {
+        m_scal_apply_op->setEBDirichlet(lev, *a_EBvalue[lev], *a_EBbcoeff[lev]);
+      }
+#endif
     }
 
     amrex::MLMG mlmg(*m_scal_apply_op);
@@ -1113,6 +913,9 @@ DiffusionOp::computeDiffFluxes(
     mlmg.getFluxes(
       GetVecOfArrOfPtrs(fluxes), GetVecOfPtrs(component),
       amrex::MLMG::Location::FaceCentroid);
+    if (have_EB) {
+      mlmg.getEBFluxes(GetVecOfPtrs(ebfluxes), GetVecOfPtrs(component));
+    }
 #else
     mlmg.getFluxes(
       GetVecOfArrOfPtrs(fluxes), GetVecOfPtrs(component),
@@ -1124,6 +927,25 @@ DiffusionOp::computeDiffFluxes(
   if (do_avgDown != 0) {
     avgDownFluxes(a_flux, flux_comp, ncomp);
   }
+}
+
+void
+DiffusionOp::computeDiffFluxes(
+  amrex::Vector<amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM>> const& a_flux,
+  const int flux_comp,
+  amrex::Vector<amrex::MultiFab const*> const& a_phi,
+  const int phi_comp,
+  amrex::Vector<amrex::MultiFab const*> const& a_density,
+  amrex::Vector<amrex::MultiFab const*> const& a_bcoeff,
+  const int bcoeff_comp,
+  amrex::Vector<amrex::BCRec> a_bcrec,
+  const int ncomp,
+  const int do_avgDown,
+  amrex::Vector<amrex::MultiFab const*> const& a_boundary)
+{
+  computeDiffFluxesImpl(
+    a_flux, flux_comp, a_phi, phi_comp, a_density, a_bcoeff, bcoeff_comp,
+    std::move(a_bcrec), ncomp, do_avgDown, a_boundary, {}, 0, {}, {});
 }
 
 #ifdef AMREX_USE_EB
@@ -1145,96 +967,10 @@ DiffusionOp::computeDiffFluxes(
   const int do_avgDown,
   amrex::Vector<amrex::MultiFab const*> const& a_boundary)
 {
-  BL_PROFILE("DiffusionOp::computeDiffFluxes()");
-
-  //----------------------------------------------------------------
-  // Checks
-  AMREX_ASSERT(m_ncomp == 1 || m_ncomp == ncomp);
-  AMREX_ASSERT(a_flux[0][0]->nComp() >= flux_comp + ncomp);
-  AMREX_ASSERT(a_phi[0]->nComp() >= phi_comp + ncomp);
-  AMREX_ASSERT(a_bcoeff[0]->nComp() >= bcoeff_comp + ncomp);
-  AMREX_ASSERT(a_bcrec.size() >= ncomp);
-
-  const int finest_level = m_pelelm->finestLevel();
-
-  const int have_density = (a_density.empty()) ? 0 : 1;
-  const int have_boundary = (a_boundary.empty()) ? 0 : 1;
-
-  // Duplicate phi since it is modified by the LinOp
-  // and if have_density -> divide by density
-  amrex::Vector<amrex::MultiFab> phi =
-    copyOverDensity(a_phi, phi_comp, a_density, ncomp, finest_level);
-
-  // LinOp is \alpha A \phi - \beta \nabla \cdot B \nabla \phi
-  // => \alpha = 0, A doesn't matter
-  // => \beta = -1.0, B face centered diffusivity a_bcoeff
-
-  // Set scalars \alpha & \beta
-  constexpr amrex::Real alpha = 0.0;
-  constexpr amrex::Real beta = -1.0;
-  m_scal_apply_op->setScalars(alpha, beta);
-
-  // Get fluxes on a m_ncomp component(s) basis
-  for (int comp = 0; comp < ncomp; comp += m_ncomp) {
-
-    // Component based vector of data
-    amrex::Vector<
-      amrex::Array<std::unique_ptr<amrex::MultiFab>, AMREX_SPACEDIM>>
-      fluxes(finest_level + 1);
-    amrex::Vector<std::unique_ptr<amrex::MultiFab>> ebfluxes;
-    amrex::Vector<amrex::MultiFab> component;
-    amrex::Vector<amrex::MultiFab> laps;
-    amrex::Vector<amrex::MultiFab> boundary;
-
-    // Allow for component specific LinOp BC
-    m_scal_apply_op->setDomainBC(
-      m_pelelm->getDiffusionLinOpBC(amrex::Orientation::low, a_bcrec[comp]),
-      m_pelelm->getDiffusionLinOpBC(amrex::Orientation::high, a_bcrec[comp]));
-
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-        fluxes[lev][idim] = std::make_unique<amrex::MultiFab>(
-          *a_flux[lev][idim], amrex::make_alias, flux_comp + comp, m_ncomp);
-      }
-      ebfluxes.push_back(
-        std::make_unique<amrex::MultiFab>(
-          *a_EBflux[lev], amrex::make_alias, ebflux_comp + comp, m_ncomp));
-      component.emplace_back(phi[lev], amrex::make_alias, comp, m_ncomp);
-      if (have_boundary != 0) {
-        boundary.emplace_back(
-          *a_boundary[lev], amrex::make_alias, comp, m_ncomp);
-      } else {
-        boundary.emplace_back(phi[lev], amrex::make_alias, comp, m_ncomp);
-      }
-      constexpr int doZeroVisc = 1;
-      constexpr int addTurbContrib = 1;
-      amrex::Vector<amrex::BCRec> subBCRec = {
-        a_bcrec.begin() + comp, a_bcrec.begin() + comp + m_ncomp};
-      amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> bcoeff_ec =
-        m_pelelm->getDiffusivity(
-          lev, bcoeff_comp + comp, m_ncomp, doZeroVisc, subBCRec,
-          *a_bcoeff[lev], addTurbContrib);
-      laps.emplace_back(
-        a_phi[lev]->boxArray(), a_phi[lev]->DistributionMap(), m_ncomp, 1,
-        amrex::MFInfo(), a_phi[lev]->Factory());
-      m_scal_apply_op->setBCoeffs(
-        lev, GetArrOfConstPtrs(bcoeff_ec), amrex::MLMG::Location::FaceCentroid);
-      m_scal_apply_op->setLevelBC(lev, &boundary[lev]);
-      m_scal_apply_op->setEBDirichlet(lev, *a_EBvalue[lev], *a_EBbcoeff[lev]);
-    }
-
-    amrex::MLMG mlmg(*m_scal_apply_op);
-    mlmg.apply(GetVecOfPtrs(laps), GetVecOfPtrs(component));
-    mlmg.getFluxes(
-      GetVecOfArrOfPtrs(fluxes), GetVecOfPtrs(component),
-      amrex::MLMG::Location::FaceCentroid);
-    mlmg.getEBFluxes(GetVecOfPtrs(ebfluxes), GetVecOfPtrs(component));
-  }
-
-  // Average down if requested
-  if (do_avgDown != 0) {
-    avgDownFluxes(a_flux, flux_comp, ncomp);
-  }
+  computeDiffFluxesImpl(
+    a_flux, flux_comp, a_phi, phi_comp, a_density, a_bcoeff, bcoeff_comp,
+    std::move(a_bcrec), ncomp, do_avgDown, a_boundary, a_EBflux, ebflux_comp,
+    a_EBvalue, a_EBbcoeff);
 }
 #endif
 
