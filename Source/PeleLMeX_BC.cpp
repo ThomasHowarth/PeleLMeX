@@ -441,7 +441,7 @@ PeleLM::fillpatch_state(
   const int nCompState = (m_incompressible) != 0 ? AMREX_SPACEDIM : NVAR;
 
   if (m_use_inlet_from_plane != 0) {
-    const auto bcrec = fetchBCRecArray(XVEL, XVEL + AMREX_SPACEDIM);
+    const auto bcrec = fetchBCRecArray(VELX, AMREX_SPACEDIM);
     const auto domain = geom[lev].Domain();
     const int idir = m_inlet_plane_dir;
     auto face_is_recycling_inflow = [=](int is_hi) -> bool {
