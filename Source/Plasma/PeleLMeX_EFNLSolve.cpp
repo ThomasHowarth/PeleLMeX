@@ -31,6 +31,21 @@ PeleLM::implicitNonLinearSolve(
   // Get cell-centered charged species transport coefficients
   calcEFTransport(AmrNewTime);
 
+  // Face-centered electron mobility and diffusivity: they are fixed for the
+  // whole solve, so compute them once instead of in every residual
+  {
+    auto bcRecnE = fetchBCRecArray(NE, 1);
+    constexpr int doZeroVisc = 0;
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      auto ldata_p = getLevelDataPtr(lev, AmrNewTime);
+      auto ldataNLs_p = getLevelDataNLSolvePtr(lev);
+      ldataNLs_p->mobE_ec =
+        getDiffusivity(lev, 0, 1, doZeroVisc, bcRecnE, ldata_p->mobE_cc);
+      ldataNLs_p->diffE_ec =
+        getDiffusivity(lev, 0, 1, doZeroVisc, bcRecnE, ldata_p->diffE_cc);
+    }
+  }
+
   // Substepping of non-linear solve
   dtsub = a_dt / ef_substep;
 
@@ -500,8 +515,8 @@ PeleLM::nonLinearResidual(
     // Get nl solve data pointer
     auto ldataNLs_p = getLevelDataNLSolvePtr(lev);
 
-    // Init the ghostcells too
-    a_nlresid[lev]->setVal(0.0);
+    // The kernel below fills the valid cells; zero the ghost cells
+    a_nlresid[lev]->setBndry(0.0);
 
     auto const& I_R_ma = ldataR_p->I_R.const_arrays();
     auto const& lapPhiV_ma = laplacian[lev].const_arrays();
@@ -593,16 +608,8 @@ PeleLM::getAdvectionTerm(
 
   for (int lev = 0; lev <= finest_level; ++lev) {
 
-    // Get t^{n} data pointer
-    auto ldata_p = getLevelDataPtr(lev, AmrNewTime);
-
     // Get nl solve data pointer
     auto ldataNLs_p = getLevelDataNLSolvePtr(lev);
-
-    // Get the face centered electron mobility
-    constexpr int doZeroVisc = 0;
-    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> mobE_ec =
-      getDiffusivity(lev, 0, 1, doZeroVisc, bcRecnE, ldata_p->mobE_cc);
 
     // Get the electron effective velocity
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
@@ -610,7 +617,7 @@ PeleLM::getAdvectionTerm(
       auto const& umac_ma = ldataNLs_p->umac[idim].const_arrays();
       auto const& gphi_c_ma = a_gPhiVCur[lev][idim]->const_arrays();
       auto const& gphi_o_ma = ldataNLs_p->gPhiVOld[idim].const_arrays();
-      auto const& kappa_e_ma = mobE_ec[idim].const_arrays();
+      auto const& kappa_e_ma = ldataNLs_p->mobE_ec[idim].const_arrays();
       amrex::ParallelFor(
         ldataNLs_p->uEffnE[idim],
         [ueff_ma, umac_ma, gphi_c_ma, gphi_o_ma, kappa_e_ma] AMREX_GPU_DEVICE(
@@ -932,18 +939,12 @@ PeleLM::setUpPrecond(
   // Get and set coefficients on each level
   for (int lev = 0; lev <= finest_level; ++lev) {
 
-    // Get level data pointer
-    auto ldata_p = getLevelDataPtr(lev, AmrNewTime);
-
     // Get nl solve data pointer
     auto ldataNLs_p = getLevelDataNLSolvePtr(lev);
 
-    constexpr int doZeroVisc = 0;
-    amrex::Array<amrex::MultiFab, AMREX_SPACEDIM> diffE_ec =
-      getDiffusivity(lev, 0, 1, doZeroVisc, bcRecnE, ldata_p->diffE_cc);
-
     getPrecondOp()->setDiffOpACoeff(lev, 1.0);
-    getPrecondOp()->setDiffOpBCoeff(lev, GetArrOfConstPtrs(diffE_ec));
+    getPrecondOp()->setDiffOpBCoeff(
+      lev, GetArrOfConstPtrs(ldataNLs_p->diffE_ec));
     getPrecondOp()->setDiffOpCCoeff(lev, GetArrOfConstPtrs(ldataNLs_p->uEffnE));
   }
 

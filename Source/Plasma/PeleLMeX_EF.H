@@ -69,6 +69,10 @@ struct LevelDataNLSolve
     uEffnE; // Effective velocity of the electrons
   amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
     umac; // Need a duplicate of umac ... TODO find better way
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
+    mobE_ec; // Face electron mobility, set at the start of each solve
+  amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>
+    diffE_ec; // Face electron diffusivity, set at the start of each solve
 };
 
 // Preconditioner
