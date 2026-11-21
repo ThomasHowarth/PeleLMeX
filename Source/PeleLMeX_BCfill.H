@@ -61,19 +61,14 @@ struct PeleLMCCFillExtDirBase
 {
   ProbParm const* lprobparm;
   pele::physics::PMF::PmfData::DataContainer const* lpmfdata;
-  const int m_nAux;
   MeshMapEvaluator m_map_eval{}; // defaults to Identity (no mesh mapping)
 
   AMREX_GPU_HOST
   constexpr PeleLMCCFillExtDirBase(
     ProbParm const* a_prob_parm,
     pele::physics::PMF::PmfData::DataContainer const* a_pmf_data,
-    int a_nAux,
     MeshMapEvaluator a_map_eval = MeshMapEvaluator{})
-    : lprobparm(a_prob_parm),
-      lpmfdata(a_pmf_data),
-      m_nAux(a_nAux),
-      m_map_eval(a_map_eval)
+    : lprobparm(a_prob_parm), lpmfdata(a_pmf_data), m_map_eval(a_map_eval)
   {
   }
 
@@ -117,13 +112,12 @@ struct PeleLMCCFillExtDirState : PeleLMCCFillExtDirBase<T>
   constexpr PeleLMCCFillExtDirState(
     ProbParm const* a_prob_parm,
     pele::physics::PMF::PmfData::DataContainer const* a_pmf_data,
-    int a_nAux,
     int do_turbInflow,
     int do_inletFromPlane,
     int inlet_plane_dir,
     int recycling_full,
     MeshMapEvaluator a_map_eval = MeshMapEvaluator{})
-    : PeleLMCCFillExtDirBase<T>(a_prob_parm, a_pmf_data, a_nAux, a_map_eval),
+    : PeleLMCCFillExtDirBase<T>(a_prob_parm, a_pmf_data, a_map_eval),
       m_do_turbInflow(do_turbInflow),
       m_do_inlet_from_plane(do_inletFromPlane),
       m_inlet_from_plane_dir(inlet_plane_dir),
@@ -238,7 +232,7 @@ struct PeleLMCCFillExtDirAux : PeleLMCCFillExtDirBase<T>
     const amrex::IntVect& iv,
     amrex::Array4<amrex::Real> const& aux,
     const int /*dcomp*/,
-    const int /*numcomp*/,
+    const int numcomp,
     amrex::GeometryData const& geom,
     const amrex::Real time,
     const amrex::BCRec* bcr,
@@ -264,9 +258,10 @@ struct PeleLMCCFillExtDirAux : PeleLMCCFillExtDirBase<T>
           continue;
         }
         // bcnormal_aux() fills every aux component at once, so call it once
-        // per face if any component is ext_dir there.
+        // per face if any component is ext_dir there. bcr holds the numcomp
+        // BCRecs of the components being filled.
         bool any_ext_dir = false;
-        for (int n = 0; n < this->m_nAux; ++n) {
+        for (int n = 0; n < numcomp; ++n) {
           any_ext_dir =
             any_ext_dir || bcr[n].data()[idir + side * AMREX_SPACEDIM] ==
                              amrex::BCType::ext_dir;

@@ -1280,12 +1280,12 @@ public:
     amrex::MultiFab& a_I_R,
     const int nGhost);
   //! Ghost cells only, foextrap at domain faces. C/F interpolation uses
-  //! a_mapper, or piecewise constant when null.
+  //! a_mapper, piecewise constant by default.
   void fillpatch_forces(
     const amrex::Real a_time,
     amrex::Vector<amrex::MultiFab*> const& a_force,
     const int nGrowForce,
-    amrex::InterpBase* a_mapper = nullptr);
+    amrex::InterpBase* a_mapper = &amrex::pc_interp);
   //! Ghost cells only of a divergence-like vector of MultiFabs: periodic
   //! and coarse/fine fill from the vector itself, divu BCs at domain faces.
   void fillpatch_divu_ghosts(
@@ -1975,6 +1975,12 @@ public:
   // Accessors
   std::string runMode() const { return m_run_mode; }
 
+  // Number of state components: velocity only when incompressible
+  int nCompState() const
+  {
+    return (m_incompressible != 0) ? AMREX_SPACEDIM : NVAR;
+  }
+
   static constexpr int nCompIR()
   {
 #ifdef PELE_USE_PLASMA
@@ -2071,8 +2077,6 @@ public:
 #endif
 
   amrex::Vector<amrex::BCRec> fetchBCRecArray(const int scomp, const int ncomp);
-  // Velocity BCRecs keeping only the ext_dir faces, others set to bogus
-  amrex::Vector<amrex::BCRec> inflowOnlyVelBCRec();
   amrex::Vector<amrex::BCRec>
   fetchBCRecAuxArray(const int scomp, const int ncomp);
   amrex::Vector<amrex::BCRec> fetchBCRecDummyArray(const int ncomp);
@@ -2667,6 +2671,15 @@ public:
 
 private:
   //-----------------------------------------------------------------------------
+
+  // Fill the ghost cells of velocity MF a_vel (level lev, components 0 to
+  // AMREX_SPACEDIM-1) on the ext_dir (inflow) faces only, with the state BC
+  // functor; a_inflowPreload as in makeStateBCFill.
+  void fillInflowFaces(
+    amrex::MultiFab& a_vel,
+    const int lev,
+    const amrex::Real a_time,
+    const bool a_inflowPreload);
 
   // Nodal projection
   int m_nodal_mg_max_coarsening_level = 100;
