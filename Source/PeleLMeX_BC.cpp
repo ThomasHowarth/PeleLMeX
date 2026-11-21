@@ -396,15 +396,8 @@ PeleLM::fillPatchState(const int lev, const amrex::Real a_time, const int nGrow)
 {
   BL_PROFILE("PeleLMeX::fillPatchState()");
 
-  std::unique_ptr<amrex::MultiFab> mf;
-  if (m_incompressible != 0) {
-    mf = std::make_unique<amrex::MultiFab>(
-      grids[lev], dmap[lev], AMREX_SPACEDIM, nGrow, amrex::MFInfo(),
-      Factory(lev));
-  } else {
-    mf = std::make_unique<amrex::MultiFab>(
-      grids[lev], dmap[lev], NVAR, nGrow, amrex::MFInfo(), Factory(lev));
-  }
+  auto mf = std::make_unique<amrex::MultiFab>(
+    grids[lev], dmap[lev], nCompState(), nGrow, amrex::MFInfo(), Factory(lev));
   fillpatch_state(lev, a_time, *mf, nGrow);
 
   return mf;
@@ -431,8 +424,6 @@ PeleLM::fillpatch_state(
   amrex::MultiFab& a_state,
   const int nGhost)
 {
-  const int nCompState = (m_incompressible) != 0 ? AMREX_SPACEDIM : NVAR;
-
   if (m_use_inlet_from_plane != 0) {
     const auto bcrec = fetchBCRecArray(VELX, AMREX_SPACEDIM);
     const auto domain = geom[lev].Domain();
@@ -487,10 +478,11 @@ PeleLM::fillpatch_state(
   // lev-1 -> lev pair (its per-component weights serve both
   // incompressible and compressible state).  getInterpolator falls back
   // to the legacy interpolator when mesh mapping is off or unavailable.
+  // No interpolator is used at level 0.
   fillpatchLevel(
-    lev, a_time, a_state, nGhost, &LevelData::state, 0, 0, nCompState,
-    fetchBCRecArray(0, nCompState), makeStateBCFill(),
-    getInterpolator(1, lev - 1));
+    lev, a_time, a_state, nGhost, &LevelData::state, 0, 0, nCompState(),
+    fetchBCRecArray(0, nCompState()), makeStateBCFill(),
+    (lev > 0) ? getInterpolator(1, lev - 1) : nullptr);
 
   a_state.EnforcePeriodicity(geom[lev].periodicity());
 }
@@ -599,8 +591,7 @@ PeleLM::fillpatch_forces(
   AMREX_ASSERT(a_force[0]->nComp() <= m_bcrec_force.size());
   fillpatchAllLevels(
     a_time, a_force, nGrowForce, a_force[0]->nComp(), {m_bcrec_force},
-    PeleLMCCFillExtDirDummy{},
-    (a_mapper != nullptr) ? a_mapper : &amrex::pc_interp);
+    PeleLMCCFillExtDirDummy{}, a_mapper);
 }
 
 // Ghost cells of a divergence-like field held outside leveldata (the
@@ -664,7 +655,6 @@ PeleLM::fillcoarsepatch_state(
   const int nGhost)
 {
   AMREX_ASSERT(lev > 0);
-  const int nCompState = (m_incompressible) != 0 ? AMREX_SPACEDIM : NVAR;
 
   fillTurbInflow(a_state, VELX, lev, a_time);
 
@@ -678,8 +668,8 @@ PeleLM::fillcoarsepatch_state(
   // Derived TEMP/RHORT are restored by the EOS recompute in
   // MakeNewLevelFromCoarse / RemakeLevel.
   fillcoarsepatchLevel(
-    lev, a_time, a_state, nGhost, m_leveldata_new[lev - 1]->state, nCompState,
-    fetchBCRecArray(0, nCompState), makeStateBCFill(),
+    lev, a_time, a_state, nGhost, m_leveldata_new[lev - 1]->state, nCompState(),
+    fetchBCRecArray(0, nCompState()), makeStateBCFill(),
     getInterpolator(m_regrid_interp_method, lev - 1));
 }
 
@@ -739,10 +729,16 @@ PeleLM::fillcoarsepatch_reaction(
     getInterpolator(m_regrid_interp_method));
 }
 
-// Velocity BCRecs keeping only the ext_dir (inflow) faces
-amrex::Vector<amrex::BCRec>
-PeleLM::inflowOnlyVelBCRec()
+// Fill the velocity ghost cells on the ext_dir (inflow) faces only: the
+// velocity BCRecs keep their ext_dir faces, all others are set to bogus
+void
+PeleLM::fillInflowFaces(
+  amrex::MultiFab& a_vel,
+  const int lev,
+  const amrex::Real a_time,
+  const bool a_inflowPreload)
 {
+  auto bcfill = makeStateBCFill(a_inflowPreload);
   auto realVelBCRec = fetchBCRecArray(VELX, AMREX_SPACEDIM);
   amrex::Vector<amrex::BCRec> inflowBCRec(AMREX_SPACEDIM);
   for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
@@ -757,7 +753,9 @@ PeleLM::inflowOnlyVelBCRec()
                  : amrex::BCType::bogus);
     }
   }
-  return inflowBCRec;
+  amrex::PhysBCFunct<amrex::GpuBndryFuncFab<decltype(bcfill)>> bndry_func(
+    geom[lev], inflowBCRec, bcfill);
+  bndry_func(a_vel, 0, AMREX_SPACEDIM, a_vel.nGrowVect(), a_time, 0);
 }
 
 // Fill the inflow boundary of a velocity MF used for velocity projection
@@ -775,12 +773,7 @@ PeleLM::setInflowBoundaryVel(
     fillFromRecyclingPlane(a_vel, 0, lev);
   }
 
-  // Fill only the inflow (ext_dir) faces
-  auto bcfill = makeStateBCFill();
-  amrex::PhysBCFunct<amrex::GpuBndryFuncFab<decltype(bcfill)>> bndry_func(
-    geom[lev], inflowOnlyVelBCRec(), bcfill);
-
-  bndry_func(a_vel, 0, AMREX_SPACEDIM, a_vel.nGrowVect(), time, 0);
+  fillInflowFaces(a_vel, lev, time, true);
 
   a_vel.EnforcePeriodicity(geom[lev].periodicity());
 }
@@ -1414,10 +1407,7 @@ PeleLM::computeRecyclingTargetFlow(amrex::Orientation::Side a_side)
   vel.setVal(0.0);
 
   // Fill only the ext_dir faces, without the inflow preloads
-  auto bcfill = makeStateBCFill(false);
-  amrex::PhysBCFunct<amrex::GpuBndryFuncFab<decltype(bcfill)>> bndry_func(
-    geom[0], inflowOnlyVelBCRec(), bcfill);
-  bndry_func(vel, 0, AMREX_SPACEDIM, vel.nGrowVect(), m_cur_time, 0);
+  fillInflowFaces(vel, 0, m_cur_time, false);
 
   // Copy the innermost ghost layer onto the slab layout and integrate over
   // the inlet-face fluid footprint, i.e. exactly the cross-section (and the

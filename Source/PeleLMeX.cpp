@@ -105,8 +105,7 @@ PeleLM::getFieldVect(
 amrex::Vector<std::unique_ptr<amrex::MultiFab>>
 PeleLM::getStateVect(const TimeStamp a_time)
 {
-  const int ncomp = (m_incompressible != 0) ? AMREX_SPACEDIM : NVAR;
-  return getAliasVect(a_time, &LevelData::state, 0, ncomp);
+  return getAliasVect(a_time, &LevelData::state, 0, nCompState());
 }
 
 amrex::Vector<std::unique_ptr<amrex::MultiFab>>
@@ -199,14 +198,12 @@ PeleLM::getAuxDiffusivityVect(const TimeStamp a_time)
 void
 PeleLM::averageDownState(const TimeStamp a_time)
 {
-  const int nCompState = (m_incompressible != 0) ? AMREX_SPACEDIM : NVAR;
-
   // Velocity components need the Xi-space-conservative restriction;
   // delegate to averageDownVelocity (which is mapping-aware).
   averageDownVelocity(a_time);
 
   // Remaining components AFTER velocity, if any (compressible runs).
-  const int nc_rest = nCompState - AMREX_SPACEDIM;
+  const int nc_rest = nCompState() - AMREX_SPACEDIM;
   if (nc_rest > 0) {
     if (m_mesh_mapping) {
       // detJ-weighted restriction of [DENSITY..RHOH]; components after

@@ -13,7 +13,7 @@ auto
 PeleLM::makeBCFill()
 {
   return BCFill<ProblemSpecificFunctions>{
-    prob_parm_d, pmf_data.device_parm(), m_nAux, m_map_eval};
+    prob_parm_d, pmf_data.device_parm(), m_map_eval};
 }
 
 inline auto
@@ -23,7 +23,6 @@ PeleLM::makeStateBCFill(const bool a_inflowPreload)
   return PeleLMCCFillExtDirState<ProblemSpecificFunctions>{
     prob_parm_d,
     pmf_data.device_parm(),
-    m_nAux,
     preload * static_cast<int>(turb_inflow.is_initialized()),
     preload * m_use_inlet_from_plane,
     m_inlet_plane_dir,
