@@ -46,7 +46,6 @@ namespace c2m = pele::physics::utilities::cgs2mks;
 
 namespace {
 const std::string level_prefix{"Level_"};
-}
 
 void
 GotoNextLine(std::istream& is)
@@ -55,7 +54,35 @@ GotoNextLine(std::istream& is)
   is.ignore(bl_ignore_max, '\n');
 }
 
-namespace {
+// Open a_name for writing with the VisMF IO buffer, aborting on failure
+void
+openHeaderFile(
+  std::ofstream& a_file,
+  amrex::VisMF::IO_Buffer& a_buffer,
+  const std::string& a_name)
+{
+  a_file.rdbuf()->pubsetbuf(a_buffer.dataPtr(), a_buffer.size());
+  a_file.open(
+    a_name.c_str(),
+    std::ofstream::out | std::ofstream::trunc | std::ofstream::binary);
+  if (!a_file.good()) {
+    amrex::FileOpenFailed(a_name);
+  }
+}
+
+// Index of a_name in the plotfile variable list, -1 if absent (last match)
+int
+pltVarIndex(
+  const amrex::Vector<std::string>& a_plt_vars, const std::string& a_name)
+{
+  int idx = -1;
+  for (int i = 0; i < a_plt_vars.size(); ++i) {
+    if (a_plt_vars[i] == a_name) {
+      idx = i;
+    }
+  }
+  return idx;
+}
 
 // Write the AMReX "standard" plotfile Header, then append the trailer
 // the AMReX ParaView/VisIt reader recognises: one extra vector field of
@@ -118,8 +145,7 @@ writePlotfileWithMapping(
   const amrex::Vector<amrex::Geometry>& geom,
   amrex::Real time,
   const amrex::Vector<int>& level_steps,
-  const amrex::Vector<amrex::IntVect>& ref_ratio,
-  const std::string& versionName = "HyperCLaw-V1.1")
+  const amrex::Vector<amrex::IntVect>& ref_ratio)
 {
   BL_PROFILE("PeleLMeX::writePlotfileWithMapping()");
 
@@ -130,7 +156,8 @@ writePlotfileWithMapping(
   AMREX_ALWAYS_ASSERT(mf_cc[0]->nComp() == static_cast<int>(varnames.size()));
   AMREX_ALWAYS_ASSERT(mf_nd[0]->nComp() >= AMREX_SPACEDIM);
 
-  const std::string levelPrefix{"Level_"};
+  const std::string versionName{"HyperCLaw-V1.1"};
+  const std::string& levelPrefix = level_prefix;
   const std::string mfPrefix{"Cell"};
   const std::string mfNodalPrefix{"Nu_nd"};
 
@@ -150,15 +177,8 @@ writePlotfileWithMapping(
     }
     auto f = [=]() {
       amrex::VisMF::IO_Buffer io_buffer(amrex::VisMF::IO_Buffer_Size);
-      const std::string HeaderFileName(plotfilename + "/Header");
       std::ofstream HeaderFile;
-      HeaderFile.rdbuf()->pubsetbuf(io_buffer.dataPtr(), io_buffer.size());
-      HeaderFile.open(
-        HeaderFileName.c_str(),
-        std::ofstream::out | std::ofstream::trunc | std::ofstream::binary);
-      if (!HeaderFile.good()) {
-        amrex::FileOpenFailed(HeaderFileName);
-      }
+      openHeaderFile(HeaderFile, io_buffer, plotfilename + "/Header");
       writePlotfileHeaderWithMapping(
         HeaderFile, nlevels, bArrays, varnames, geom, time, level_steps,
         ref_ratio, versionName, levelPrefix, mfPrefix, mfNodalPrefix);
@@ -170,25 +190,20 @@ writePlotfileWithMapping(
     }
   }
 
-  for (int lev = 0; lev < nlevels; ++lev) {
+  const auto writeMF = [&](
+                         const amrex::MultiFab& a_mf, const int lev,
+                         const std::string& a_prefix) {
+    const std::string name =
+      amrex::MultiFabFileFullPrefix(lev, plotfilename, levelPrefix, a_prefix);
     if (amrex::AsyncOut::UseAsyncOut()) {
-      amrex::VisMF::AsyncWrite(
-        *mf_cc[lev],
-        amrex::MultiFabFileFullPrefix(lev, plotfilename, levelPrefix, mfPrefix),
-        true);
-      amrex::VisMF::AsyncWrite(
-        *mf_nd[lev],
-        amrex::MultiFabFileFullPrefix(
-          lev, plotfilename, levelPrefix, mfNodalPrefix),
-        true);
+      amrex::VisMF::AsyncWrite(a_mf, name, true);
     } else {
-      amrex::VisMF::Write(
-        *mf_cc[lev], amrex::MultiFabFileFullPrefix(
-                       lev, plotfilename, levelPrefix, mfPrefix));
-      amrex::VisMF::Write(
-        *mf_nd[lev], amrex::MultiFabFileFullPrefix(
-                       lev, plotfilename, levelPrefix, mfNodalPrefix));
+      amrex::VisMF::Write(a_mf, name);
     }
+  };
+  for (int lev = 0; lev < nlevels; ++lev) {
+    writeMF(*mf_cc[lev], lev, mfPrefix);
+    writeMF(*mf_nd[lev], lev, mfNodalPrefix);
   }
 
   if (amrex::AsyncOut::UseAsyncOut()) {
@@ -218,7 +233,6 @@ faceToCellMean(
                  +fy[box_no](i, j, k) + fy[box_no](i, j + 1, k),
                  +fz[box_no](i, j, k) + fz[box_no](i, j, k + 1)));
     });
-  amrex::Gpu::streamSynchronize();
 }
 
 } // anonymous namespace
@@ -321,28 +335,31 @@ PeleLM::WritePlotFile()
     return r;
   };
 
+  // Copy a_ncomp state components from a_first, named as registered
+  const auto addState = [&](const int a_first, const int a_ncomp) {
+    amrex::Vector<std::string> stateNames;
+    for (int n = a_first; n < a_first + a_ncomp; ++n) {
+      stateNames.push_back(stateVariableName(n));
+    }
+    addCopy(stateNames, newState, a_first);
+  };
+
   // State, then pressure gradients if requested
-  amrex::Vector<std::string> velNames{
-    AMREX_D_DECL("x_velocity", "y_velocity", "z_velocity")};
   if (m_incompressible != 0) {
-    addCopy(velNames, newState, VELX);
+    addState(VELX, AMREX_SPACEDIM);
   } else {
-    velNames.push_back("density");
-    addCopy(velNames, newState, VELX);
+    addState(VELX, AMREX_SPACEDIM + 1); // velocity and density
     // Make the plot lighter by dropping species by default
     if (m_plotStateSpec != 0) {
-      addCopy(prefixed("rho.Y(", names, ")"), newState, FIRSTSPEC);
+      addState(FIRSTSPEC, NUM_SPECIES);
     }
-    addCopy({"rhoh", "temp", "RhoRT"}, newState, RHOH);
+    addState(RHOH, 3); // rhoh, temp, RhoRT
 #ifdef PELE_USE_PLASMA
+    // The plotfile spells it phiV; the state component is PhiV
     addCopy({"nE", "phiV"}, newState, NE);
 #endif
 #ifdef PELE_USE_SOOT
-    amrex::Vector<std::string> sootNames;
-    for (int mom = 0; mom < NUMSOOTVAR; ++mom) {
-      sootNames.push_back(soot_model->sootVariableName(mom));
-    }
-    addCopy(sootNames, newState, FIRSTSOOT);
+    addState(FIRSTSOOT, NUMSOOTVAR);
 #endif
 #ifdef PELE_USE_RADIATION
     if (do_rad_solve) {
@@ -416,9 +433,8 @@ PeleLM::WritePlotFile()
     if (m_plotHeatRelease != 0) {
       fields.push_back(
         {{"HeatRelease"}, [this](int lev, amrex::MultiFab& a_plt, int a_comp) {
-           amrex::MultiFab hr(grids[lev], dmap[lev], 1, 0);
+           amrex::MultiFab hr(a_plt, amrex::make_alias, a_comp, 1);
            getHeatRelease(lev, &hr);
-           amrex::MultiFab::Copy(a_plt, hr, 0, a_comp, 1, 0);
          }});
     }
   }
@@ -649,29 +665,15 @@ PeleLM::WritePlotFile()
 }
 
 void
-PeleLM::WriteHeader(const std::string& name, const bool is_checkpoint) const
+PeleLM::WriteHeader(const std::string& name) const
 {
   if (amrex::ParallelDescriptor::IOProcessor()) {
-    std::string HeaderFileName(name + "/Header");
     amrex::VisMF::IO_Buffer io_buffer(amrex::VisMF::IO_Buffer_Size);
     std::ofstream HeaderFile;
-
-    HeaderFile.rdbuf()->pubsetbuf(io_buffer.dataPtr(), io_buffer.size());
-
-    HeaderFile.open(
-      HeaderFileName.c_str(),
-      std::ofstream::out | std::ofstream::trunc | std::ofstream::binary);
-
-    if (!HeaderFile.good()) {
-      amrex::FileOpenFailed(HeaderFileName);
-    }
+    openHeaderFile(HeaderFile, io_buffer, name + "/Header");
 
     HeaderFile.precision(17);
-    if (is_checkpoint) {
-      HeaderFile << "Checkpoint version: 1\n";
-    } else {
-      HeaderFile << "HyperCLaw-V1.1\n";
-    }
+    HeaderFile << "Checkpoint version: 1\n";
 
     HeaderFile << finest_level << "\n";
 
@@ -717,18 +719,11 @@ PeleLM::WriteHeader(const std::string& name, const bool is_checkpoint) const
     // Only fluctuations mode carries restart state (the running mean); in
     // full mode the injection buffer reseeds from the first post-restart
     // snapshot and nothing needs to be checkpointed.
-    const bool recycling_active =
-      (m_use_inlet_from_plane != 0) &&
-      (m_recycling_mode == RecyclingMode::Fluctuations) &&
-      m_inlet_recycling.initialized &&
-      static_cast<int>(m_inlet_recycling.mean_src.size()) >= finest_level + 1;
-    if ((m_use_inlet_from_plane != 0) && recycling_active) {
+    if (recyclingMeanCheckpointed()) {
       HeaderFile << "RecyclingPlane: " << "\n";
-      HeaderFile << (recycling_active ? m_inlet_recycling.n_samples : 0)
-                 << "\n";
+      HeaderFile << m_inlet_recycling.n_samples << "\n";
       for (int lev = 0; lev <= finest_level; ++lev) {
-        const bool planePresent =
-          recycling_active && (m_inlet_recycling.mean_src[lev] != nullptr);
+        const bool planePresent = (m_inlet_recycling.mean_src[lev] != nullptr);
         HeaderFile << "RecyclingPlanePresent: " << (planePresent ? 1 : 0)
                    << "\n";
         if (planePresent) {
@@ -738,6 +733,43 @@ PeleLM::WriteHeader(const std::string& name, const bool is_checkpoint) const
       }
     }
   }
+}
+
+// The per-level MultiFabs a checkpoint holds, with their file tags, in
+// the order they are written and read
+amrex::Vector<std::pair<std::string, amrex::MultiFab*>>
+PeleLM::checkpointFields(const int lev)
+{
+  auto* ldata_p = m_leveldata_new[lev].get();
+  amrex::Vector<std::pair<std::string, amrex::MultiFab*>> fields{
+    {"state", &ldata_p->state},
+    {"gradp", &ldata_p->gp},
+    {"p", &ldata_p->press}};
+  if (m_nAux > 0) {
+    fields.emplace_back("aux", &ldata_p->auxiliaries);
+  }
+  if (m_incompressible == 0) {
+    if (m_has_divu != 0) {
+      fields.emplace_back("divU", &ldata_p->divu);
+    }
+    if (m_do_react != 0) {
+      fields.emplace_back("I_R", &m_leveldatareact[lev]->I_R);
+    }
+  }
+  return fields;
+}
+
+// The recycling-plane running mean carries restart state only in
+// fluctuations mode, once seeded on every level; full mode reseeds from the
+// first post-restart snapshot
+bool
+PeleLM::recyclingMeanCheckpointed() const
+{
+  return (m_use_inlet_from_plane != 0) &&
+         (m_recycling_mode == RecyclingMode::Fluctuations) &&
+         m_inlet_recycling.initialized &&
+         static_cast<int>(m_inlet_recycling.mean_src.size()) >=
+           finest_level + 1;
 }
 
 void
@@ -767,55 +799,19 @@ PeleLM::WriteCheckPointFile()
   amrex::PreBuildDirectorHierarchy(
     checkpointname, level_prefix, finest_level + 1, true);
 
-  constexpr bool is_checkpoint = true;
-  WriteHeader(checkpointname, is_checkpoint);
+  WriteHeader(checkpointname);
   WriteJobInfo(checkpointname);
 
   for (int lev = 0; lev <= finest_level; ++lev) {
-    amrex::VisMF::Write(
-      m_leveldata_new[lev]->state,
-      amrex::MultiFabFileFullPrefix(
-        lev, checkpointname, level_prefix, "state"));
-
-    amrex::VisMF::Write(
-      m_leveldata_new[lev]->gp, amrex::MultiFabFileFullPrefix(
-                                  lev, checkpointname, level_prefix, "gradp"));
-
-    amrex::VisMF::Write(
-      m_leveldata_new[lev]->press,
-      amrex::MultiFabFileFullPrefix(lev, checkpointname, level_prefix, "p"));
-
-    if (m_nAux > 0) {
+    for (const auto& [tag, mf] : checkpointFields(lev)) {
       amrex::VisMF::Write(
-        m_leveldata_new[lev]->auxiliaries,
-        amrex::MultiFabFileFullPrefix(
-          lev, checkpointname, level_prefix, "aux"));
-    }
-
-    if (m_incompressible == 0) {
-      if (m_has_divu != 0) {
-        amrex::VisMF::Write(
-          m_leveldata_new[lev]->divu,
-          amrex::MultiFabFileFullPrefix(
-            lev, checkpointname, level_prefix, "divU"));
-      }
-
-      if (m_do_react != 0) {
-        amrex::VisMF::Write(
-          m_leveldatareact[lev]->I_R,
-          amrex::MultiFabFileFullPrefix(
-            lev, checkpointname, level_prefix, "I_R"));
-      }
+        *mf,
+        amrex::MultiFabFileFullPrefix(lev, checkpointname, level_prefix, tag));
     }
 
     // Per-level recycling-plane running mean (only when active and seeded;
     // fluctuations mode only, matching the header block in WriteHeader).
-    if (
-      (m_use_inlet_from_plane != 0) &&
-      (m_recycling_mode == RecyclingMode::Fluctuations) &&
-      m_inlet_recycling.initialized &&
-      static_cast<int>(m_inlet_recycling.mean_src.size()) >= finest_level + 1 &&
-      m_inlet_recycling.mean_src[lev]) {
+    if (recyclingMeanCheckpointed() && m_inlet_recycling.mean_src[lev]) {
       amrex::VisMF::Write(
         *m_inlet_recycling.mean_src[lev],
         amrex::MultiFabFileFullPrefix(
@@ -844,13 +840,11 @@ PeleLM::ReadCheckPointFile()
 
   /***************************************************************************
   ** Load header: set up problem domain (including BoxArray)                 *
-  **              allocate PeleLMeX memory (PeleLM::AllocateArrays)            *
+  **              allocate PeleLMeX memory                                   *
   **              (by calling MakeNewLevelFromScratch)                       *
   ****************************************************************************/
 
   std::string File(m_restart_chkfile + "/Header");
-
-  amrex::VisMF::IO_Buffer io_buffer(amrex::VisMF::GetIOBufferSize());
 
   amrex::Vector<char> fileCharPtr;
   amrex::ParallelDescriptor::ReadAndBcastFile(File, fileCharPtr);
@@ -902,23 +896,13 @@ PeleLM::ReadCheckPointFile()
   is >> m_prev_dt;
   GotoNextLine(is);
 
-  // Low coordinates of domain bounding box
-  std::getline(is, line);
-  {
+  // Low then high coordinates of domain bounding box, one line each
+  for (amrex::Real* coords : {prob_lo, prob_hi}) {
+    std::getline(is, line);
     std::istringstream lis(line);
     int i = 0;
     while (lis >> word) {
-      prob_lo[i++] = std::stod(word);
-    }
-  }
-
-  // High coordinates of domain bounding box
-  std::getline(is, line);
-  {
-    std::istringstream lis(line);
-    int i = 0;
-    while (lis >> word) {
-      prob_hi[i++] = std::stod(word);
+      coords[i++] = std::stod(word);
     }
   }
 
@@ -997,83 +981,30 @@ PeleLM::ReadCheckPointFile()
 
   // Load the field data
   for (int lev = 0; lev <= finest_level; ++lev) {
+    for (const auto& [tag, mf] : checkpointFields(lev)) {
+      const std::string name = amrex::MultiFabFileFullPrefix(
+        lev, m_restart_chkfile, level_prefix, tag);
 #ifdef PELE_USE_PLASMA
-    if (!m_restart_nonEF) {
-      amrex::VisMF::Read(
-        m_leveldata_new[lev]->state,
-        amrex::MultiFabFileFullPrefix(
-          lev, m_restart_chkfile, level_prefix, "state"));
-    } else {
-      // The chk state is 2 component shorter since phiV and nE aren't in it
-      amrex::MultiFab stateTemp(grids[lev], dmap[lev], NVAR - 2, m_nGrowState);
-      amrex::VisMF::Read(
-        stateTemp, amrex::MultiFabFileFullPrefix(
-                     lev, m_restart_chkfile, level_prefix, "state"));
-      amrex::MultiFab::Copy(
-        m_leveldata_new[lev]->state, stateTemp, 0, 0, NVAR - 2, m_nGrowState);
-    }
-#else
-    amrex::VisMF::Read(
-      m_leveldata_new[lev]->state,
-      amrex::MultiFabFileFullPrefix(
-        lev, m_restart_chkfile, level_prefix, "state"));
-#endif
-
-    amrex::VisMF::Read(
-      m_leveldata_new[lev]->gp,
-      amrex::MultiFabFileFullPrefix(
-        lev, m_restart_chkfile, level_prefix, "gradp"));
-
-    amrex::VisMF::Read(
-      m_leveldata_new[lev]->press,
-      amrex::MultiFabFileFullPrefix(lev, m_restart_chkfile, level_prefix, "p"));
-    if (m_nAux > 0) {
-      amrex::VisMF::Read(
-        m_leveldata_new[lev]->auxiliaries,
-        amrex::MultiFabFileFullPrefix(
-          lev, m_restart_chkfile, level_prefix, "aux"));
-    }
-
-    if (m_incompressible == 0) {
-      if (m_has_divu != 0) {
-        amrex::VisMF::Read(
-          m_leveldata_new[lev]->divu,
-          amrex::MultiFabFileFullPrefix(
-            lev, m_restart_chkfile, level_prefix, "divU"));
-      }
-
-#ifdef PELE_USE_PLASMA
-      if (!m_restart_nonEF) {
-        if (m_do_react) {
-          amrex::VisMF::Read(
-            m_leveldatareact[lev]->I_R,
-            amrex::MultiFabFileFullPrefix(
-              lev, m_restart_chkfile, level_prefix, "I_R"));
-        }
-      } else {
-        // I_R for non-EF simulation is one component shorted, need to account
-        // for that.
-        if (m_do_react) {
-          amrex::MultiFab I_Rtemp(grids[lev], dmap[lev], NUM_SPECIES, 0);
-          amrex::VisMF::Read(
-            I_Rtemp, amrex::MultiFabFileFullPrefix(
-                       lev, m_restart_chkfile, level_prefix, "I_R"));
-          amrex::MultiFab::Copy(
-            m_leveldatareact[lev]->I_R, I_Rtemp, 0, 0, NUM_SPECIES, 0);
-        }
-
-        // Initialize nE & phiV
-        m_leveldata_new[lev]->state.setVal(0.0, NE, 2, m_nGrowState);
-      }
-#else
-      if (m_do_react != 0) {
-        amrex::VisMF::Read(
-          m_leveldatareact[lev]->I_R,
-          amrex::MultiFabFileFullPrefix(
-            lev, m_restart_chkfile, level_prefix, "I_R"));
+      // A non-EF checkpoint has no nE and phiV in the state and no I_R(nE):
+      // read the shorter data, then copy it in
+      if (m_restart_nonEF && (tag == "state" || tag == "I_R")) {
+        const bool isState = (tag == "state");
+        const int ncomp = isState ? NVAR - 2 : NUM_SPECIES;
+        const int ngrow = isState ? m_nGrowState : 0;
+        amrex::MultiFab shortMF(grids[lev], dmap[lev], ncomp, ngrow);
+        amrex::VisMF::Read(shortMF, name);
+        amrex::MultiFab::Copy(*mf, shortMF, 0, 0, ncomp, ngrow);
+        continue;
       }
 #endif
+      amrex::VisMF::Read(*mf, name);
     }
+#ifdef PELE_USE_PLASMA
+    if (m_restart_nonEF && m_incompressible == 0) {
+      // Initialize nE & phiV
+      m_leveldata_new[lev]->state.setVal(0.0, NE, 2, m_nGrowState);
+    }
+#endif
   }
 
   // Restore the recycling-plane running mean if both the checkpoint had it
@@ -1088,7 +1019,6 @@ PeleLM::ReadCheckPointFile()
     buildRecyclingPlaneStorage();
     for (int lev = 0; lev <= finest_level; ++lev) {
       if (
-        lev < static_cast<int>(chk_recycling_ba.size()) &&
         (!chk_recycling_ba[lev].empty()) &&
         lev < static_cast<int>(m_inlet_recycling.mean_src.size()) &&
         m_inlet_recycling.mean_src[lev]) {
@@ -1162,23 +1092,17 @@ PeleLM::initLevelDataFromPlt(int a_lev, const std::string& a_dataPltFile)
     }
   }
 
-  // Use PelePhysics PltFileManager – reuse the shared instance if it was
-  // pre-created in initData() to avoid re-reading the plotfile header for
-  // every AMR level, which can cause OOM for large plotfiles.
-  std::unique_ptr<pele::physics::pltfilemanager::PltFileManager> localPltData;
-  pele::physics::pltfilemanager::PltFileManager* pltDataPtr = nullptr;
-  if (m_pltDataManager) {
-    pltDataPtr = m_pltDataManager.get();
-  } else {
-    localPltData =
-      std::make_unique<pele::physics::pltfilemanager::PltFileManager>(
-        a_dataPltFile);
-    pltDataPtr = localPltData.get();
-  }
-  auto& pltData = *pltDataPtr;
+  // initData() creates one PelePhysics PltFileManager shared by all AMR
+  // levels, so the plotfile header is not re-read for every level (which
+  // can cause OOM for large plotfiles)
+  AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+    m_pltDataManager, "initLevelDataFromPlt: no plotfile manager for " +
+                        a_dataPltFile + "; initData() creates it");
+  auto& pltData = *m_pltDataManager;
   amrex::Vector<std::string> plt_vars = pltData.getVariableList();
 
-  // Track whether we coarsened the base level (for skip_plt_fill logic later)
+  // Whether the base level was coarsened from the plotfile (then already
+  // filled)
   bool did_coarsen_base = false;
 
   // Handle 2x coarsening with peleLM.initDataPlt_coarsen
@@ -1198,22 +1122,13 @@ PeleLM::initLevelDataFromPlt(int a_lev, const std::string& a_dataPltFile)
       }
     }
 
-    // Coarsen from plotfile level 0 to new coarser level 0
+    // Coarsen from plotfile level 0 to new coarser level 0. The shift is
+    // at most 1 (2x coarsening), so every finer level K reads plotfile
+    // level K-1.
     if (a_lev == 0 && m_level_shift > 0) {
       coarsenLevelFromPlt(
         a_lev, pltData, amrex::IntVect(AMREX_D_DECL(2, 2, 2)));
       did_coarsen_base = true;
-    }
-    // Intermediate levels don't have corresponding plotfile data - interpolate
-    else if (a_lev > 0 && a_lev < m_level_shift) {
-      if (m_verbose > 0) {
-        amrex::Print() << "  Level " << a_lev << ": Interpolating from level "
-                       << (a_lev - 1) << "\n";
-      }
-
-      auto* ldata_p = getLevelDataPtr(a_lev, AmrNewTime);
-      fillcoarsepatch_state(a_lev, m_cur_time, ldata_p->state, 0);
-      return;
     }
   }
 
@@ -1236,25 +1151,11 @@ PeleLM::initLevelDataFromPlt(int a_lev, const std::string& a_dataPltFile)
   // Find required data in pltfile
   const PltVarIndices ids = findPltVariables(plt_vars);
 #ifdef PELE_USE_PLASMA
-  int inE = -1, iPhiV = -1;
+  const int inE = pltVarIndex(plt_vars, "nE");
+  const int iPhiV = pltVarIndex(plt_vars, "phiV");
 #endif
 #ifdef PELE_USE_SOOT
-  int inSoot = -1;
-#endif
-#if defined(PELE_USE_PLASMA) || defined(PELE_USE_SOOT)
-  for (int i = 0; i < plt_vars.size(); ++i) {
-#ifdef PELE_USE_PLASMA
-    if (plt_vars[i] == "nE")
-      inE = i;
-    if (plt_vars[i] == "phiV")
-      iPhiV = i;
-#endif
-#ifdef PELE_USE_SOOT
-    if (plt_vars[i] == "soot_N") {
-      inSoot = i;
-    }
-#endif
-  }
+  const int inSoot = pltVarIndex(plt_vars, "soot_N");
 #endif
 #ifdef PELE_USE_PLASMA
   if (inE < 0 || iPhiV < 0) {
@@ -1271,25 +1172,17 @@ PeleLM::initLevelDataFromPlt(int a_lev, const std::string& a_dataPltFile)
   // Get level data
   auto* ldata_p = getLevelDataPtr(a_lev, AmrNewTime);
 
-  // Determine if we need to fill from plotfile
-  bool skip_plt_fill = false;
+  // Plotfile level to read from
   int source_plt_level = a_lev;
-
-  if (m_initDataPlt_coarsen && m_level_shift > 0) {
-    if (did_coarsen_base) {
-      skip_plt_fill = true;
-    } else {
-      source_plt_level =
-        a_lev - m_level_shift; // Read from corresponding plotfile level
-      if (m_verbose > 0) {
-        amrex::Print() << "  Level " << a_lev
-                       << ": Reading from plotfile level " << source_plt_level
-                       << "\n";
-      }
+  if (m_initDataPlt_coarsen && m_level_shift > 0 && !did_coarsen_base) {
+    source_plt_level = a_lev - m_level_shift;
+    if (m_verbose > 0) {
+      amrex::Print() << "  Level " << a_lev << ": Reading from plotfile level "
+                     << source_plt_level << "\n";
     }
   }
 
-  if (!skip_plt_fill) {
+  if (!did_coarsen_base) {
     fillStateFromPlt(
       pltData, plt_vars, ids, source_plt_level, geom[a_lev], ldata_p->state);
 
@@ -1302,9 +1195,8 @@ PeleLM::initLevelDataFromPlt(int a_lev, const std::string& a_dataPltFile)
         [state_ma] AMREX_GPU_DEVICE(
           int box_no, int i, int j, int k, int n) noexcept {
           amrex::Array4<amrex::Real> vel(state_ma[box_no], VELX);
-          vel(i, j, k, n) *= 0.01;
+          vel(i, j, k, n) = c2m::U(vel(i, j, k, n));
         });
-      amrex::Gpu::streamSynchronize();
     }
 
 #ifdef PELE_USE_PLASMA
@@ -1344,7 +1236,6 @@ PeleLM::initLevelDataFromPlt(int a_lev, const std::string& a_dataPltFile)
               }
               soot(i, j, k, NUMSOOTVAR - 1) *= 1.E6;
             });
-          amrex::Gpu::streamSynchronize();
         }
       } else {
         SootData* const sd = soot_model->getSootData();
@@ -1361,7 +1252,7 @@ PeleLM::initLevelDataFromPlt(int a_lev, const std::string& a_dataPltFile)
       }
     }
 #endif
-  } // end if (!skip_plt_fill)
+  } // end if (!did_coarsen_base)
 
   // Pressure and pressure gradients to zero
   ldata_p->press.setVal(0.0);
@@ -1583,9 +1474,10 @@ PeleLM::coarsenLevelFromPlt(
   }
 
   // Create temporary fine MultiFab matching plotfile level 0 resolution
+  // Same boxes refined, so the level's DistributionMapping keeps the
+  // average-down below local
   amrex::BoxArray fineBA = amrex::refine(grids[a_lev], coarsen_ratio);
-  amrex::DistributionMapping fineDM(fineBA);
-  amrex::MultiFab fineData(fineBA, fineDM, NVAR, 0);
+  amrex::MultiFab fineData(fineBA, dmap[a_lev], NVAR, 0);
 
   // Initialize all components to avoid propagating garbage in uninitialized
   // fields (e.g., RHORT, plasma/soot fields) when averaging down
@@ -1619,21 +1511,12 @@ PeleLM::addLevelVelocityDataFromPlt(int a_lev, const std::string& a_velPltFile)
                    << " from pltfile " << a_velPltFile << "\n";
   }
 
-  // Use PelePhysics PltFileManager – reuse the shared instance if it was
-  // pre-created in initData() to avoid re-reading the plotfile header for
-  // every AMR level.
-  std::unique_ptr<pele::physics::pltfilemanager::PltFileManager>
-    localVelPltData;
-  pele::physics::pltfilemanager::PltFileManager* pltDataPtr = nullptr;
-  if (m_velPltDataManager) {
-    pltDataPtr = m_velPltDataManager.get();
-  } else {
-    localVelPltData =
-      std::make_unique<pele::physics::pltfilemanager::PltFileManager>(
-        a_velPltFile);
-    pltDataPtr = localVelPltData.get();
-  }
-  auto& pltData = *pltDataPtr;
+  // initData() creates one PltFileManager shared by all AMR levels
+  AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+    m_velPltDataManager, "addLevelVelocityDataFromPlt: no plotfile manager "
+                         "for " +
+                           a_velPltFile + "; initData() creates it");
+  auto& pltData = *m_velPltDataManager;
   amrex::Vector<std::string> plt_vars = pltData.getVariableList();
 
   // do some compatibility checks
@@ -1645,12 +1528,7 @@ PeleLM::addLevelVelocityDataFromPlt(int a_lev, const std::string& a_velPltFile)
   }
 
   // find velocity in the plotfile
-  int idXvel = -1;
-  for (int i = 0; i < plt_vars.size(); ++i) {
-    if (plt_vars[i] == "x_velocity") {
-      idXvel = i;
-    }
-  }
+  const int idXvel = pltVarIndex(plt_vars, "x_velocity");
   if (idXvel == -1) {
     amrex::Abort(
       "Could not find velocity fields in supplied velocity_plotfile");
@@ -1659,15 +1537,13 @@ PeleLM::addLevelVelocityDataFromPlt(int a_lev, const std::string& a_velPltFile)
   // Get level data
   auto* ldata_p = getLevelDataPtr(a_lev, AmrNewTime);
 
-  // load data from plot file
-  // On the state's DistributionMapping: MultiFab::Add below pairs the two
-  // MultiFabs box by box through the state's MFIter
-  int nGrow0(0), sComp0(0);
+  // load data from plot file, on the state's layout since it is added to
+  // the state box by box
   amrex::MultiFab tmpVel(
     ldata_p->state.boxArray(), ldata_p->state.DistributionMap(), AMREX_SPACEDIM,
-    nGrow0);
+    0);
   pltData.fillPatchFromPlt(
-    a_lev, geom[a_lev], idXvel, sComp0, AMREX_SPACEDIM, tmpVel);
+    a_lev, geom[a_lev], idXvel, 0, AMREX_SPACEDIM, tmpVel);
   // scale the velocity
   tmpVel.mult(m_velocity_plotfile_scale);
   amrex::MultiFab::Add(ldata_p->state, tmpVel, 0, VELX, AMREX_SPACEDIM, 0);
@@ -2001,7 +1877,7 @@ PeleLM::WriteMLMGResidual(
       var_names.push_back("mlmg_residual_" + spec_names[n]);
     }
   } else if (is_tensor_diff) {
-    // Get velocity component indices
+    // One component per velocity direction
     for (int n = 0; n < ncomp_residual; ++n) {
       var_names.push_back("mlmg_residual_" + std::to_string(n));
     }
@@ -2077,9 +1953,8 @@ PeleLM::WriteMLMGResidual(
 
   // Create plotfile name: <plot_dir>/pltMLMGResidual_<solver>_<step>_<iters>
   std::string residual_name = "pltMLMGResidual_" + a_solver_name + "_";
-  int ioDigits = m_ioDigits;
   std::string plotfile_name =
-    plot_dir + amrex::Concatenate(residual_name, a_step, ioDigits);
+    plot_dir + amrex::Concatenate(residual_name, a_step, m_ioDigits);
   plotfile_name += "_" + amrex::Concatenate("", num_iters, 2);
 
   amrex::Vector<int> level_steps(nlevs, a_step);
