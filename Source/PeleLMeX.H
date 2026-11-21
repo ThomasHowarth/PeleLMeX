@@ -47,6 +47,7 @@
 #include <AMReX_BC_TYPES.H>
 #include <AMReX_ErrorList.H>
 #include <AMReX_VisMF.H>
+#include <AMReX_String.H>
 
 #ifdef PELE_USE_RADIATION
 #include <PeleLMRad.H>
@@ -1436,19 +1437,10 @@ public:
     int& key,
     int keyIndex = -1)
   {
+    // The keyIndex'th value (the first by default), "default" when absent
     std::string userkey = "default";
-    if (keyIndex < 0) {
-      a_pp.query(a_search_key, userkey);
-    } else {
-      int search_key_size = a_pp.countval(a_search_key);
-      if (search_key_size > 0) {
-        AMREX_ASSERT(keyIndex < search_key_size);
-        amrex::Vector<std::string> userkeyVec(search_key_size);
-        a_pp.getarr(a_search_key, userkeyVec, keyIndex, 1);
-        userkey = userkeyVec[keyIndex];
-      }
-    }
-    std::transform(userkey.begin(), userkey.end(), userkey.begin(), ::tolower);
+    a_pp.query(a_search_key, userkey, amrex::max(keyIndex, 0));
+    userkey = amrex::toLower(userkey);
     if (
       std::find(
         std::begin(keyT.searchKey), std::end(keyT.searchKey), a_search_key) ==
