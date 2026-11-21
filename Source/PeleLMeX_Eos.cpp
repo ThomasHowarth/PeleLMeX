@@ -321,9 +321,7 @@ PeleLM::adjustPandDivU(
 
   // Net outward volume flux through the domain boundary, per unit volume,
   // from the predicted face velocity (inflow faces carry their boundary
-  // values).  This has to be the flux the MAC projection will see: it was
-  // previously taken from m_domainUmacFlux, which is accumulated after the
-  // projection (so the first SDC iteration saw zero) with the opposite sign.
+  // values).  This has to be the flux the MAC projection will see.
   // Under mesh mapping the projector works with (J/fac).u on the uniform
   // grid, so the flux is taken from that scaled velocity.
   amrex::Real umacFluxBalance = 0.0;

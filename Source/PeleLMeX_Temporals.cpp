@@ -217,24 +217,6 @@ PeleLM::addMassFluxes(
 }
 
 void
-PeleLM::addUmacFluxes(
-  const std::unique_ptr<AdvanceAdvData>& advData, const amrex::Geometry& a_geom)
-{
-  // Just use level 0 since we are calling after averaging down
-  constexpr int lev = 0;
-
-  for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-    const auto sums = domainFaceSums(
-      advData->umac[lev][idim], a_geom, idim,
-      [] AMREX_GPU_DEVICE(
-        amrex::Array4<const amrex::Real> const& flux, int i, int j, int k,
-        amrex::Real area) noexcept { return flux(i, j, k) * area; });
-    m_domainUmacFlux[2 * idim] += sums[0];
-    m_domainUmacFlux[2 * idim + 1] -= sums[1]; // Outflow, negate flux
-  }
-}
-
-void
 PeleLM::rhoHBalance()
 {
   // Compute the enthalpy balance on the computational domain (rho*h)

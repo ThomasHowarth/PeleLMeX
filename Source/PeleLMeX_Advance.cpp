@@ -93,14 +93,6 @@ PeleLM::Advance(const int is_initIter)
   // initialize temporals
   initTemporals();
 
-  // Reset velocity flux on boundary faces if doing closed chamber
-  if (m_closed_chamber != 0) {
-    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-      m_domainUmacFlux[2 * idim] = 0.0;
-      m_domainUmacFlux[2 * idim + 1] = 0.0;
-    }
-  }
-
   // Reset fluctuation warnings each time dt could change
   m_warned_clipped_recycle_avg_window_this_step = false;
 
