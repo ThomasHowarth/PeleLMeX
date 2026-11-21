@@ -1431,35 +1431,28 @@ DiffusionOp::computeGradient(
     m_pelelm->getDiffusionLinOpBC(amrex::Orientation::low, a_bcrec),
     m_pelelm->getDiffusionLinOpBC(amrex::Orientation::high, a_bcrec));
 
-  // Duplicate phi since it is modified by the LinOp
-  // and setup level BCs
+  // Duplicate phi since it is modified by the LinOp, and set up level BCs
+  // (setLevelBC copies the boundary values, so an alias is enough there)
   amrex::Vector<amrex::MultiFab> phi;
   phi.reserve(finest_level + 1);
-  amrex::Vector<amrex::MultiFab> boundary;
-  boundary.reserve(finest_level + 1);
   amrex::Vector<amrex::MultiFab> laps;
   for (int lev = 0; lev <= finest_level; ++lev) {
     phi.emplace_back(
       a_phi[lev]->boxArray(), a_phi[lev]->DistributionMap(), 1, 1,
       amrex::MFInfo(), a_phi[lev]->Factory());
-    boundary.emplace_back(
-      a_phi[lev]->boxArray(), a_phi[lev]->DistributionMap(), 1, 1,
-      amrex::MFInfo(), a_phi[lev]->Factory());
-
     amrex::MultiFab::Copy(phi[lev], *a_phi[lev], comp, 0, 1, 1);
 
-    if (have_boundary != 0) {
-      amrex::MultiFab::Copy(boundary[lev], *a_boundary[lev], 0, 0, 1, 1);
-    } else {
-      amrex::MultiFab::Copy(boundary[lev], *a_phi[lev], comp, 0, 1, 1);
-    }
-
-    m_gradient_op->setLevelBC(lev, &boundary[lev]);
+    const amrex::MultiFab boundary =
+      (have_boundary != 0)
+        ? amrex::MultiFab(*a_boundary[lev], amrex::make_alias, 0, 1)
+        : amrex::MultiFab(*a_phi[lev], amrex::make_alias, comp, 1);
+    m_gradient_op->setLevelBC(lev, &boundary);
     if (need_laplacian != 0) {
       laps.emplace_back(*a_laps[lev], amrex::make_alias, 0, 1);
     } else {
+      // Discarded: no ghost cells needed
       laps.emplace_back(
-        a_phi[lev]->boxArray(), a_phi[lev]->DistributionMap(), 1, 1,
+        a_phi[lev]->boxArray(), a_phi[lev]->DistributionMap(), 1, 0,
         amrex::MFInfo(), a_phi[lev]->Factory());
     }
   }
@@ -1736,7 +1729,8 @@ DiffusionTensorOp::compute_divtau(
     divtau_tmp.emplace_back(
       a_divtau[lev]->boxArray(), a_divtau[lev]->DistributionMap(),
       AMREX_SPACEDIM, 2, amrex::MFInfo(), a_divtau[lev]->Factory());
-    divtau_tmp[lev].setVal(0.0);
+    // apply fills the valid cells; the redistribution reads the ghost cells
+    divtau_tmp[lev].setBndry(0.0);
   }
 
   m_apply_op->setScalars(0.0, -scale);
