@@ -11,6 +11,26 @@
 #include <AMReX_EBFArrayBox.H>
 #endif
 
+namespace {
+// Linear-operator BC type for a (non-periodic) amrex::BCType
+amrex::LinOpBCType
+toLinOpBC(const int amrexbc)
+{
+  if (amrexbc == amrex::BCType::ext_dir) {
+    return amrex::LinOpBCType::Dirichlet;
+  }
+  if (
+    amrexbc == amrex::BCType::foextrap || amrexbc == amrex::BCType::hoextrap ||
+    amrexbc == amrex::BCType::reflect_even) {
+    return amrex::LinOpBCType::Neumann;
+  }
+  if (amrexbc == amrex::BCType::reflect_odd) {
+    return amrex::LinOpBCType::reflect_odd;
+  }
+  return amrex::LinOpBCType::bogus;
+}
+} // namespace
+
 DiffusionOp*
 PeleLM::getDiffusionOp()
 {
@@ -259,47 +279,6 @@ PeleLM::computeDifferentialDiffusionTerms(
     }
   }
 #endif
-
-  // Under mesh mapping the flux divergence was computed in Xi-space on
-  // Xi-space fluxes (bcoeff carries the J/fac^2 factor).  That produces
-  // J . (physical divergence).  Divide each divergence term by J so the
-  // returned Dn / Dnp1 / Dwbar / DT are in physical-space units.
-  if (m_mesh_mapping) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto unscale = [&](amrex::MultiFab& a_mf) {
-        m_mesh_map->divide_by_detJ_cc(lev, a_mf, 0, a_mf.nComp());
-      };
-      unscale((a_time == AmrOldTime) ? diffData->Dn[lev] : diffData->Dnp1[lev]);
-      if (m_nAux > 0) {
-        unscale(
-          (a_time == AmrOldTime) ? diffData->Dn_aux[lev]
-                                 : diffData->Dnp1_aux[lev]);
-      }
-      if ((is_init == 0) && (m_use_wbar != 0)) {
-        unscale(diffData->Dwbar[lev]);
-      }
-      if ((is_init == 0) && (m_use_soret != 0)) {
-        unscale(diffData->DT[lev]);
-      }
-    }
-  }
-}
-
-void
-PeleLM::unscaleMappedDivergence(
-  const amrex::Vector<amrex::MultiFab*>& a_div,
-  const int a_comp,
-  const int a_ncomp)
-{
-  // Under mesh mapping a flux divergence formed in Xi-space from Xi-space
-  // fluxes (bcoeff carries J/fac^2) is J . (physical divergence); divide
-  // by J to return to physical units.  No-op without mapping.
-  if (!m_mesh_mapping) {
-    return;
-  }
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    m_mesh_map->divide_by_detJ_cc(lev, *a_div[lev], a_comp, a_ncomp);
-  }
 }
 
 void
@@ -1036,23 +1015,18 @@ PeleLM::addSoretTerm(
 
           // Soret flux is : - rho * D_m * chi_m * \nabla T / T
           // with beta_m = rho * D_m * chi_m below
+          // (-b)*g/T == -(b*g/T) exactly, so the stored Soret flux is -v
           amrex::ParallelFor(
             ebx, NUM_SPECIES,
-            [gradT_ar, beta_ar, T,
-             spFlux_ar] AMREX_GPU_DEVICE(int i, int j, int k, int n) noexcept {
-              spFlux_ar(i, j, k, n) -=
+            [gradT_ar, beta_ar, T, spFlux_ar, spsoretFlux_ar,
+             need_soret_fluxes] AMREX_GPU_DEVICE(int i, int j, int k, int n) noexcept {
+              const amrex::Real v =
                 beta_ar(i, j, k, n) * gradT_ar(i, j, k) / T(i, j, k);
+              spFlux_ar(i, j, k, n) -= v;
+              if (need_soret_fluxes != 0) {
+                spsoretFlux_ar(i, j, k, n) = -v;
+              }
             });
-
-          if (need_soret_fluxes != 0) {
-            amrex::ParallelFor(
-              ebx, NUM_SPECIES,
-              [gradT_ar, beta_ar, T, spsoretFlux_ar] AMREX_GPU_DEVICE(
-                int i, int j, int k, int n) noexcept {
-                spsoretFlux_ar(i, j, k, n) =
-                  -beta_ar(i, j, k, n) * gradT_ar(i, j, k) / T(i, j, k);
-              });
-          }
         }
       }
     }
@@ -1146,11 +1120,12 @@ PeleLM::computeSpeciesEnthalpyFlux(
         amrex::ParallelFor(
           ebox, [enthflux_ar, spflux_ar,
                  enth_ar] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-            enthflux_ar(i, j, k) = 0.0;
+            // Accumulate in a register: enthflux aliases spflux's MultiFab
+            amrex::Real sum = 0.0;
             for (int n = 0; n < NUM_SPECIES; ++n) {
-              enthflux_ar(i, j, k) +=
-                spflux_ar(i, j, k, n) * enth_ar(i, j, k, n);
+              sum += spflux_ar(i, j, k, n) * enth_ar(i, j, k, n);
             }
+            enthflux_ar(i, j, k) = sum;
           });
       }
     }
@@ -1353,55 +1328,20 @@ PeleLM::differentialDiffusionUpdate(
       bcRecAux, m_nAux, 0, m_dt, {}, "Aux");
   }
 
-  // Add lagged Wbar term
+  // Add lagged Wbar and Soret terms
   // Computed in computeDifferentialDiffusionTerms at t^{n} if first SDC
   // iteration, t^{np1,k} otherwise
-  if (m_use_wbar != 0) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-
-      auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
-
-#ifdef AMREX_USE_OMP
-#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
-#endif
-      for (amrex::MFIter mfi(ldata_p->state, amrex::TilingIfNotGPU());
-           mfi.isValid(); ++mfi) {
-        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-          const amrex::Box& ebx = mfi.nodaltilebox(idim);
-          auto const& flux_spec = fluxes[lev][idim].array(mfi);
-          auto const& flux_wbar =
-            diffData->wbar_fluxes[lev][idim].const_array(mfi);
-          amrex::ParallelFor(
-            ebx, NUM_SPECIES,
-            [flux_spec,
-             flux_wbar] AMREX_GPU_DEVICE(int i, int j, int k, int n) noexcept {
-              flux_spec(i, j, k, n) += flux_wbar(i, j, k, n);
-            });
-        }
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+      if (m_use_wbar != 0) {
+        amrex::MultiFab::Add(
+          fluxes[lev][idim], diffData->wbar_fluxes[lev][idim], 0, 0,
+          NUM_SPECIES, 0);
       }
-    }
-  }
-  if (m_use_soret != 0) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
-
-#ifdef AMREX_USE_OMP
-#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
-#endif
-      for (amrex::MFIter mfi(ldata_p->state, amrex::TilingIfNotGPU());
-           mfi.isValid(); ++mfi) {
-        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-          const amrex::Box& ebx = mfi.nodaltilebox(idim);
-          auto const& flux_spec = fluxes[lev][idim].array(mfi);
-          auto const& flux_soret =
-            diffData->soret_fluxes[lev][idim].const_array(mfi);
-          amrex::ParallelFor(
-            ebx, NUM_SPECIES,
-            [flux_spec,
-             flux_soret] AMREX_GPU_DEVICE(int i, int j, int k, int n) noexcept {
-              flux_spec(i, j, k, n) += flux_soret(i, j, k, n);
-            });
-        }
+      if (m_use_soret != 0) {
+        amrex::MultiFab::Add(
+          fluxes[lev][idim], diffData->soret_fluxes[lev][idim], 0, 0,
+          NUM_SPECIES, 0);
       }
     }
   }
@@ -1420,7 +1360,6 @@ PeleLM::differentialDiffusionUpdate(
   fluxDivergence(
     GetVecOfPtrs(diffData->Dhat), 0, GetVecOfArrOfPtrs(fluxes), 0, NUM_SPECIES,
     1, -1.0);
-  unscaleMappedDivergence(GetVecOfPtrs(diffData->Dhat), 0, NUM_SPECIES);
 
   // Repeat for auxiliaries
   if (m_nAux > 0) {
@@ -1429,13 +1368,14 @@ PeleLM::differentialDiffusionUpdate(
     fluxDivergence(
       GetVecOfPtrs(diffData->Dhat_aux), 0, GetVecOfArrOfPtrs(fluxes_aux), 0,
       m_nAux, 1, -1.0);
-    unscaleMappedDivergence(GetVecOfPtrs(diffData->Dhat_aux), 0, m_nAux);
   }
 
   // Update species
   // Remove the Wbar and Soret terms because we included them both the dhat and
   // the forcing.
-  if (m_use_wbar != 0 && m_use_soret != 0) {
+  {
+    const bool use_wbar = (m_use_wbar != 0);
+    const bool use_soret = (m_use_soret != 0);
     for (int lev = 0; lev <= finest_level; ++lev) {
 
       auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
@@ -1443,76 +1383,25 @@ PeleLM::differentialDiffusionUpdate(
       auto const& state_ma = ldata_p->state.arrays();
       auto const& dhat_ma = diffData->Dhat[lev].const_arrays();
       auto const& force_ma = advData->Forcing[lev].const_arrays();
-      auto const& dwbar_ma = diffData->Dwbar[lev].const_arrays();
-      auto const& dT_ma = diffData->DT[lev].const_arrays();
+      // Dhat stands in for the terms that are off
+      auto const& dwbar_ma =
+        use_wbar ? diffData->Dwbar[lev].const_arrays() : dhat_ma;
+      auto const& dT_ma =
+        use_soret ? diffData->DT[lev].const_arrays() : dhat_ma;
 
       amrex::ParallelFor(
         ldata_p->state, amrex::IntVect(0), NUM_SPECIES,
-        [state_ma, dhat_ma, force_ma, dwbar_ma, dT_ma,
+        [state_ma, dhat_ma, force_ma, dwbar_ma, dT_ma, use_wbar, use_soret,
          dt] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
           amrex::Array4<amrex::Real> rhoY(state_ma[box_no], FIRSTSPEC);
-          rhoY(i, j, k, n) =
-            force_ma[box_no](i, j, k, n) +
-            dt * (dhat_ma[box_no](i, j, k, n) - dwbar_ma[box_no](i, j, k, n) -
-                  dT_ma[box_no](i, j, k, n));
-        });
-    }
-  } else if (m_use_wbar != 0) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-
-      auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
-
-      auto const& state_ma = ldata_p->state.arrays();
-      auto const& dhat_ma = diffData->Dhat[lev].const_arrays();
-      auto const& force_ma = advData->Forcing[lev].const_arrays();
-
-      auto const& dwbar_ma = diffData->Dwbar[lev].const_arrays();
-      amrex::ParallelFor(
-        ldata_p->state, amrex::IntVect(0), NUM_SPECIES,
-        [state_ma, dhat_ma, force_ma, dwbar_ma,
-         dt] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
-          amrex::Array4<amrex::Real> rhoY(state_ma[box_no], FIRSTSPEC);
-          rhoY(i, j, k, n) =
-            force_ma[box_no](i, j, k, n) +
-            dt * (dhat_ma[box_no](i, j, k, n) - dwbar_ma[box_no](i, j, k, n));
-        });
-    }
-  } else if (m_use_soret != 0) {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-
-      auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
-
-      auto const& state_ma = ldata_p->state.arrays();
-      auto const& dhat_ma = diffData->Dhat[lev].const_arrays();
-      auto const& force_ma = advData->Forcing[lev].const_arrays();
-
-      auto const& dT_ma = diffData->DT[lev].const_arrays();
-      amrex::ParallelFor(
-        ldata_p->state, amrex::IntVect(0), NUM_SPECIES,
-        [state_ma, dhat_ma, force_ma, dT_ma,
-         dt] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
-          amrex::Array4<amrex::Real> rhoY(state_ma[box_no], FIRSTSPEC);
-          rhoY(i, j, k, n) =
-            force_ma[box_no](i, j, k, n) +
-            dt * (dhat_ma[box_no](i, j, k, n) - dT_ma[box_no](i, j, k, n));
-        });
-    }
-  } else {
-    for (int lev = 0; lev <= finest_level; ++lev) {
-
-      auto* ldata_p = getLevelDataPtr(lev, AmrNewTime);
-
-      auto const& state_ma = ldata_p->state.arrays();
-      auto const& dhat_ma = diffData->Dhat[lev].const_arrays();
-      auto const& force_ma = advData->Forcing[lev].const_arrays();
-
-      amrex::ParallelFor(
-        ldata_p->state, amrex::IntVect(0), NUM_SPECIES,
-        [state_ma, dhat_ma, force_ma,
-         dt] AMREX_GPU_DEVICE(int box_no, int i, int j, int k, int n) noexcept {
-          amrex::Array4<amrex::Real> rhoY(state_ma[box_no], FIRSTSPEC);
-          rhoY(i, j, k, n) =
-            force_ma[box_no](i, j, k, n) + dt * dhat_ma[box_no](i, j, k, n);
+          amrex::Real d = dhat_ma[box_no](i, j, k, n);
+          if (use_wbar) {
+            d -= dwbar_ma[box_no](i, j, k, n);
+          }
+          if (use_soret) {
+            d -= dT_ma[box_no](i, j, k, n);
+          }
+          rhoY(i, j, k, n) = force_ma[box_no](i, j, k, n) + dt * d;
         });
     }
   }
@@ -1603,7 +1492,6 @@ PeleLM::differentialDiffusionUpdate(
         GetVecOfPtrs(diffData->Dhat), NUM_SPECIES, GetVecOfArrOfPtrs(fluxes),
         NUM_SPECIES, 2, 1, -1.0);
     }
-    unscaleMappedDivergence(GetVecOfPtrs(diffData->Dhat), NUM_SPECIES, 2);
 
     //------------------------------------------------------------------------
     // Recompute RhoH (before deltaT iters: we've updated species at the new
@@ -1891,7 +1779,6 @@ PeleLM::deltaTIter_update(
       GetVecOfPtrs(diffData->Dhat), NUM_SPECIES, a_fluxes, NUM_SPECIES, 2, 1,
       -1.0);
   }
-  unscaleMappedDivergence(GetVecOfPtrs(diffData->Dhat), NUM_SPECIES, 2);
 
   //------------------------------------------------------------------------
   // Recompute RhoH
@@ -2047,31 +1934,16 @@ PeleLM::getDiffusionLinOpBC(
     } else {
       auto amrexbc =
         (a_side == amrex::Orientation::low) ? a_bc.lo(idim) : a_bc.hi(idim);
-      if (amrexbc == amrex::BCType::ext_dir) {
-        r[idim] = amrex::LinOpBCType::Dirichlet;
-      } else if (
-        amrexbc == amrex::BCType::foextrap ||
-        amrexbc == amrex::BCType::hoextrap ||
-        amrexbc == amrex::BCType::reflect_even) {
-        r[idim] = amrex::LinOpBCType::Neumann;
+      r[idim] = toLinOpBC(amrexbc);
+      // Soret at isothermal walls: should just catch density/species/forcing
+      if (m_use_soret != 0 && amrexbc == amrex::BCType::foextrap) {
+        auto phys_bc = (a_side == amrex::Orientation::low) ? m_phys_bc.lo(idim)
+                                                           : m_phys_bc.hi(idim);
         if (
-          m_use_soret != 0 &&
-          amrexbc == amrex::BCType::foextrap) { // should just catch
-                                                // density/species/forcing for
-                                                // isothermal walls
-          auto phys_bc = (a_side == amrex::Orientation::low)
-                           ? m_phys_bc.lo(idim)
-                           : m_phys_bc.hi(idim);
-          if (
-            phys_bc == BoundaryCondition::BCNoSlipWallIsotherm ||
-            phys_bc == BoundaryCondition::BCSlipWallIsotherm) {
-            r[idim] = amrex::LinOpBCType::inhomogNeumann;
-          }
+          phys_bc == BoundaryCondition::BCNoSlipWallIsotherm ||
+          phys_bc == BoundaryCondition::BCSlipWallIsotherm) {
+          r[idim] = amrex::LinOpBCType::inhomogNeumann;
         }
-      } else if (amrexbc == amrex::BCType::reflect_odd) {
-        r[idim] = amrex::LinOpBCType::reflect_odd;
-      } else {
-        r[idim] = amrex::LinOpBCType::bogus;
       }
     }
   }
@@ -2087,27 +1959,13 @@ PeleLM::getDiffusionTensorOpBC(
   amrex::Vector<amrex::Array<amrex::LinOpBCType, AMREX_SPACEDIM>> r(
     AMREX_SPACEDIM);
   for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-    if (Geom(0).isPeriodic(idim)) {
-      AMREX_D_TERM(
-        r[0][idim] = amrex::LinOpBCType::Periodic;
-        , r[1][idim] = amrex::LinOpBCType::Periodic;
-        , r[2][idim] = amrex::LinOpBCType::Periodic;);
-    } else {
-      for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
-        auto amrexbc = (a_side == amrex::Orientation::low) ? a_bc[dir].lo(idim)
-                                                           : a_bc[dir].hi(idim);
-        if (amrexbc == amrex::BCType::ext_dir) {
-          r[dir][idim] = amrex::LinOpBCType::Dirichlet;
-        } else if (
-          amrexbc == amrex::BCType::foextrap ||
-          amrexbc == amrex::BCType::hoextrap ||
-          amrexbc == amrex::BCType::reflect_even) {
-          r[dir][idim] = amrex::LinOpBCType::Neumann;
-        } else if (amrexbc == amrex::BCType::reflect_odd) {
-          r[dir][idim] = amrex::LinOpBCType::reflect_odd;
-        } else {
-          r[dir][idim] = amrex::LinOpBCType::bogus;
-        }
+    for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
+      if (Geom(0).isPeriodic(idim)) {
+        r[dir][idim] = amrex::LinOpBCType::Periodic;
+      } else {
+        r[dir][idim] = toLinOpBC(
+          (a_side == amrex::Orientation::low) ? a_bc[dir].lo(idim)
+                                              : a_bc[dir].hi(idim));
       }
     }
   }

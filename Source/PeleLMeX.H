@@ -746,11 +746,6 @@ public:
     const std::unique_ptr<AdvanceDiffData>& diffData,
     amrex::Real& a_deltaT_norm);
 
-  //! Under mesh mapping, divide a Xi-space flux divergence by J so that it
-  //! is in physical units (no-op without mapping).
-  void unscaleMappedDivergence(
-    const amrex::Vector<amrex::MultiFab*>& a_div, int a_comp, int a_ncomp);
-
   //! Under mesh mapping, scale face diffusivities by J/fac_i^2 so that a
   //! hand-assembled beta . grad_Xi flux is a Xi-space flux (no-op without
   //! mapping).

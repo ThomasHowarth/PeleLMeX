@@ -123,6 +123,12 @@ PeleLM::fluxDivergence(
       lev, *a_divergence[lev], div_comp, a_fluxes[lev], flux_comp,
       a_EBfluxes.empty() ? nullptr : a_EBfluxes[lev], ebflux_comp, ncomp,
       intensiveFluxes, scale);
+    // Under mesh mapping the divergence of Xi-space fluxes (bcoeff carries
+    // J/fac^2) is J . (physical divergence): divide by J to return physical
+    // units
+    if (m_mesh_mapping) {
+      m_mesh_map->divide_by_detJ_cc(lev, *a_divergence[lev], div_comp, ncomp);
+    }
   }
 }
 
