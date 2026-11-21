@@ -1740,7 +1740,7 @@ public:
     const int div_comp,
     amrex::MultiFab& a_AofS,
     const int aofs_comp,
-    amrex::MultiFab& a_state,
+    const amrex::MultiFab& a_state,
     const int state_comp,
     const int ncomp,
     const amrex::BCRec* d_bc,
@@ -1758,6 +1758,21 @@ public:
     const int ncomp,
     const amrex::BCRec* d_bc,
     const amrex::Geometry& a_geom) const;
+
+  // Shared body of redistributeAofS/redistributeDiff
+  void redistribute(
+    const int a_lev,
+    const amrex::Real a_dt,
+    amrex::MultiFab& a_tmpDiv,
+    const int div_comp,
+    amrex::MultiFab& a_out,
+    const int out_comp,
+    const amrex::MultiFab& a_state,
+    const int state_comp,
+    const int ncomp,
+    const amrex::BCRec* d_bc,
+    const amrex::Geometry& a_geom,
+    const std::string& a_redist_type) const;
 
   void getCoveredIMask(const int a_lev, amrex::iMultiFab& a_imask) const;
 
