@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <limits>
 #include <string>
 #include <AMReX_Algorithm.H>
@@ -604,11 +605,7 @@ PeleLM::readParameters()
       ppa.query("Schmidt", m_aux_Schmidt[n]);
       int diffuse = 1;
       ppa.query("diffuse", diffuse);
-      if (diffuse == 0) {
-        m_DiffTypeAux[n] = 0;
-      } else {
-        m_DiffTypeAux[n] = 1;
-      }
+      m_DiffTypeAux[n] = (diffuse == 0) ? 0 : 1;
     }
   }
 
@@ -628,7 +625,7 @@ PeleLM::readParameters()
       AMREX_ALWAYS_ASSERT(AMREX_SPACEDIM == 3); // Sigma only available in 3D
     } else {
       amrex::Abort(
-        "LES model must be None, Smagorinsky, WALE or Sigma. Invalid choie: " +
+        "LES model must be None, Smagorinsky, WALE or Sigma. Invalid choice: " +
         m_les_model);
     }
     m_do_les = true;
@@ -759,7 +756,6 @@ PeleLM::readParameters()
   pp.query("typical_values_reset_int", m_resetTypValInt);
   pp.query("typical_values_Ymin", m_typicalYvalMin);
   if (m_do_react != 0) {
-    m_plotChemDiag = 0;
     m_plotHeatRelease = 1;
     pp.query("plot_chemDiagnostics", m_plotChemDiag);
     pp.query("plot_heatRelease", m_plotHeatRelease);
@@ -962,13 +958,8 @@ PeleLM::readParameters()
   // Evaluate mode variables
   // -----------------------------------------
   if (runMode() == "evaluate") {
-    m_evaluatePlotVarCount = (pp.countval("evaluate_vars"));
-    if (m_evaluatePlotVarCount != 0) {
-      m_evaluatePlotVars.resize(m_evaluatePlotVarCount);
-      for (int ivar = 0; ivar < m_evaluatePlotVarCount; ++ivar) {
-        pp.get("evaluate_vars", m_evaluatePlotVars[ivar], ivar);
-      }
-    }
+    pp.queryarr("evaluate_vars", m_evaluatePlotVars);
+    m_evaluatePlotVarCount = static_cast<int>(m_evaluatePlotVars.size());
   }
 
 #ifdef PELE_USE_PLASMA
@@ -1015,7 +1006,6 @@ PeleLM::readParameters()
   }
 #endif
 #ifdef PELE_USE_SOOT
-  do_soot_solve = true;
   pp.query("do_soot_solve", do_soot_solve);
   if ((m_verbose != 0) && do_soot_solve) {
     amrex::Print() << "Simulation performed with soot modeling \n";
@@ -1023,7 +1013,6 @@ PeleLM::readParameters()
   soot_model->readSootParams();
 #endif
 #ifdef PELE_USE_RADIATION
-  do_rad_solve = false;
   pp.query("do_rad_solve", do_rad_solve);
   if (do_rad_solve && m_mesh_mapping) {
     amrex::Abort(
@@ -1362,17 +1351,10 @@ PeleLM::readIOParameters()
     }
   }
   pp.query("plot_grad_p", m_plot_grad_p);
-  m_derivePlotVarCount = (pp.countval("derive_plot_vars"));
-  if (m_derivePlotVarCount != 0) {
-    m_derivePlotVars.resize(m_derivePlotVarCount);
-    for (int ivar = 0; ivar < m_derivePlotVarCount; ++ivar) {
-      pp.get("derive_plot_vars", m_derivePlotVars[ivar], ivar);
-    }
-  }
+  pp.queryarr("derive_plot_vars", m_derivePlotVars);
+  m_derivePlotVarCount = static_cast<int>(m_derivePlotVars.size());
   pp.query("plot_zeroEBcovered", m_plot_zeroEBcovered);
   pp.query("plot_speciesState", m_plotStateSpec);
-  m_initial_grid_file = "";
-  m_regrid_file = "";
   pp.query("initial_grid_file", m_initial_grid_file);
   pp.query("regrid_file", m_regrid_file);
   pp.query("file_stepDigits", m_ioDigits);
@@ -1808,14 +1790,11 @@ PeleLM::derivedSetup()
 #endif
 #endif
 #endif
-  auto it = m_derivePlotVars.begin();
-  while (it != m_derivePlotVars.end()) {
-    if (!derive_lst.canDerive(*it)) {
-      it = m_derivePlotVars.erase(it);
-    } else {
-      it++;
-    }
-  }
+  m_derivePlotVars.erase(
+    std::remove_if(
+      m_derivePlotVars.begin(), m_derivePlotVars.end(),
+      [&](const std::string& v) { return !derive_lst.canDerive(v); }),
+    m_derivePlotVars.end());
   m_derivePlotVarCount = static_cast<int>(m_derivePlotVars.size());
 }
 
@@ -1945,9 +1924,7 @@ PeleLM::taggingSetup()
   amrex::ParmParse ppamr(amr_prefix);
 
   amrex::Vector<std::string> refinement_indicators;
-  ppamr.queryarr(
-    "refinement_indicators", refinement_indicators, 0,
-    ppamr.countval("refinement_indicators"));
+  ppamr.queryarr("refinement_indicators", refinement_indicators);
   for (const auto& refinement_indicator : refinement_indicators) {
     std::string ref_prefix = amr_prefix;
     ref_prefix += ".";
@@ -2029,9 +2006,7 @@ PeleLM::taggingSetup()
       itexists = true;
     } else {
       amrex::Abort(
-        std::string(
-          "Unrecognized refinement indicator for " + refinement_indicator)
-          .c_str());
+        "Unrecognized refinement indicator for " + refinement_indicator);
     }
 
     if (!itexists) {
