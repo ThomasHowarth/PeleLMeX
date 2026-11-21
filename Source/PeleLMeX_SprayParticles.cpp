@@ -271,7 +271,10 @@ PeleLM::SprayAddSource(const int level)
 
 void
 PeleLM::SprayMKD(
-  const amrex::Real time, const amrex::Real dt, const bool a_useNewState)
+  const amrex::Real time,
+  const amrex::Real dt,
+  const bool a_useNewState,
+  const bool a_rateOnly)
 {
   if (!do_spray_particles) {
     return;
@@ -288,7 +291,7 @@ PeleLM::SprayMKD(
       amrex::Print() << "SprayMKDLevel " << lev << "\n";
     }
     m_spraysource[lev]->setVal(0.);
-    SprayMKDLevel(lev, time, dt, a_useNewState);
+    SprayMKDLevel(lev, time, dt, a_useNewState, a_rateOnly);
     SprayAddSource(lev);
     removeGhostParticles(lev);
     removeVirtualParticles(lev);
@@ -300,7 +303,8 @@ PeleLM::SprayMKDLevel(
   const int level,
   const amrex::Real time,
   const amrex::Real dt,
-  const bool a_useNewState)
+  const bool a_useNewState,
+  const bool a_rateOnly)
 {
   if (level < finest_level) {
     // Make a copy of the particles on this level into ghost particles
@@ -313,36 +317,59 @@ PeleLM::SprayMKDLevel(
   // the new time
   auto const* ltransparm = PeleLM::trans_parms.device_parm();
 
-  amrex::MultiFab& state = *(m_spraystate[level]);
+  // Rates at t^{n+1,k} are taken from the new state
+  amrex::MultiFab& state = (a_rateOnly && a_useNewState)
+                             ? *(m_spraystate_new[level])
+                             : *(m_spraystate[level]);
   amrex::MultiFab& source = *(m_spraysource[level]);
   const int state_ghosts = spray_state_ghosts[level];
   const int source_ghosts = spray_source_ghosts[level];
   bool isVirt = false;
   bool isGhost = false;
-  bool doMove = true;
+  bool doMove = !a_rateOnly;
   // With a_useNewState, the particles see the gas varying linearly in time
   // from the t^n state to the t^{n+1,k} iterate
   const amrex::MultiFab* state_end =
-    a_useNewState ? m_spraystate_new[level].get() : nullptr;
+    (a_useNewState && !a_rateOnly) ? m_spraystate_new[level].get() : nullptr;
   // Do the valid particles themselves
   SprayPC->moveKickDrift(
     state, source, level, dt, time, isVirt, isGhost, state_ghosts,
-    source_ghosts, doMove, ltransparm, spray_cfl[level], state_end);
+    source_ghosts, doMove, ltransparm, spray_cfl[level], state_end,
+      a_rateOnly);
   if (level < finest_level) {
     isVirt = true;
     isGhost = false;
     VirtPC->moveKickDrift(
       state, source, level, dt, time, isVirt, isGhost, state_ghosts,
-      source_ghosts, doMove, ltransparm, spray_cfl[level], state_end);
+      source_ghosts, doMove, ltransparm, spray_cfl[level], state_end,
+      a_rateOnly);
   }
   if (GhostPC != nullptr && level != 0) {
     isVirt = false;
     isGhost = true;
     GhostPC->moveKickDrift(
       state, source, level, dt, time, isVirt, isGhost, state_ghosts,
-      source_ghosts, doMove, ltransparm, spray_cfl[level], state_end);
+      source_ghosts, doMove, ltransparm, spray_cfl[level], state_end,
+      a_rateOnly);
   }
   source.SumBoundary(geom[level].periodicity());
+}
+
+void
+PeleLM::SprayInitDivURate()
+{
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    m_extSource[lev]->setVal(0.0);
+  }
+  if (!do_spray_particles || !m_spray_SDC) {
+    return;
+  }
+  // The particles are not moved or updated: the dt only sets the ghost cells
+  // and the deposition normalisation
+  SpraySetState(m_dt);
+  constexpr bool oldState = false;
+  constexpr bool rateOnly = true;
+  SprayMKD(m_cur_time, m_dt, oldState, rateOnly);
 }
 
 void

@@ -443,23 +443,45 @@ PeleLM::getExternalSources(
   }
 
 #ifdef PELE_USE_SPRAY
-  // spray_SDC: keep the particles at t^n, then advance them over the step
-  // against the t^n gas, as without spray_SDC, for the first SDC iteration
+  // spray_SDC: divU^n sees the instantaneous spray rate at t^n. Then keep the
+  // particles at t^n and advance them over the step against the t^n gas, as
+  // without spray_SDC, for the first SDC iteration.
   if (m_spray_SDC && is_initIter == 0) {
-    SpraySaveParticles();
+    for (auto* v : {&diffData->spraySrc, &diffData->sprayRate_n,
+                    &diffData->sprayRate_np1}) {
+      for (int lev = 0; lev <= finest_level; ++lev) {
+        v->emplace_back(
+          grids[lev], dmap[lev], NVAR, m_extSource[lev]->nGrowVect(),
+          amrex::MFInfo(), *m_factory[lev]);
+        (*v)[lev].setVal(0.0);
+      }
+    }
+    // m_extSource holds the other sources at t^n, as does extSrc_n
+    constexpr bool oldState = false;
+    constexpr bool rateOnly = true;
     for (int lev = 0; lev <= finest_level; ++lev) {
       m_extSource[lev]->setVal(0.0);
     }
+    SprayMKD(m_cur_time, m_dt, oldState, rateOnly);
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      const auto ng = m_extSource[lev]->nGrowVect();
+      amrex::MultiFab::Copy(
+        diffData->sprayRate_n[lev], *m_extSource[lev], 0, 0, NVAR, ng);
+      m_extSource[lev]->setVal(0.0);
+    }
+    SpraySaveParticles();
     SprayMKD(m_cur_time, m_dt);
     for (int lev = 0; lev <= finest_level; ++lev) {
       auto& ext = *m_extSource[lev];
       const auto ng = ext.nGrowVect();
-      diffData->spraySrc.emplace_back(
-        grids[lev], dmap[lev], NVAR, ng, amrex::MFInfo(), *m_factory[lev]);
       amrex::MultiFab::Copy(diffData->spraySrc[lev], ext, 0, 0, NVAR, ng);
+      // m_extSource: other sources + integrated spray source
+      amrex::MultiFab::LinComb(
+        ext, 1.0, diffData->extSrc_n[lev], 0, 1.0, diffData->spraySrc[lev], 0,
+        0, NVAR, ng);
+      // extSrc_n: other sources + spray rate at t^n
       amrex::MultiFab::Add(
-        diffData->extSrc_n[lev], diffData->spraySrc[lev], 0, 0, NVAR, ng);
-      amrex::MultiFab::Copy(ext, diffData->extSrc_n[lev], 0, 0, NVAR, ng);
+        diffData->extSrc_n[lev], diffData->sprayRate_n[lev], 0, 0, NVAR, ng);
     }
   }
 #endif
@@ -536,13 +558,13 @@ PeleLM::assembleExternalSources(
 
 // ext_sources_SDC: S^{n+1,k} from the new state into diffData->extSrc_np1,
 // and m_extSource <- 0.5 (S^n + S^{n+1,k}).
-// spray_SDC: the spray source is the exchange with the particles over the
-// whole step, so it enters m_extSource as is, and extSrc_n / extSrc_np1 (for
-// divU) both carry it. a_inSDC re-advances the particles from t^n, with the
-// gas varying linearly in time from t^n to the t^{n+1,k} iterate; after the
-// SDC loop the particles and source of the last iteration are kept, so that
-// the gas and the particles exchange exactly the same mass, momentum and
-// energy.
+// spray_SDC: the spray source in m_extSource is the exchange with the
+// particles over the whole step, while extSrc_n / extSrc_np1 (for divU) carry
+// the instantaneous spray rates at t^n and t^{n+1,k}, as for the chemistry.
+// a_inSDC re-advances the particles from t^n, with the gas varying linearly in
+// time from t^n to the t^{n+1,k} iterate; after the SDC loop the particles
+// and source of the last iteration are kept, so that the gas and the
+// particles exchange exactly the same mass, momentum and energy.
 void
 PeleLM::updateExternalSourcesSDC(
   const std::unique_ptr<AdvanceDiffData>& diffData, const bool a_inSDC)
@@ -561,12 +583,26 @@ PeleLM::updateExternalSourcesSDC(
     SprayMKD(m_cur_time, m_dt, useNewState);
     for (int lev = 0; lev <= finest_level; ++lev) {
       auto& ext = *m_extSource[lev];
-      const auto ng = ext.nGrowVect();
-      auto& spray = diffData->spraySrc[lev];
-      // extSrc_n <- extSrc_n - S_spray^{old} + S_spray^{new}
-      amrex::MultiFab::Subtract(diffData->extSrc_n[lev], spray, 0, 0, NVAR, ng);
-      amrex::MultiFab::Copy(spray, ext, 0, 0, NVAR, ng);
-      amrex::MultiFab::Add(diffData->extSrc_n[lev], spray, 0, 0, NVAR, ng);
+      amrex::MultiFab::Copy(
+        diffData->spraySrc[lev], ext, 0, 0, NVAR, ext.nGrowVect());
+    }
+  }
+  if (spray_SDC) {
+    // Instantaneous rate from the particles at the end of the step and the
+    // t^{n+1,k} gas
+    if (!a_inSDC) {
+      SprayFillNewState();
+    }
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      m_extSource[lev]->setVal(0.0);
+    }
+    constexpr bool newState = true;
+    constexpr bool rateOnly = true;
+    SprayMKD(m_cur_time, m_dt, newState, rateOnly);
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      auto& ext = *m_extSource[lev];
+      amrex::MultiFab::Copy(
+        diffData->sprayRate_np1[lev], ext, 0, 0, NVAR, ext.nGrowVect());
     }
   }
 #endif
@@ -580,10 +616,19 @@ PeleLM::updateExternalSourcesSDC(
     std::swap(ext, diffData->extSrc_np1[lev]);
     if (spray_SDC) {
       amrex::MultiFab::Add(
-        diffData->extSrc_np1[lev], diffData->spraySrc[lev], 0, 0, NVAR, ng);
+        diffData->extSrc_np1[lev], diffData->sprayRate_np1[lev], 0, 0, NVAR,
+        ng);
     }
     amrex::MultiFab::LinComb(
       ext, 0.5, diffData->extSrc_n[lev], 0, 0.5, diffData->extSrc_np1[lev], 0,
       0, NVAR, ng);
+    if (spray_SDC) {
+      // Scalars: integrated spray source instead of the average of the rates
+      amrex::MultiFab::Saxpy(
+        ext, -0.5, diffData->sprayRate_n[lev], 0, 0, NVAR, ng);
+      amrex::MultiFab::Saxpy(
+        ext, -0.5, diffData->sprayRate_np1[lev], 0, 0, NVAR, ng);
+      amrex::MultiFab::Add(ext, diffData->spraySrc[lev], 0, 0, NVAR, ng);
+    }
   }
 }

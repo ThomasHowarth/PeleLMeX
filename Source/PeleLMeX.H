@@ -280,8 +280,12 @@ public:
     amrex::Vector<amrex::MultiFab> extSrc_frozen;
 
     // spray_SDC only: the spray source of the current SDC iteration, from the
-    // particles advanced over the step from t^n (empty if no spray this step)
+    // particles advanced over the step from t^n (empty if no spray this
+    // step), and the instantaneous spray rates at t^n and t^(n+1,k), which
+    // are part of extSrc_n / extSrc_np1 (for divU)
     amrex::Vector<amrex::MultiFab> spraySrc;
+    amrex::Vector<amrex::MultiFab> sprayRate_n;
+    amrex::Vector<amrex::MultiFab> sprayRate_np1;
   };
   /**
    * \brief Advance function data container for advection term
@@ -940,15 +944,26 @@ public:
   void setupGhostParticles(const int ngrow, const int level);
   void removeGhostParticles(const int level);
   amrex::Real SprayEstDt();
+  // a_useNewState: the particles see the gas varying linearly in time from
+  // t^n to the t^{n+1,k} iterate. a_rateOnly: deposit the instantaneous
+  // exchange rates at the current particles and gas (t^{n+1,k} with
+  // a_useNewState, otherwise t^n), without updating or moving the particles.
   void SprayMKD(
-    const amrex::Real time, const amrex::Real dt, const bool a_useNewState = false);
+    const amrex::Real time,
+    const amrex::Real dt,
+    const bool a_useNewState = false,
+    const bool a_rateOnly = false);
   void SprayMKDLevel(
     const int level,
     const amrex::Real time,
     const amrex::Real dt,
-    const bool a_useNewState = false);
+    const bool a_useNewState = false,
+    const bool a_rateOnly = false);
   // spray_SDC: keep the particles at t^n, put them back, and fill the gas
   // state at t^{n+1,k} that the particles see at the end of the step
+  // spray_SDC: m_extSource <- instantaneous spray rate at the current time,
+  // for the initial divU (zeroes m_extSource otherwise)
+  void SprayInitDivURate();
   void SpraySaveParticles();
   void SprayRestoreParticles();
   void SprayFillNewState();
