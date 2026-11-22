@@ -952,6 +952,7 @@ public:
   void SpraySaveParticles();
   void SprayRestoreParticles();
   void SprayFillNewState();
+  void SprayPredictVelocity();
   void SprayInjectRedist();
   void SprayPostRegrid();
   void SpraySetState(const amrex::Real& a_flow_dt);
@@ -969,6 +970,11 @@ public:
   bool m_spray_SDC{false};
   static std::unique_ptr<SprayParticleContainer> SprayPC_n;
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_spraystate_new;
+  // spray_SDC: u^{n-1} and the extrapolated u^{n+1} - u^n that the particles
+  // see as the end-of-step gas velocity
+  amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_spray_vel_prev;
+  amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_spray_dvel;
+  amrex::Real m_spray_dt_prev{-1.0};
   //-----------------------------------------------------------------------------
 #endif
 #ifdef PELE_USE_SOOT

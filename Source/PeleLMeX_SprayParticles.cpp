@@ -334,8 +334,7 @@ PeleLM::SprayMKDLevel(
   // Do the valid particles themselves
   SprayPC->moveKickDrift(
     state, source, level, dt, time, isVirt, isGhost, state_ghosts,
-    source_ghosts, doMove, ltransparm, spray_cfl[level], state_end,
-      a_rateOnly);
+    source_ghosts, doMove, ltransparm, spray_cfl[level], state_end, a_rateOnly);
   if (level < finest_level) {
     isVirt = true;
     isGhost = false;
@@ -414,7 +413,70 @@ PeleLM::SprayFillNewState()
     }
     fillpatch_state(
       lev, m_cur_time + m_dt, *(m_spraystate_new[lev]), state_ghosts);
+    // The velocity is only advanced after the scalar SDC loop: use the
+    // extrapolated u^{n+1} inside the domain (the domain ghost cells already
+    // hold the boundary values at t^{n+1})
+    if (lev < static_cast<int>(m_spray_dvel.size()) && m_spray_dvel[lev]) {
+      const amrex::Box dom = geom[lev].growPeriodicDomain(state_ghosts);
+      auto const& sma = m_spraystate_new[lev]->arrays();
+      auto const& dma = m_spray_dvel[lev]->const_arrays();
+      amrex::ParallelFor(
+        *m_spraystate_new[lev], amrex::IntVect(state_ghosts),
+        [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept {
+          if (dom.contains(amrex::IntVect(AMREX_D_DECL(i, j, k)))) {
+            for (int n = 0; n < AMREX_SPACEDIM; ++n) {
+              sma[box_no](i, j, k, VELX + n) += dma[box_no](i, j, k, n);
+            }
+          }
+        });
+    }
   }
+  amrex::Gpu::streamSynchronize();
+}
+
+// spray_SDC: the end-of-step gas velocity the particles see, extrapolated from
+// the previous step, u^{n+1} ~ u^n + dt^n / dt^{n-1} (u^n - u^{n-1}). The
+// velocity is only advanced after the scalar SDC loop, and an estimate from
+// the SDC iterates would depend on the spray rate of the previous iterate
+// through divU with an O(1) weight, so that the iterations would only
+// converge by a fixed factor rather than by O(dt). Without u^{n-1} (first
+// step, restart, newly refined cells) the velocity is held at u^n.
+void
+PeleLM::SprayPredictVelocity()
+{
+  BL_PROFILE("PeleLMeX::SprayPredictVelocity()");
+  const amrex::Real fac =
+    (m_spray_dt_prev > 0.0) ? m_dt / m_spray_dt_prev : 0.0;
+  int nGrow = 0;
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    nGrow = std::max(nGrow, spray_state_ghosts[lev]);
+  }
+  m_spray_vel_prev.resize(finest_level + 1);
+  m_spray_dvel.resize(finest_level + 1);
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    auto u_n = std::make_unique<amrex::MultiFab>(
+      grids[lev], dmap[lev], AMREX_SPACEDIM, 0, amrex::MFInfo(),
+      *m_factory[lev]);
+    amrex::MultiFab::Copy(
+      *u_n, m_leveldata_old[lev]->state, VELX, 0, AMREX_SPACEDIM, 0);
+    m_spray_dvel[lev] = std::make_unique<amrex::MultiFab>(
+      grids[lev], dmap[lev], AMREX_SPACEDIM, nGrow, amrex::MFInfo(),
+      *m_factory[lev]);
+    m_spray_dvel[lev]->setVal(0.0);
+    if (fac > 0.0 && m_spray_vel_prev[lev]) {
+      // u^{n-1} on the current grids, u^n where they changed
+      amrex::MultiFab u_nm1(
+        grids[lev], dmap[lev], AMREX_SPACEDIM, 0, amrex::MFInfo(),
+        *m_factory[lev]);
+      amrex::MultiFab::Copy(u_nm1, *u_n, 0, 0, AMREX_SPACEDIM, 0);
+      u_nm1.ParallelCopy(*m_spray_vel_prev[lev], 0, 0, AMREX_SPACEDIM);
+      amrex::MultiFab::LinComb(
+        *m_spray_dvel[lev], fac, *u_n, 0, -fac, u_nm1, 0, 0, AMREX_SPACEDIM, 0);
+    }
+    m_spray_vel_prev[lev] = std::move(u_n);
+  }
+  fillpatch_forces(m_cur_time + m_dt, GetVecOfPtrs(m_spray_dvel), nGrow);
+  m_spray_dt_prev = m_dt;
 }
 
 void

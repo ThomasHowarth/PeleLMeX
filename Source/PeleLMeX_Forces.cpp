@@ -441,6 +441,7 @@ PeleLM::getExternalSources(
   // twice. The particles are kept at t^n: each later iteration advances them
   // over the step (spray_SDC needs sdc_iterMax >= 2).
   if (m_spray_SDC && is_initIter == 0) {
+    SprayPredictVelocity();
     for (auto* v :
          {&diffData->spraySrc, &diffData->sprayRate_n,
           &diffData->sprayRate_np1}) {
