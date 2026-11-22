@@ -1,11 +1,7 @@
 #include <PeleLMeX.H>
+#include <PeleLMeX_MLMGUtils.H>
 #include <PrecondOp.H>
 #include <AMReX_ParmParse.H>
-#include <AMReX_VisMF.H>
-
-#ifdef AMREX_USE_EB
-#include <AMReX_EB_utils.H>
-#endif
 
 //---------------------------------------------------------------------------------------
 // Preconditioner Operator
@@ -46,8 +42,36 @@ PrecondOp::PrecondOp(PeleLM* a_pelelm) : m_pelelm(a_pelelm)
 
   // MLMGs
   m_mlmg_diff = std::make_unique<amrex::MLMG>(*m_diff);
+  setMLMGOptions(
+    *m_mlmg_diff, m_diff_verbose, m_diff_bottom_solver,
+    "ef.precond.diff_bottom_solver");
   m_mlmg_drift = std::make_unique<amrex::MLMG>(*m_drift);
+  m_mlmg_drift->setVerbose(m_drift_verbose);
   m_mlmg_Stilda = std::make_unique<amrex::MLMG>(*m_Stilda);
+  setMLMGOptions(
+    *m_mlmg_Stilda, m_Stilda_verbose, m_Stilda_bottom_solver,
+    "ef.precond.Stilda_bottom_solver");
+  m_mlmg_Stilda->setMultigridType(m_Stilda_mg_type);
+}
+
+void
+PrecondOp::setMLMGOptions(
+  amrex::MLMG& a_mlmg,
+  int a_verbose,
+  const std::string& a_bottom_solver,
+  const std::string& a_prefix) const
+{
+  a_mlmg.setVerbose(a_verbose);
+  a_mlmg.setBottomVerbose(m_bottom_verbose);
+  a_mlmg.setMaxIter(m_mg_max_iter);
+  a_mlmg.setBottomMaxIter(m_mg_bottom_maxiter);
+  a_mlmg.setPreSmooth(m_num_pre_smooth);
+  a_mlmg.setPostSmooth(m_num_post_smooth);
+  if (m_fixed_mg_it > 0) {
+    a_mlmg.setFixedIter(m_fixed_mg_it);
+  }
+  MLMGUtils::setBottomSolver(
+    a_mlmg, a_bottom_solver, a_prefix, m_hypre_namespace, m_mg_bottom_rtol);
 }
 
 void
@@ -161,32 +185,16 @@ PrecondOp::setStildaOpBCoeff(
 void
 PrecondOp::diffOpSolve(
   const amrex::Vector<amrex::MultiFab*>& a_sol,
-  const amrex::Vector<const amrex::MultiFab*>& a_rhs,
-  const amrex::Real& /*rtol*/,
-  const amrex::Real& /*atol*/)
+  const amrex::Vector<const amrex::MultiFab*>& a_rhs)
 {
-  // TODO set all the MLMG options
-  m_mlmg_diff->setVerbose(m_diff_verbose);
-  m_mlmg_diff->setPreSmooth(m_num_pre_smooth);
-  m_mlmg_diff->setPostSmooth(m_num_post_smooth);
-  if (m_fixed_mg_it > 0)
-    m_mlmg_diff->setFixedIter(m_fixed_mg_it);
-
   m_mlmg_diff->solve(a_sol, a_rhs, m_mg_rtol, m_mg_atol);
 }
 
 void
 PrecondOp::StildaOpSolve(
   const amrex::Vector<amrex::MultiFab*>& a_sol,
-  const amrex::Vector<const amrex::MultiFab*>& a_rhs,
-  const amrex::Real& /*rtol*/,
-  const amrex::Real& /*atol*/)
+  const amrex::Vector<const amrex::MultiFab*>& a_rhs)
 {
-  // TODO set all the MLMG options
-  m_mlmg_Stilda->setVerbose(m_Stilda_verbose);
-  if (m_fixed_mg_it > 0)
-    m_mlmg_Stilda->setFixedIter(m_fixed_mg_it);
-
   m_mlmg_Stilda->solve(a_sol, a_rhs, m_mg_rtol, m_mg_atol);
 }
 
@@ -195,8 +203,6 @@ PrecondOp::driftOpApply(
   const amrex::Vector<amrex::MultiFab*>& a_Ax,
   const amrex::Vector<amrex::MultiFab*>& a_x)
 {
-  // TODO set all the MLMG options
-  m_mlmg_drift->setVerbose(m_drift_verbose);
   m_mlmg_drift->apply(a_Ax, a_x);
 }
 
@@ -233,11 +239,30 @@ PrecondOp::readParameters()
   amrex::ParmParse pp("ef.precond");
 
   pp.query("diff_verbose", m_diff_verbose);
+  pp.query("drift_verbose", m_drift_verbose);
   pp.query("Stilda_verbose", m_Stilda_verbose);
+  pp.query("bottom_verbose", m_bottom_verbose);
   pp.query("fixedIter", m_fixed_mg_it);
+  pp.query("rtol", m_mg_rtol);
+  pp.query("atol", m_mg_atol);
+  pp.query("max_iter", m_mg_max_iter);
+  pp.query("bottom_maxiter", m_mg_bottom_maxiter);
+  pp.query("bottom_rtol", m_mg_bottom_rtol);
+  pp.query("max_order", m_mg_maxorder);
   pp.query("max_coarsening_level_diff", m_mg_max_coarsening_level_diff);
   pp.query("max_coarsening_level_Stilda", m_mg_max_coarsening_level_Stilda);
   pp.query("num_pre_smooth", m_num_pre_smooth);
   pp.query("num_post_smooth", m_num_post_smooth);
-  // TODO: add all the user-defined options
+  pp.query("diff_bottom_solver", m_diff_bottom_solver);
+  pp.query("Stilda_bottom_solver", m_Stilda_bottom_solver);
+  pp.query("hypre_namespace", m_hypre_namespace);
+  pp.query_enum_case_insensitive("Stilda_multigrid_type", m_Stilda_mg_type);
+
+  AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+    m_diff_bottom_solver.empty() ||
+      !MLMGUtils::isMatrixBottomSolver(
+        MLMGUtils::parseBottomSolver(
+          m_diff_bottom_solver, "ef.precond.diff_bottom_solver")),
+    "ef.precond.diff_bottom_solver: the electron drift-diffusion operator "
+    "has no matrix (smoother, bicgstab, cg, bicgcg or cgbicg)");
 }

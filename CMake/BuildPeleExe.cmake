@@ -24,6 +24,7 @@ function(build_pele_exe pele_exe_name pele_physics_lib_name)
      PRIVATE
        ${SRC_DIR}/PeleLMeX_DeriveUserDefined.cpp
        ${SRC_DIR}/PeleLMeX_DiffusionOp.H
+       ${SRC_DIR}/PeleLMeX_MLMGUtils.H
        ${SRC_DIR}/PeleLMeX_DiffusionOp.cpp
        ${SRC_DIR}/PeleLMeX_FlowControllerData.H
        ${SRC_DIR}/PeleLMeX.H

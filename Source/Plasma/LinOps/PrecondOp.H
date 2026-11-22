@@ -3,14 +3,8 @@
 
 #include <AMReX_MLMG.H>
 #include <AMReX_BC_TYPES.H>
-
-#ifdef AMREX_USE_EB
-#include <AMReX_MLEBABecLap.H>
-#include <AMReX_MLEBTensorOp.H>
-#endif
 #include <AMReX_MLABecLaplacian.H>
 #include <AMReX_MLABecCecLaplacian.H>
-#include <AMReX_MLTensorOp.H>
 
 class PeleLM;
 
@@ -57,15 +51,11 @@ public:
 
   void diffOpSolve(
     const amrex::Vector<amrex::MultiFab*>& a_sol,
-    const amrex::Vector<const amrex::MultiFab*>& a_rhs,
-    const amrex::Real& rtol,
-    const amrex::Real& atol);
+    const amrex::Vector<const amrex::MultiFab*>& a_rhs);
 
   void StildaOpSolve(
     const amrex::Vector<amrex::MultiFab*>& a_sol,
-    const amrex::Vector<const amrex::MultiFab*>& a_rhs,
-    const amrex::Real& rtol,
-    const amrex::Real& atol);
+    const amrex::Vector<const amrex::MultiFab*>& a_rhs);
 
   void driftOpApply(
     const amrex::Vector<amrex::MultiFab*>& a_Ax,
@@ -86,18 +76,14 @@ public:
   std::unique_ptr<amrex::MLMG> m_mlmg_drift;
   std::unique_ptr<amrex::MLMG> m_mlmg_Stilda;
 
-  // Verbose for each Ops
+  // MLMG options (ef.precond.*). The defaults are MLMG's.
   int m_diff_verbose = 0;
   int m_drift_verbose = 0;
   int m_Stilda_verbose = 0;
-
-  // Options to control MLMG behavior
+  int m_bottom_verbose = 0;
   int m_fixed_mg_it = -1;
-  int m_mg_verbose = 0;
-  int m_mg_bottom_verbose = 0;
-  int m_mg_max_iter = 100;
-  int m_mg_bottom_maxiter = 100;
-  int m_mg_max_fmg_iter = 0;
+  int m_mg_max_iter = 200;
+  int m_mg_bottom_maxiter = 200;
   int m_mg_max_coarsening_level_diff = 100;
   int m_mg_max_coarsening_level_Stilda = 100;
   int m_mg_maxorder = 2;
@@ -106,7 +92,20 @@ public:
 
   amrex::Real m_mg_rtol = 1.0e-11;
   amrex::Real m_mg_atol = 1.0e-14;
+  amrex::Real m_mg_bottom_rtol = -1.0;
 
-  std::string m_mg_bottom_solver = "bicgstab";
+  // The electron diffusion-drift operator has no matrix: iterative bottom
+  // solvers only. The Stilda (Poisson-like) solve can use any of them.
+  std::string m_diff_bottom_solver;
+  std::string m_Stilda_bottom_solver;
+  std::string m_hypre_namespace = "ef_precond_hypre";
+  amrex::MultigridType m_Stilda_mg_type = amrex::MultigridType::geometric;
+
+private:
+  void setMLMGOptions(
+    amrex::MLMG& a_mlmg,
+    int a_verbose,
+    const std::string& a_bottom_solver,
+    const std::string& a_prefix) const;
 };
 #endif

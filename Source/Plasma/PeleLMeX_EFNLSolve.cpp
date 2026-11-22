@@ -1380,10 +1380,7 @@ PeleLM::applyPrecond(
   }
 
   // Most inner matrix
-  amrex::Real S_tol = m_ef_PC_MG_Tol;
-  amrex::Real S_tol_abs = MLNorm0(GetVecOfConstPtrs(nE_al)) * m_ef_PC_MG_Tol;
-  getPrecondOp()->diffOpSolve(
-    GetVecOfPtrs(PnE_al), GetVecOfConstPtrs(nE_al), S_tol, S_tol_abs);
+  getPrecondOp()->diffOpSolve(GetVecOfPtrs(PnE_al), GetVecOfConstPtrs(nE_al));
   for (int lev = 0; lev <= finest_level; ++lev) {
     amrex::MultiFab::Copy(PphiV_al[lev], phiV_al[lev], 0, 0, 1, 0);
   }
@@ -1399,18 +1396,15 @@ PeleLM::applyPrecond(
   for (int lev = 0; lev <= finest_level; ++lev) {
     PphiV_al[lev].mult(FphiV_scale / phiV_scale);
   }
-  S_tol_abs = MLNorm0(GetVecOfConstPtrs(PphiV_al)) * m_ef_PC_MG_Tol;
   getPrecondOp()->StildaOpSolve(
-    GetVecOfPtrs(temp), GetVecOfConstPtrs(PphiV_al), S_tol, S_tol_abs);
+    GetVecOfPtrs(temp), GetVecOfConstPtrs(PphiV_al));
   for (int lev = 0; lev <= finest_level; ++lev) {
     amrex::MultiFab::Copy(PphiV_al[lev], *temp[lev], 0, 0, 1, 0);
   }
 
   // Final matrix
   getPrecondOp()->driftOpApply(GetVecOfPtrs(temp), GetVecOfPtrs(PphiV_al));
-  S_tol_abs = MLNorm0(GetVecOfConstPtrs(temp)) * m_ef_PC_MG_Tol;
-  getPrecondOp()->diffOpSolve(
-    GetVecOfPtrs(temp2), GetVecOfConstPtrs(temp), S_tol, S_tol_abs);
+  getPrecondOp()->diffOpSolve(GetVecOfPtrs(temp2), GetVecOfConstPtrs(temp));
   for (int lev = 0; lev <= finest_level; ++lev) {
     amrex::MultiFab::Saxpy(PnE_al[lev], -1.0, *temp2[lev], 0, 0, 1, 0);
   }
@@ -1431,8 +1425,8 @@ PeleLM::nlSolveDot(
       r += amrex::MultiFab::Dot(
         *m_coveredMask[lev], *a_MF1[lev], 0, *a_MF2[lev], 0, nComp, 0, local);
     } else {
-      r += amrex::MultiFab::Dot(
-        *a_MF1[lev], 0, *a_MF2[lev], 0, nComp, 0, local);
+      r +=
+        amrex::MultiFab::Dot(*a_MF1[lev], 0, *a_MF2[lev], 0, nComp, 0, local);
     }
   }
   amrex::ParallelAllReduce::Sum(r, amrex::ParallelContext::CommunicatorSub());

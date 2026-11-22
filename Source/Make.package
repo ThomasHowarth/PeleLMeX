@@ -5,6 +5,7 @@ CEXE_headers += PeleLMeX_Derive.H
 CEXE_headers += PeleLMeX_K.H
 CEXE_headers += PeleLMeX_BCfill.H
 CEXE_headers += PeleLMeX_DiffusionOp.H
+CEXE_headers += PeleLMeX_MLMGUtils.H
 CEXE_headers += PeleLMeX_DeriveFunc.H
 CEXE_headers += PeleLMeX_FlowControllerData.H
 CEXE_headers += PeleLMeX_BPatch.H

@@ -51,7 +51,6 @@ int m_ef_GMRES_max_restart = 1;
 int m_ef_GMRES_verbose = 0;
 // Precondition on the left (1, the default) or the right (0)
 int m_ef_GMRES_left_precond = 1;
-amrex::Real m_ef_PC_MG_Tol = 1.0e-6;
 
 // Species charge per unit mass
 amrex::GpuArray<amrex::Real, NUM_SPECIES> zk;

@@ -1,5 +1,6 @@
 #include <PeleLMeX.H>
 #include <PeleLMeX_DiffusionOp.H>
+#include <PeleLMeX_MLMGUtils.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_VisMF.H>
 #include <AMReX_GMRES_MLMG.H>
@@ -11,89 +12,6 @@
 #include <AMReX_EB_Redistribution.H>
 #include <AMReX_EBFArrayBox.H>
 #endif
-
-namespace {
-// Map an input bottom_solver name onto MLMG's BottomSolver; aborts on an
-// unknown name so that typos are not silently ignored.
-amrex::MLMG::BottomSolver
-parseBottomSolver(const std::string& name, const std::string& prefix)
-{
-  using BS = amrex::MLMG::BottomSolver;
-  if (name == "smoother") {
-    return BS::smoother;
-  }
-  if (name == "bicgstab" || name == "bicg") {
-    return BS::bicgstab;
-  }
-  if (name == "cg") {
-    return BS::cg;
-  }
-  if (name == "bicgcg") {
-    return BS::bicgcg;
-  }
-  if (name == "cgbicg") {
-    return BS::cgbicg;
-  }
-  if (name == "hypre") {
-#ifdef AMREX_USE_HYPRE
-    return BS::hypre;
-#else
-    amrex::Abort(
-      prefix + ".bottom_solver = hypre requires PeleLMeX built with hypre "
-               "(GNU make USE_HYPRE = TRUE, CMake PELE_ENABLE_HYPRE = ON)");
-#endif
-  }
-  if (name == "petsc") {
-#ifdef AMREX_USE_PETSC
-    return BS::petsc;
-#else
-    amrex::Abort(
-      prefix + ".bottom_solver = petsc requires PeleLMeX built with PETSc "
-               "(GNU make USE_PETSC = TRUE)");
-#endif
-  }
-  if (name == "algmg") {
-    return BS::algmg;
-  }
-  amrex::Abort(
-    prefix + ".bottom_solver: unknown value '" + name +
-    "' (smoother, bicgstab, cg, bicgcg, cgbicg, hypre, petsc, algmg)");
-  return BS::Default; // not reached; amrex::Abort is not [[noreturn]]
-}
-
-// Bottom solvers that assemble a matrix: single-component systems only
-bool
-isMatrixBottomSolver(amrex::MLMG::BottomSolver bs)
-{
-  using BS = amrex::MLMG::BottomSolver;
-  return bs == BS::hypre || bs == BS::petsc || bs == BS::algmg;
-}
-
-// Apply the user-selected bottom solver; an empty name keeps the default
-void
-setBottomSolver(
-  amrex::MLMG& mlmg,
-  const std::string& name,
-  const std::string& prefix,
-  const std::string& hypre_namespace,
-  const amrex::Real bottom_rtol)
-{
-  if (name.empty()) {
-    return;
-  }
-  mlmg.setBottomSolver(parseBottomSolver(name, prefix));
-#ifdef AMREX_USE_HYPRE
-  if (mlmg.getBottomSolver() == amrex::MLMG::BottomSolver::hypre) {
-    mlmg.setHypreOptionsNamespace(hypre_namespace);
-  }
-#else
-  amrex::ignore_unused(hypre_namespace);
-#endif
-  if (bottom_rtol > 0.0) {
-    mlmg.setBottomTolerance(bottom_rtol);
-  }
-}
-} // namespace
 
 //---------------------------------------------------------------------------------------
 // Diffusion Operator
@@ -460,7 +378,7 @@ DiffusionOp::diffuse_scalar(
     mlmg.setMaxIter(max_iter);
     mlmg.setMaxFmgIter(m_mg_max_fmg_iter);
     mlmg.setBottomMaxIter(m_mg_bottom_maxiter);
-    setBottomSolver(
+    MLMGUtils::setBottomSolver(
       mlmg, m_mg_bottom_solver, "diffusion", m_hypre_namespace,
       m_mg_bottom_rtol);
     mlmg.setMultigridType(m_mg_type);
@@ -877,7 +795,7 @@ DiffusionOp::diffuse_scalar(
     mlmg.setMaxIter(max_iter);
     mlmg.setMaxFmgIter(m_mg_max_fmg_iter);
     mlmg.setBottomMaxIter(m_mg_bottom_maxiter);
-    setBottomSolver(
+    MLMGUtils::setBottomSolver(
       mlmg, m_mg_bottom_solver, "diffusion", m_hypre_namespace,
       m_mg_bottom_rtol);
     mlmg.setMultigridType(m_mg_type);
@@ -1572,8 +1490,9 @@ bool
 DiffusionOp::useMatrixSolver() const
 {
   return m_use_mlhypre || m_mg_type != amrex::MultigridType::geometric ||
-         (!m_mg_bottom_solver.empty() && isMatrixBottomSolver(parseBottomSolver(
-                                           m_mg_bottom_solver, "diffusion")));
+         (!m_mg_bottom_solver.empty() &&
+          MLMGUtils::isMatrixBottomSolver(
+            MLMGUtils::parseBottomSolver(m_mg_bottom_solver, "diffusion")));
 }
 
 //---------------------------------------------------------------------------------------
@@ -1988,7 +1907,8 @@ DiffusionTensorOp::diffuse_velocity(
   mlmg.setMaxIter(max_iter);
   mlmg.setMaxFmgIter(m_mg_max_fmg_iter);
   mlmg.setBottomMaxIter(m_mg_bottom_maxiter);
-  setBottomSolver(mlmg, m_mg_bottom_solver, "tensor_diffusion", "", -1.0);
+  MLMGUtils::setBottomSolver(
+    mlmg, m_mg_bottom_solver, "tensor_diffusion", "", -1.0);
 
   // Verbosity for MultiGrid / ConjugateGradients
   mlmg.setVerbose(m_mg_verbose);
@@ -2053,8 +1973,9 @@ DiffusionTensorOp::readParameters()
   pp.query("max_iter", m_mg_max_iter);
   pp.query("bottom_solver", m_mg_bottom_solver);
   if (
-    !m_mg_bottom_solver.empty() && isMatrixBottomSolver(parseBottomSolver(
-                                     m_mg_bottom_solver, "tensor_diffusion"))) {
+    !m_mg_bottom_solver.empty() &&
+    MLMGUtils::isMatrixBottomSolver(
+      MLMGUtils::parseBottomSolver(m_mg_bottom_solver, "tensor_diffusion"))) {
     amrex::Abort(
       "tensor_diffusion.bottom_solver = " + m_mg_bottom_solver +
       " is not supported: MLTensorOp has no matrix assembly");
