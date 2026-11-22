@@ -468,7 +468,12 @@ PeleLM::getExternalSources(
       amrex::MultiFab::Add(
         *m_extSource[lev], diffData->sprayRate_n[lev], 0, 0, NVAR, ng);
     }
-    SpraySaveParticles();
+    // Kept for SDC iterations after the first advance (iteration 1 does not
+    // move the particles)
+    m_spray_advanced = false;
+    if (m_nSDCmax > 2) {
+      SpraySaveParticles();
+    }
   }
 #endif
 }
@@ -616,7 +621,9 @@ PeleLM::updateExternalSourcesSDC(
     const bool rate_in_advance =
       a_inSDC && SprayParticleContainer::advanceGivesEndRate();
     if (a_inSDC) {
-      SprayRestoreParticles();
+      if (m_spray_advanced) {
+        SprayRestoreParticles();
+      }
       for (int lev = 0; lev <= finest_level; ++lev) {
         diffData->spraySrc[lev].setVal(0.0);
       }
@@ -627,6 +634,7 @@ PeleLM::updateExternalSourcesSDC(
         amrex::GetVecOfPtrs(diffData->spraySrc),
         rate_in_advance ? amrex::GetVecOfPtrs(diffData->sprayRate_np1)
                         : amrex::Vector<amrex::MultiFab*>{});
+      m_spray_advanced = true;
     }
     if (!rate_in_advance) {
       // Instantaneous rate from the particles at the end of the step and the

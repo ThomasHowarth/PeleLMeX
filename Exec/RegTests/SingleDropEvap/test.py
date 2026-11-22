@@ -8,19 +8,10 @@ import pandas as pd
 
 
 def final_extremas(run_dir):
-    """Last row of the last run's temporals/tempExtremas in run_dir"""
-    path = os.path.join(run_dir, "temporals", "tempExtremas")
-    with open(path) as f:
-        lines = f.read().splitlines()
-    # The file repeats its header for every run appended to it
-    last_header = max(i for i, l in enumerate(lines) if l == lines[0])
-    data = pd.read_csv(path, skiprows=last_header).apply(
-        pd.to_numeric, errors="coerce"
-    )
-    return data.iloc[-1]
+    """Last row of temporals/tempExtremas in run_dir (one run per directory)"""
+    return pd.read_csv(os.path.join(run_dir, "temporals", "tempExtremas")).iloc[-1]
 
 
-@unittest.skipUnless(os.path.exists("spray-sdc-2d.inp"), "not the spray_SDC test")
 class SpraySDCTestCase(unittest.TestCase):
     """spray_SDC: second order in time for the spray coupling"""
 

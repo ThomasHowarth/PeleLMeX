@@ -982,7 +982,11 @@ public:
   // see as the end-of-step gas velocity
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_spray_vel_prev;
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_spray_dvel;
-  amrex::Real m_spray_dt_prev{-1.0};
+  // Whether m_spray_dvel holds an extrapolation this step
+  bool m_spray_extrap_vel{false};
+  // Whether the particles were advanced this step (and must be put back to
+  // t^n before the next advance)
+  bool m_spray_advanced{false};
   //-----------------------------------------------------------------------------
 #endif
 #ifdef PELE_USE_SOOT
