@@ -145,6 +145,61 @@ forEachVelocityGradient(
   });
 }
 
+// Write conv(Y, out) (NOUT components) to der, with Y the mass fractions
+// of the state
+template <int NOUT, typename Conv>
+void
+forEachMassFractions(
+  const amrex::Box& bx,
+  const amrex::FArrayBox& statefab,
+  amrex::Array4<amrex::Real> const& der,
+  Conv const& conv)
+{
+  auto const in_dat = statefab.const_array();
+  amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+    amrex::Real Yt[NUM_SPECIES] = {0.0};
+    amrex::Real out[NOUT] = {0.0};
+    const amrex::Real rhoinv = 1.0 / in_dat(i, j, k, DENSITY);
+    for (int n = 0; n < NUM_SPECIES; ++n) {
+      Yt[n] = in_dat(i, j, k, FIRSTSPEC + n) * rhoinv;
+    }
+    conv(Yt, out);
+    for (int n = 0; n < NOUT; ++n) {
+      der(i, j, k, n) = out[n];
+    }
+  });
+}
+
+// Mixture transport coefficients of the state (as used by the solver)
+void
+transportCoeffs(
+  PeleLM* a_pelelm,
+  const amrex::Box& bx,
+  const amrex::FArrayBox& statefab,
+  amrex::Array4<amrex::Real> const& rhoD,
+  amrex::Array4<amrex::Real> const& rhotheta,
+  amrex::Array4<amrex::Real> const& lambda,
+  amrex::Array4<amrex::Real> const& mu)
+{
+  const bool do_fixed_Le = (a_pelelm->m_fixed_Le != 0);
+  const bool do_fixed_Pr = (a_pelelm->m_fixed_Pr != 0);
+  const bool do_soret = (a_pelelm->m_use_soret != 0);
+  const amrex::Real LeInv = a_pelelm->m_Lewis_inv;
+  const amrex::Real PrInv = a_pelelm->m_Prandtl_inv;
+  auto const& rhoY = statefab.const_array(FIRSTSPEC);
+  auto const& T = statefab.const_array(TEMP);
+  auto const* ltransparm = a_pelelm->trans_parms.device_parm();
+  auto const* leosparm = a_pelelm->eos_parms.device_parm();
+  amrex::ParallelFor(
+    bx, [do_fixed_Le, do_fixed_Pr, do_soret, LeInv, PrInv, rhoY, T, rhoD,
+         rhotheta, lambda, mu, ltransparm,
+         leosparm] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+      getTransportCoeff<pele::physics::PhysicsType::eos_type>(
+        i, j, k, do_fixed_Le, do_fixed_Pr, do_soret, LeInv, PrInv, rhoY, T,
+        rhoD, rhotheta, lambda, mu, ltransparm, leosparm);
+    });
+}
+
 } // namespace pelelmex_derive_detail
 
 //
@@ -166,12 +221,14 @@ pelelmex_derheatrelease(
   int /*level*/)
 
 {
-  amrex::ignore_unused(a_pelelm, ncomp);
+  amrex::ignore_unused(ncomp);
   AMREX_ASSERT(derfab.box().contains(bx));
   AMREX_ASSERT(statefab.box().contains(bx));
   AMREX_ASSERT(derfab.nComp() >= dcomp + ncomp);
   AMREX_ASSERT(!a_pelelm->m_incompressible);
 
+  auto HRR = derfab.array(dcomp);
+  auto const* leosparm = a_pelelm->eos_parms.device_parm();
 #ifdef USE_MANIFOLD_EOS
   // The manifold parameters are not species: read HRR from the table, as
   // PeleLM::getHeatRelease does (zero if the table has no HRR)
@@ -179,40 +236,20 @@ pelelmex_derheatrelease(
   const int hrr_idx = get_var_index(
     "HRR", &a_pelelm->eos_parms.host_only_parm().manfunc_par->host_parm(),
     false);
-  auto const& state = statefab.const_array(FIRSTSPEC);
-  auto HRR = derfab.array(dcomp);
-  auto const* leosparm = a_pelelm->eos_parms.device_parm();
+  auto const& rhoY = statefab.const_array(FIRSTSPEC);
   amrex::ParallelFor(
-    bx, [state, HRR, leosparm,
+    bx, [rhoY, HRR, leosparm,
          hrr_idx] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      auto eos = pele::physics::PhysicsType::eos(leosparm);
-      amrex::Real rho, rhoinv, mani_vars_prim[NUM_SPECIES];
-      eos.RY2RRinvY(state.cellData(i, j, k), rho, rhoinv, mani_vars_prim);
-      amrex::Real mani_hrr = 0.0;
-      if (hrr_idx >= 0) {
-        eos.Y2GenericManifoldData(mani_vars_prim, &hrr_idx, &mani_hrr, 1);
-      }
-      HRR(i, j, k) = mani_hrr;
+      HRR(i, j, k) = cellManifoldHeatRelease(i, j, k, rhoY, hrr_idx, leosparm);
     });
 #else
-  amrex::FArrayBox EnthFab;
-  EnthFab.resize(bx, NUM_SPECIES, amrex::The_Async_Arena());
-
   auto const temp = statefab.const_array(TEMP);
-  auto const& Hi = EnthFab.array();
-  auto HRR = derfab.array(dcomp);
   auto const react = reactfab.const_array();
-  auto const* leosparm = a_pelelm->eos_parms.device_parm();
   amrex::ParallelFor(
-    bx, [temp, Hi, leosparm, HRR,
-         react] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      getHGivenT(i, j, k, temp, Hi, leosparm);
-      HRR(i, j, k) = 0.0;
-      for (int n = 0; n < NUM_SPECIES; ++n) {
-        HRR(i, j, k) -= Hi(i, j, k, n) * react(i, j, k, n);
-      }
+    bx, [temp, react, HRR,
+         leosparm] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+      HRR(i, j, k) = cellHeatRelease(i, j, k, temp, react, leosparm);
     });
-  amrex::Gpu::streamSynchronize();
 #endif
 }
 
@@ -245,10 +282,11 @@ pelelmex_dermassfrac(
   auto const in_dat = statefab.array();
   auto der = derfab.array(dcomp);
   amrex::ParallelFor(
-    bx, NUM_SPECIES,
-    [in_dat, der] AMREX_GPU_DEVICE(int i, int j, int k, int n) noexcept {
+    bx, [in_dat, der] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
       const amrex::Real rhoinv = 1.0 / in_dat(i, j, k, DENSITY);
-      der(i, j, k, n) = in_dat(i, j, k, FIRSTSPEC + n) * rhoinv;
+      for (int n = 0; n < NUM_SPECIES; ++n) {
+        der(i, j, k, n) = in_dat(i, j, k, FIRSTSPEC + n) * rhoinv;
+      }
     });
 }
 
@@ -270,29 +308,19 @@ pelelmex_dermolefrac(
   const amrex::Vector<amrex::BCRec>& /*bcrec*/,
   int /*level*/)
 {
-  amrex::ignore_unused(a_pelelm, ncomp);
+  amrex::ignore_unused(ncomp);
   AMREX_ASSERT(derfab.box().contains(bx));
   AMREX_ASSERT(statefab.box().contains(bx));
   AMREX_ASSERT(derfab.nComp() >= dcomp + ncomp);
   AMREX_ASSERT(statefab.nComp() >= NUM_SPECIES + 1);
   AMREX_ASSERT(ncomp == NUM_SPECIES);
   AMREX_ASSERT(!a_pelelm->m_incompressible);
-  auto const in_dat = statefab.array();
-  auto der = derfab.array(dcomp);
   auto const* leosparm = a_pelelm->eos_parms.device_parm();
-  amrex::ParallelFor(
-    bx, [in_dat, leosparm, der] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      amrex::Real Yt[NUM_SPECIES] = {0.0};
-      amrex::Real Xt[NUM_SPECIES] = {0.0};
-      amrex::Real rhoinv = 1.0 / in_dat(i, j, k, DENSITY);
-      for (int n = 0; n < NUM_SPECIES; ++n) {
-        Yt[n] = in_dat(i, j, k, FIRSTSPEC + n) * rhoinv;
-      }
+  pelelmex_derive_detail::forEachMassFractions<NUM_SPECIES>(
+    bx, statefab, derfab.array(dcomp),
+    [leosparm] AMREX_GPU_DEVICE(const amrex::Real* Y, amrex::Real* X) noexcept {
       auto eos = pele::physics::PhysicsType::eos(leosparm);
-      eos.Y2X(Yt, Xt);
-      for (int n = 0; n < NUM_SPECIES; ++n) {
-        der(i, j, k, n) = Xt[n];
-      }
+      eos.Y2X(Y, X);
     });
 }
 
@@ -314,29 +342,19 @@ pelelmex_derelementfrac(
   const amrex::Vector<amrex::BCRec>& /*bcrec*/,
   int /*level*/)
 {
-  amrex::ignore_unused(a_pelelm, ncomp);
+  amrex::ignore_unused(ncomp);
   AMREX_ASSERT(derfab.box().contains(bx));
   AMREX_ASSERT(statefab.box().contains(bx));
   AMREX_ASSERT(derfab.nComp() >= dcomp + ncomp);
   AMREX_ASSERT(statefab.nComp() >= NUM_SPECIES + 1);
   AMREX_ASSERT(ncomp == NUM_ELEMENTS);
   AMREX_ASSERT(!a_pelelm->m_incompressible);
-  auto const in_dat = statefab.array();
-  auto der = derfab.array(dcomp);
   auto const* leosparm = a_pelelm->eos_parms.device_parm();
-  amrex::ParallelFor(
-    bx, [in_dat, leosparm, der] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      amrex::Real Yt[NUM_SPECIES] = {0.0};
-      amrex::Real Zt[NUM_ELEMENTS] = {0.0};
-      amrex::Real rhoinv = 1.0 / in_dat(i, j, k, DENSITY);
-      for (int n = 0; n < NUM_SPECIES; ++n) {
-        Yt[n] = in_dat(i, j, k, FIRSTSPEC + n) * rhoinv;
-      }
+  pelelmex_derive_detail::forEachMassFractions<NUM_ELEMENTS>(
+    bx, statefab, derfab.array(dcomp),
+    [leosparm] AMREX_GPU_DEVICE(const amrex::Real* Y, amrex::Real* Z) noexcept {
       auto eos = pele::physics::PhysicsType::eos(leosparm);
-      eos.Y2Z(Yt, Zt);
-      for (int n = 0; n < NUM_ELEMENTS; ++n) {
-        der(i, j, k, n) = Zt[n];
-      }
+      eos.Y2Z(Y, Z);
     });
 }
 
@@ -370,10 +388,11 @@ pelelmex_derrhomrhoy(
   auto der = derfab.array(dcomp);
   amrex::ParallelFor(
     bx, [der, in_dat] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      der(i, j, k, 0) = in_dat(i, j, k, DENSITY);
+      amrex::Real rhomrhoy = in_dat(i, j, k, DENSITY);
       for (int n = 0; n < NUM_SPECIES; ++n) {
-        der(i, j, k, 0) -= in_dat(i, j, k, FIRSTSPEC + n);
+        rhomrhoy -= in_dat(i, j, k, FIRSTSPEC + n);
       }
+      der(i, j, k, 0) = rhomrhoy;
     });
 }
 
@@ -511,7 +530,6 @@ pelelmex_dervort(
 #if (AMREX_SPACEDIM == 2)
       vort_arr(i, j, k) = w[2];
 #else
-      // Note: the 3D components are stored squared
       vort_arr(i, j, k, 0) = w[0];
       vort_arr(i, j, k, 1) = w[1];
       vort_arr(i, j, k, 2) = w[2];
@@ -534,13 +552,7 @@ pelelmex_dercoord(
   amrex::FArrayBox& derfab,
   int dcomp,
   int ncomp,
-  const amrex::FArrayBox&
-#ifdef AMREX_USE_EB
-    statefab
-#else
-/*unused*/
-#endif
-  ,
+  const amrex::FArrayBox& statefab,
   const amrex::FArrayBox& /*reactfab*/,
   const amrex::FArrayBox& /*pressfab*/,
   const amrex::Geometry& geom,
@@ -548,7 +560,7 @@ pelelmex_dercoord(
   const amrex::Vector<amrex::BCRec>& /*bcrec*/,
   int /*level*/)
 {
-  amrex::ignore_unused(ncomp);
+  amrex::ignore_unused(ncomp, statefab);
   AMREX_ASSERT(derfab.box().contains(bx));
   AMREX_ASSERT(derfab.nComp() >= dcomp + ncomp);
 
@@ -678,31 +690,22 @@ pelelmex_derkineticenergy(
 {
   AMREX_ASSERT(derfab.box().contains(bx));
   AMREX_ASSERT(statefab.box().contains(bx));
-  if (a_pelelm->m_incompressible != 0) {
-    auto const vel = statefab.array(VELX);
-    auto der = derfab.array(dcomp);
-    const auto rho = a_pelelm->m_rho;
-    amrex::ParallelFor(
-      bx, [der, vel, rho] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-        der(i, j, k) = 0.5 * rho *
-                       (AMREX_D_TERM(
-                         vel(i, j, k, 0) * vel(i, j, k, 0),
-                         +vel(i, j, k, 1) * vel(i, j, k, 1),
-                         +vel(i, j, k, 2) * vel(i, j, k, 2)));
-      });
-  } else {
-    auto const rho = statefab.array(DENSITY);
-    auto const vel = statefab.array(VELX);
-    auto der = derfab.array(dcomp);
-    amrex::ParallelFor(
-      bx, [der, vel, rho] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-        der(i, j, k) = 0.5 * rho(i, j, k) *
-                       (AMREX_D_TERM(
-                         vel(i, j, k, 0) * vel(i, j, k, 0),
-                         +vel(i, j, k, 1) * vel(i, j, k, 1),
-                         +vel(i, j, k, 2) * vel(i, j, k, 2)));
-      });
-  }
+  const auto incomp = a_pelelm->m_incompressible;
+  const auto rho = a_pelelm->m_rho;
+  auto const& rho_arr = (incomp != 0) ? amrex::Array4<const amrex::Real>{}
+                                      : statefab.const_array(DENSITY);
+  auto const vel = statefab.const_array(VELX);
+  auto der = derfab.array(dcomp);
+  amrex::ParallelFor(
+    bx, [der, vel, rho_arr, rho,
+         incomp] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+      const amrex::Real l_rho = (incomp != 0) ? rho : rho_arr(i, j, k);
+      der(i, j, k) =
+        0.5 * l_rho *
+        (AMREX_D_TERM(
+          vel(i, j, k, 0) * vel(i, j, k, 0), +vel(i, j, k, 1) * vel(i, j, k, 1),
+          +vel(i, j, k, 2) * vel(i, j, k, 2)));
+    });
 }
 
 //
@@ -789,11 +792,11 @@ pelelmex_dermixfrac(
     bx, [density, mixt_frac, rhoY, Zox_lcl, denom_inv,
          fact_Bilger] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
       const amrex::Real rho_inv = 1.0 / density(i, j, k);
-      mixt_frac(i, j, k) = 0.0;
+      amrex::Real Z = 0.0;
       for (int n = 0; n < NUM_SPECIES; ++n) {
-        mixt_frac(i, j, k) += (rhoY(i, j, k, n) * fact_Bilger[n]) * rho_inv;
+        Z += (rhoY(i, j, k, n) * fact_Bilger[n]) * rho_inv;
       }
-      mixt_frac(i, j, k) = (mixt_frac(i, j, k) - Zox_lcl) * denom_inv;
+      mixt_frac(i, j, k) = (Z - Zox_lcl) * denom_inv;
     });
 }
 
@@ -842,16 +845,16 @@ pelelmex_derprogvar(
   amrex::ParallelFor(
     bx, [density, prog_var, rhoY, Cweights, denom_inv, C0_lcl, temp,
          revert] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      amrex::Real rho_inv = 1.0 / density(i, j, k);
-      prog_var(i, j, k) = 0.0;
+      const amrex::Real rho_inv = 1.0 / density(i, j, k);
+      amrex::Real C = 0.0;
       for (int n = 0; n < NUM_SPECIES; ++n) {
-        prog_var(i, j, k) += (rhoY(i, j, k, n) * Cweights[n]) * rho_inv;
+        C += (rhoY(i, j, k, n) * Cweights[n]) * rho_inv;
       }
-      prog_var(i, j, k) += temp(i, j, k) * Cweights[NUM_SPECIES];
+      C += temp(i, j, k) * Cweights[NUM_SPECIES];
       if (revert != 0) {
-        prog_var(i, j, k) = 1.0 - (prog_var(i, j, k) - C0_lcl) * denom_inv;
+        prog_var(i, j, k) = 1.0 - (C - C0_lcl) * denom_inv;
       } else {
-        prog_var(i, j, k) = (prog_var(i, j, k) - C0_lcl) * denom_inv;
+        prog_var(i, j, k) = (C - C0_lcl) * denom_inv;
       }
     });
 }
@@ -922,29 +925,14 @@ pelelmex_derdiffc(
   if (a_pelelm->m_use_soret == 0) {
     AMREX_ASSERT(ncomp == NUM_SPECIES);
   }
-  const bool do_fixed_Le = (a_pelelm->m_fixed_Le != 0);
-  const bool do_fixed_Pr = (a_pelelm->m_fixed_Pr != 0);
-  const bool do_soret = (a_pelelm->m_use_soret != 0);
+  // lambda and mu are scratch; so is rhotheta without Soret
   amrex::FArrayBox dummies(bx, NUM_SPECIES + 2, amrex::The_Async_Arena());
-  auto const& rhoY = statefab.const_array(FIRSTSPEC);
-  auto const& T = statefab.array(TEMP);
-  auto rhoD = derfab.array(dcomp);
-  auto lambda = dummies.array(0);
-  auto mu = dummies.array(1);
-  auto const* ltransparm = a_pelelm->trans_parms.device_parm();
-  auto const* leosparm = a_pelelm->eos_parms.device_parm();
-  auto rhotheta = do_soret ? derfab.array(dcomp + NUM_SPECIES)
-                           : dummies.array(2); // dummy for no soret
-  amrex::Real LeInv = a_pelelm->m_Lewis_inv;
-  amrex::Real PrInv = a_pelelm->m_Prandtl_inv;
-  amrex::ParallelFor(
-    bx, [do_fixed_Le, do_fixed_Pr, do_soret, LeInv, PrInv, rhoY, T, rhoD,
-         rhotheta, lambda, mu, ltransparm,
-         leosparm] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      getTransportCoeff<pele::physics::PhysicsType::eos_type>(
-        i, j, k, do_fixed_Le, do_fixed_Pr, do_soret, LeInv, PrInv, rhoY, T,
-        rhoD, rhotheta, lambda, mu, ltransparm, leosparm);
-    });
+  auto rhotheta = (a_pelelm->m_use_soret != 0)
+                    ? derfab.array(dcomp + NUM_SPECIES)
+                    : dummies.array(2);
+  pelelmex_derive_detail::transportCoeffs(
+    a_pelelm, bx, statefab, derfab.array(dcomp), rhotheta, dummies.array(0),
+    dummies.array(1));
 }
 
 //
@@ -969,28 +957,11 @@ pelelmex_derlambda(
   AMREX_ASSERT(derfab.box().contains(bx));
   AMREX_ASSERT(statefab.box().contains(bx));
   AMREX_ASSERT(derfab.nComp() >= dcomp + ncomp);
-  bool do_fixed_Le = (a_pelelm->m_fixed_Le != 0);
-  bool do_fixed_Pr = (a_pelelm->m_fixed_Pr != 0);
-  bool do_soret = (a_pelelm->m_use_soret != 0);
+  // mu, rhoD and rhotheta are scratch
   amrex::FArrayBox dummies(bx, 2 * NUM_SPECIES + 1, amrex::The_Async_Arena());
-  auto const& rhoY = statefab.const_array(FIRSTSPEC);
-  auto const& T = statefab.array(TEMP);
-  auto rhoD = dummies.array(1);
-  auto lambda = derfab.array(dcomp);
-  auto mu = dummies.array(0);
-  auto rhotheta = dummies.array(NUM_SPECIES + 1);
-  auto const* ltransparm = a_pelelm->trans_parms.device_parm();
-  auto const* leosparm = a_pelelm->eos_parms.device_parm();
-  amrex::Real LeInv = a_pelelm->m_Lewis_inv;
-  amrex::Real PrInv = a_pelelm->m_Prandtl_inv;
-  amrex::ParallelFor(
-    bx, [do_fixed_Le, do_fixed_Pr, do_soret, LeInv, PrInv, rhoY, T, rhoD,
-         rhotheta, lambda, mu, ltransparm,
-         leosparm] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      getTransportCoeff<pele::physics::PhysicsType::eos_type>(
-        i, j, k, do_fixed_Le, do_fixed_Pr, do_soret, LeInv, PrInv, rhoY, T,
-        rhoD, rhotheta, lambda, mu, ltransparm, leosparm);
-    });
+  pelelmex_derive_detail::transportCoeffs(
+    a_pelelm, bx, statefab, dummies.array(1), dummies.array(NUM_SPECIES + 1),
+    derfab.array(dcomp), dummies.array(0));
 }
 
 //
@@ -1048,11 +1019,10 @@ pelelmex_derturbforcing(
 
   // Set derfab to zero first
   derfab.setVal<amrex::RunOn::Device>(0.0, bx, dcomp, ncomp);
-  amrex::FArrayBox DummyFab(bx, 1);
 
-  // Declare a pointer for the density array view
+  // The density is only read when compressible
   amrex::Array4<const amrex::Real> rho = (a_pelelm->m_incompressible != 0)
-                                           ? DummyFab.const_array()
+                                           ? amrex::Array4<const amrex::Real>{}
                                            : statefab.const_array(DENSITY);
 
   // call the function above to construct the forcing

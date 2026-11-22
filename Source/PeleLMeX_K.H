@@ -720,6 +720,56 @@ getHGivenT(
   }
 }
 
+#ifdef USE_MANIFOLD_EOS
+// Heat release rate at (i,j,k) read from the manifold table (entry hrr_idx,
+// zero if the table has no HRR); rhoY holds the conserved manifold variables
+AMREX_GPU_DEVICE
+AMREX_FORCE_INLINE
+amrex::Real
+cellManifoldHeatRelease(
+  const int i,
+  const int j,
+  const int k,
+  amrex::Array4<const amrex::Real> const& rhoY,
+  const int hrr_idx,
+  pele::physics::eos::EosParm<pele::physics::PhysicsType::eos_type> const*
+    eosparm) noexcept
+{
+  auto eos = pele::physics::PhysicsType::eos(eosparm);
+  amrex::Real rho, rhoinv, mani_vars_prim[NUM_SPECIES];
+  eos.RY2RRinvY(rhoY.cellData(i, j, k), rho, rhoinv, mani_vars_prim);
+  amrex::Real mani_hrr = 0.0;
+  if (hrr_idx >= 0) {
+    eos.Y2GenericManifoldData(mani_vars_prim, &hrr_idx, &mani_hrr, 1);
+  }
+  return mani_hrr;
+}
+#else
+// Heat release rate at (i,j,k): -sum_n h_n(T) omega_n
+AMREX_GPU_DEVICE
+AMREX_FORCE_INLINE
+amrex::Real
+cellHeatRelease(
+  const int i,
+  const int j,
+  const int k,
+  amrex::Array4<const amrex::Real> const& T,
+  amrex::Array4<const amrex::Real> const& react,
+  pele::physics::eos::EosParm<pele::physics::PhysicsType::eos_type> const*
+    eosparm) noexcept
+{
+  auto eos = pele::physics::PhysicsType::eos(eosparm);
+  amrex::Real hi_spec_cgs[NUM_SPECIES] = {0.0};
+  eos.T2Hi(T(i, j, k), hi_spec_cgs);
+  amrex::Real hrr = 0.0;
+  for (int n = 0; n < NUM_SPECIES; ++n) {
+    const amrex::Real hi = c2m::H(hi_spec_cgs[n]); // CGS -> MKS conversion
+    hrr -= hi * react(i, j, k, n);
+  }
+  return hrr;
+}
+#endif
+
 AMREX_GPU_DEVICE
 AMREX_FORCE_INLINE
 void

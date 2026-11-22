@@ -486,44 +486,26 @@ PeleLM::getHeatRelease(const int a_lev, amrex::MultiFab* a_HR)
   auto const* leosparm = eos_parms.device_parm();
   auto const& state_n_ma = ldataNew_p->state.const_arrays();
 
-#ifdef USE_MANIFOLD_EOS
-
   auto const& HRR_ma = a_HR->arrays();
-  auto table_idx = get_var_index(
+#ifdef USE_MANIFOLD_EOS
+  const int hrr_idx = get_var_index(
     "HRR", &eos_parms.host_only_parm().manfunc_par->host_parm(), false);
-  const int hrr_idx = table_idx;
-
   amrex::ParallelFor(
     *a_HR, [state_n_ma, leosparm, HRR_ma, hrr_idx] AMREX_GPU_DEVICE(
              int box_no, int i, int j, int k) noexcept {
-      auto eos = pele::physics::PhysicsType::eos(leosparm);
-      amrex::Real rho, rhoinv,
-        mani_vars_prim[NUM_SPECIES]; // not the conserved (\rho.Y) but just Y
-      amrex::Array4<amrex::Real const> mani_var_cons(
+      const amrex::Array4<const amrex::Real> rhoY(
         state_n_ma[box_no], FIRSTSPEC);
-      eos.RY2RRinvY(
-        mani_var_cons.cellData(i, j, k), rho, rhoinv, mani_vars_prim);
-      amrex::Real mani_hrr = 0.0; // Get the manifold hrr
-      if (hrr_idx >= 0)
-        eos.Y2GenericManifoldData(mani_vars_prim, &hrr_idx, &mani_hrr, 1);
-      HRR_ma[box_no](i, j, k) = mani_hrr;
+      HRR_ma[box_no](i, j, k) =
+        cellManifoldHeatRelease(i, j, k, rhoY, hrr_idx, leosparm);
     });
 #else
-  amrex::MultiFab Enth(grids[a_lev], dmap[a_lev], NUM_SPECIES, 0);
-  auto* ldataR_p = getLevelDataReactPtr(a_lev);
-  auto const& react_ma = ldataR_p->I_R.const_arrays();
-  auto const& enth_ma = Enth.arrays();
-  auto const& HRR_ma = a_HR->arrays();
+  auto const& react_ma = getLevelDataReactPtr(a_lev)->I_R.const_arrays();
   amrex::ParallelFor(
-    *a_HR, [state_n_ma, enth_ma, leosparm, HRR_ma, react_ma] AMREX_GPU_DEVICE(
+    *a_HR, [state_n_ma, leosparm, HRR_ma, react_ma] AMREX_GPU_DEVICE(
              int box_no, int i, int j, int k) noexcept {
-      amrex::Array4<amrex::Real const> T(state_n_ma[box_no], TEMP);
-      getHGivenT(i, j, k, T, enth_ma[box_no], leosparm);
-      HRR_ma[box_no](i, j, k) = 0.0;
-      for (int n = 0; n < NUM_SPECIES; ++n) {
-        HRR_ma[box_no](i, j, k) -=
-          enth_ma[box_no](i, j, k, n) * react_ma[box_no](i, j, k, n);
-      }
+      const amrex::Array4<const amrex::Real> T(state_n_ma[box_no], TEMP);
+      HRR_ma[box_no](i, j, k) =
+        cellHeatRelease(i, j, k, T, react_ma[box_no], leosparm);
     });
 #endif
 
