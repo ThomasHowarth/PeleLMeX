@@ -468,9 +468,7 @@ PeleLM::addFrozenExternalSources(
 #endif
 #ifdef PELE_USE_RADIATION
   if (do_rad_solve && !m_rad_SDC) {
-    BL_PROFILE_VAR("PeleLM::advance::rad", PLM_RAD);
     computeRadSource(a_timestamp);
-    BL_PROFILE_VAR_STOP(PLM_RAD);
     added = true;
   }
 #endif
@@ -504,9 +502,7 @@ PeleLM::assembleExternalSources(
   // the a_timestamp_eval state like the sources below. The P1 solve starts
   // from the previous G, so re-solves from nearby states are cheap.
   if (do_rad_solve && m_rad_SDC) {
-    BL_PROFILE_VAR("PeleLM::advance::rad", PLM_RAD);
     computeRadSource(a_timestamp_eval);
-    BL_PROFILE_VAR_STOP(PLM_RAD);
   }
 #endif
   addScalarVarianceSources(a_timestamp_eval);
