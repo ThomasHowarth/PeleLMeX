@@ -434,12 +434,16 @@ PeleLM::getExternalSources(
   }
 
 #ifdef PELE_USE_SPRAY
-  // spray_SDC: divU^n sees the instantaneous spray rate at t^n. Then keep the
-  // particles at t^n and advance them over the step against the t^n gas, as
-  // without spray_SDC, for the first SDC iteration.
+  // spray_SDC: the first SDC iteration uses the instantaneous spray rate at
+  // t^n for both divU and the scalars (S^{n+1,0} = S^n, as for the other
+  // sources), so that its state is consistent with the equation of state
+  // and the chi correction of the second iteration does not count the lag
+  // twice. The particles are kept at t^n: each later iteration advances them
+  // over the step (spray_SDC needs sdc_iterMax >= 2).
   if (m_spray_SDC && is_initIter == 0) {
-    for (auto* v : {&diffData->spraySrc, &diffData->sprayRate_n,
-                    &diffData->sprayRate_np1}) {
+    for (auto* v :
+         {&diffData->spraySrc, &diffData->sprayRate_n,
+          &diffData->sprayRate_np1}) {
       for (int lev = 0; lev <= finest_level; ++lev) {
         v->emplace_back(
           grids[lev], dmap[lev], NVAR, m_extSource[lev]->nGrowVect(),
@@ -447,7 +451,7 @@ PeleLM::getExternalSources(
         (*v)[lev].setVal(0.0);
       }
     }
-    // m_extSource holds the other sources at t^n, as does extSrc_n
+    // The other sources at t^n are in extSrc_n
     constexpr bool oldState = false;
     constexpr bool rateOnly = true;
     for (int lev = 0; lev <= finest_level; ++lev) {
@@ -458,22 +462,13 @@ PeleLM::getExternalSources(
       const auto ng = m_extSource[lev]->nGrowVect();
       amrex::MultiFab::Copy(
         diffData->sprayRate_n[lev], *m_extSource[lev], 0, 0, NVAR, ng);
-      m_extSource[lev]->setVal(0.0);
-    }
-    SpraySaveParticles();
-    SprayMKD(m_cur_time, m_dt);
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      auto& ext = *m_extSource[lev];
-      const auto ng = ext.nGrowVect();
-      amrex::MultiFab::Copy(diffData->spraySrc[lev], ext, 0, 0, NVAR, ng);
-      // m_extSource: other sources + integrated spray source
-      amrex::MultiFab::LinComb(
-        ext, 1.0, diffData->extSrc_n[lev], 0, 1.0, diffData->spraySrc[lev], 0,
-        0, NVAR, ng);
-      // extSrc_n: other sources + spray rate at t^n
+      // extSrc_n and m_extSource: other sources + spray rate at t^n
       amrex::MultiFab::Add(
         diffData->extSrc_n[lev], diffData->sprayRate_n[lev], 0, 0, NVAR, ng);
+      amrex::MultiFab::Copy(
+        *m_extSource[lev], diffData->extSrc_n[lev], 0, 0, NVAR, ng);
     }
+    SpraySaveParticles();
   }
 #endif
 }
@@ -517,8 +512,8 @@ PeleLM::addFrozenExternalSources(
 // advection of the first step imprints an O(dt) error that the projections
 // do not remove. Only the sources that can be evaluated at an instant are
 // included: the soot and radiation sources span a step, and spray only adds
-// its instantaneous rate with spray_SDC. The variance sources need the turbulent
-// viscosity at the old time, which is not set up yet.
+// its instantaneous rate with spray_SDC. The variance sources need the
+// turbulent viscosity at the old time, which is not set up yet.
 void
 PeleLM::calcInitDivU(const amrex::Real a_dt)
 {
