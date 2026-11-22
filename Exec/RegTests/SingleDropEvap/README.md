@@ -67,4 +67,6 @@ Note that the key script within CMLM that generates the tables for spray vaporiz
 `cmlm/run_scripts/ctable/create_spray_table_nd.py`.
 
 ### spray_SDC temporal convergence test
-`spray-sdc-2d.inp` is a cloud of evaporating droplets (one parcel per cell centre, `prob.num_ppp` droplets each) in hot gas with a Gaussian hot spot (`prob.blob_dT`, `prob.blob_sigma`). The `spray-sdc-2d` CTest runs it to t = 0.2 on a fixed 32x32 grid with 4, 8, 16 and 32 steps, and `test.py` checks that the extrema of the gas state converge at second order in time with `peleLM.spray_SDC = 1` (they converge at first order without it).
+`spray-sdc-2d.inp` is a cloud of evaporating droplets (one parcel per cell centre, `prob.num_ppp` droplets each) in hot gas with a Gaussian hot spot (`prob.blob_dT`, `prob.blob_sigma`). The `spray-sdc-2d` CTest runs it to t = 0.2 on a fixed 32x32 grid with 4, 8, 16 and 32 steps, and `test.py` checks that the gas fields of the final plotfiles (temperature, density, velocity, divU) converge at second order in time with `peleLM.spray_SDC = 1`: it fits the rate to the L1 norms of the differences between successive dt (they converge at first order without it).
+
+`spray-sdc-moving-2d.inp` is the same test with moving droplets: a periodic cloud (24x24 parcels, `prob.part_vel = 0.4 0.25`) that crosses cell boundaries during the run, which exercises the second-order particle path and spread deposit of `peleLM.spray_SDC`. The `spray-sdc-moving-2d` CTest runs it with 8, 16, 32 and 64 steps.

@@ -1,7 +1,7 @@
 # spray_SDC temporal convergence: a cloud of evaporating heptane-decane
 # droplets (one parcel per cell centre) in hot gas with a Gaussian hot spot,
 # run at several dt on a fixed grid (see test.py). With peleLM.spray_SDC = 1
-# the extrema converge at second order in time; without it, at first order.
+# the gas fields converge at second order in time; without it, at first order.
 #----------------------DOMAIN DEFINITION------------------------
 geometry.is_periodic = 0 1
 geometry.coord_sys   = 0
@@ -38,9 +38,6 @@ peleLM.v = 1
 peleLM.num_init_iter = 0
 peleLM.sdc_iterMax = 2
 peleLM.spray_SDC = 1
-peleLM.do_temporals = 1
-peleLM.do_extremas = 1
-peleLM.temporal_int = 1
 
 #------------------------TIME STEPPING------------------------------
 # The test runs to t = 0.2 with amr.fixed_dt = 0.2 / amr.max_step for
