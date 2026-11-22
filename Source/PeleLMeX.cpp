@@ -38,6 +38,7 @@ PeleLM::~PeleLM()
   GhostPC.reset();
   VirtPC.reset();
   SprayPC.reset();
+  SprayPC_n.reset();
 #endif
 #ifdef PELE_USE_SOOT
   cleanupSootModel();
