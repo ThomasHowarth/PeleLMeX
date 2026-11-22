@@ -255,12 +255,8 @@ MLABecCecLaplacian::applyMetricTermsCoeffs()
 }
 
 void
-MLABecCecLaplacian::prepareForSolve()
+MLABecCecLaplacian::updateCoeffs()
 {
-  BL_PROFILE("MLABecCecLaplacian::prepareForSolve()");
-
-  MLCellABecLapT<MultiFab>::prepareForSolve();
-
 #if (AMREX_SPACEDIM != 3)
   applyMetricTermsCoeffs();
 #endif
@@ -286,6 +282,16 @@ MLABecCecLaplacian::prepareForSolve()
   }
 
   m_needs_update = false;
+}
+
+void
+MLABecCecLaplacian::prepareForSolve()
+{
+  BL_PROFILE("MLABecCecLaplacian::prepareForSolve()");
+
+  MLCellABecLapT<MultiFab>::prepareForSolve();
+
+  updateCoeffs();
 }
 
 void
@@ -678,31 +684,7 @@ MLABecCecLaplacian::update()
   if (MLCellABecLapT<MultiFab>::needsUpdate())
     MLCellABecLapT<MultiFab>::update();
 
-#if (AMREX_SPACEDIM != 3)
-  applyMetricTermsCoeffs();
-#endif
-
-  averageDownCoeffs();
-
-  m_is_singular.clear();
-  m_is_singular.resize(m_num_amr_levels, false);
-  auto itlo = std::find(m_lobc[0].begin(), m_lobc[0].end(), BCType::Dirichlet);
-  auto ithi = std::find(m_hibc[0].begin(), m_hibc[0].end(), BCType::Dirichlet);
-  if (itlo == m_lobc[0].end() && ithi == m_hibc[0].end()) { // No Dirichlet
-    for (int alev = 0; alev < m_num_amr_levels; ++alev) {
-      if (m_domain_covered[alev]) {
-        if (m_a_scalar == 0.0) {
-          m_is_singular[alev] = true;
-        } else {
-          Real asum = m_a_coeffs[alev].back().sum();
-          Real amax = m_a_coeffs[alev].back().norm0();
-          m_is_singular[alev] = (asum <= amax * 1.e-12);
-        }
-      }
-    }
-  }
-
-  m_needs_update = false;
+  updateCoeffs();
 }
 
 } // namespace amrex

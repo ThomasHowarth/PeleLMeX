@@ -45,6 +45,9 @@ PrecondOp::PrecondOp(PeleLM* a_pelelm) : m_pelelm(a_pelelm)
   setMLMGOptions(
     *m_mlmg_diff, m_diff_verbose, m_diff_bottom_solver,
     "ef.precond.diff_bottom_solver");
+  // The smoothing options are the electron solve's only, as before
+  m_mlmg_diff->setPreSmooth(m_num_pre_smooth);
+  m_mlmg_diff->setPostSmooth(m_num_post_smooth);
   m_mlmg_drift = std::make_unique<amrex::MLMG>(*m_drift);
   m_mlmg_drift->setVerbose(m_drift_verbose);
   m_mlmg_Stilda = std::make_unique<amrex::MLMG>(*m_Stilda);
@@ -65,8 +68,6 @@ PrecondOp::setMLMGOptions(
   a_mlmg.setBottomVerbose(m_bottom_verbose);
   a_mlmg.setMaxIter(m_mg_max_iter);
   a_mlmg.setBottomMaxIter(m_mg_bottom_maxiter);
-  a_mlmg.setPreSmooth(m_num_pre_smooth);
-  a_mlmg.setPostSmooth(m_num_post_smooth);
   if (m_fixed_mg_it > 0) {
     a_mlmg.setFixedIter(m_fixed_mg_it);
   }

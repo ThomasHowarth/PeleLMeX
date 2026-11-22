@@ -169,6 +169,9 @@ private:
   int m_ncomp = 1;
 
   void define_abc_coeffs();
+
+  //! Metric terms, coefficients on the coarser levels and singular flags
+  void updateCoeffs();
 };
 
 } // namespace amrex

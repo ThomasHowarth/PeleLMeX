@@ -205,6 +205,9 @@ PeleLM::implicitNonLinearSolve(
   gmres.setRestartLength(m_ef_GMRES_restart_length);
   gmres.setMaxIters(m_ef_GMRES_restart_length * m_ef_GMRES_max_restart);
   gmres.setVerbose(m_ef_GMRES_verbose);
+  // The MLMG solves of applyPrecond are not a fixed linear operator unless
+  // ef.precond.fixedIter is set: right preconditioning needs flexible GMRES
+  gmres.setFlexible(m_ef_GMRES_left_precond == 0);
   int GMRES_tot_count = 0;
 
   //------------------------------------------------------------------------
