@@ -358,9 +358,6 @@ PeleLM::SprayMKDLevel(
 void
 PeleLM::SprayInitDivURate()
 {
-  for (int lev = 0; lev <= finest_level; ++lev) {
-    m_extSource[lev]->setVal(0.0);
-  }
   if (!do_spray_particles || !m_spray_SDC) {
     return;
   }

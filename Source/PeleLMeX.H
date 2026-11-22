@@ -961,8 +961,8 @@ public:
     const bool a_rateOnly = false);
   // spray_SDC: keep the particles at t^n, put them back, and fill the gas
   // state at t^{n+1,k} that the particles see at the end of the step
-  // spray_SDC: m_extSource <- instantaneous spray rate at the current time,
-  // for the initial divU (zeroes m_extSource otherwise)
+  // spray_SDC: add the instantaneous spray rate at the current time to
+  // m_extSource, for the initial divU
   void SprayInitDivURate();
   void SpraySaveParticles();
   void SprayRestoreParticles();
@@ -1031,6 +1031,9 @@ public:
 
   bool addFrozenExternalSources(
     const int is_initIter, const PeleLM::TimeStamp a_timestamp);
+
+  // External sources at t^0 into m_extSource, for the initial divU
+  void initDivUExternalSources(amrex::Real a_dt);
 
   void assembleExternalSources(
     const int is_initIter,
