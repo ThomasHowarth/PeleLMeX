@@ -20,7 +20,7 @@ PrecondOp::PrecondOp(PeleLM* a_pelelm) : m_pelelm(a_pelelm)
   info_apply.setMaxCoarseningLevel(0);
 
   // Diff/Drift Op
-  m_diff.reset(new amrex::MLABecCecLaplacian(
+  m_diff.reset(new amrex::MLABecLapDrift(
     m_pelelm->Geom(0, m_pelelm->finestLevel()),
     m_pelelm->boxArray(0, m_pelelm->finestLevel()),
     m_pelelm->DistributionMap(0, m_pelelm->finestLevel()), info_diff));
@@ -85,7 +85,7 @@ PrecondOp::setDiffOpScalars(
 void
 PrecondOp::setDiffOpRelaxation(const amrex::Real& a_omega)
 {
-  m_diff->setRelaxation(a_omega);
+  m_diff->setDriftRelaxation(a_omega);
 }
 
 void
@@ -160,13 +160,16 @@ void
 PrecondOp::setDiffOpCCoeff(
   int lev, const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& a_cCoeff)
 {
-  m_diff->setCCoeffs(lev, a_cCoeff);
+  m_diff->setDriftCoeffs(lev, a_cCoeff);
 }
 
 void
 PrecondOp::getDiffOpDiagonal(int lev, amrex::MultiFab& a_diffOpDiag)
 {
-  m_diff->getDiagonal(lev, a_diffOpDiag);
+  // normalize divides by the diagonal of the operator
+  a_diffOpDiag.setVal(1.0);
+  m_diff->normalize(lev, 0, a_diffOpDiag);
+  a_diffOpDiag.invert(1.0, 0);
 }
 
 void
@@ -265,5 +268,6 @@ PrecondOp::readParameters()
         MLMGUtils::parseBottomSolver(
           m_diff_bottom_solver, "ef.precond.diff_bottom_solver")),
     "ef.precond.diff_bottom_solver: the electron drift-diffusion operator "
-    "has no matrix (smoother, bicgstab, cg, bicgcg or cgbicg)");
+    "takes iterative bottom solvers only (smoother, bicgstab, cg, bicgcg or "
+    "cgbicg)");
 }

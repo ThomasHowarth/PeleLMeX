@@ -3,8 +3,7 @@
 
 #include <AMReX_MLMG.H>
 #include <AMReX_BC_TYPES.H>
-#include <AMReX_MLABecLaplacian.H>
-#include <AMReX_MLABecCecLaplacian.H>
+#include <AMReX_MLABecLapDrift.H>
 
 class PeleLM;
 
@@ -67,7 +66,8 @@ public:
   getOpBC(amrex::Orientation::Side a_side, const amrex::BCRec& a_bc);
 
   // PC linear ops
-  std::unique_ptr<amrex::MLABecCecLaplacian> m_diff;
+  // The electron diffusion-drift operator
+  std::unique_ptr<amrex::MLABecLapDrift> m_diff;
   std::unique_ptr<amrex::MLABecLaplacian> m_drift;
   std::unique_ptr<amrex::MLABecLaplacian> m_Stilda;
 
@@ -94,8 +94,8 @@ public:
   amrex::Real m_mg_atol = 1.0e-14;
   amrex::Real m_mg_bottom_rtol = -1.0;
 
-  // The electron diffusion-drift operator has no matrix: iterative bottom
-  // solvers only. The Stilda (Poisson-like) solve can use any of them.
+  // The electron diffusion-drift operator takes iterative bottom solvers
+  // only. The Stilda (Poisson-like) solve can use any of them.
   std::string m_diff_bottom_solver;
   std::string m_Stilda_bottom_solver;
   std::string m_hypre_namespace = "ef_precond_hypre";

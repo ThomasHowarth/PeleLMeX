@@ -121,11 +121,7 @@ function(build_pele_exe pele_exe_name pele_physics_lib_name)
         ${PLASMA_DIR}/PeleLMeX_EFTransport.cpp
         ${PLASMA_DIR}/PeleLMeX_EFUtils.cpp
         ${PLASMA_DIR}/LinOps/PrecondOp.H
-        ${PLASMA_DIR}/LinOps/PrecondOp.cpp
-        ${PLASMA_DIR}/LinOps/AMReX_MLABecCecLaplacian.H
-        ${PLASMA_DIR}/LinOps/AMReX_MLABecCecLaplacian.cpp
-        ${PLASMA_DIR}/LinOps/AMReX_MLABecCecLap_K.H
-        ${PLASMA_DIR}/LinOps/AMReX_MLABecCecLap_${PELE_DIM}D_K.H)
+        ${PLASMA_DIR}/LinOps/PrecondOp.cpp)
   endif()
 
   if (PELELM_NUM_ODE GREATER 0)
