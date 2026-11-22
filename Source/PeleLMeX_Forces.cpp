@@ -447,14 +447,13 @@ PeleLM::getExternalSources(
   // SDC iteration the soot source integrated from t^n alone, as without
   // soot_SDC
   if (m_soot_SDC) {
-    for (auto* v :
-         {&diffData->sootSrc, &diffData->sootRate_n, &diffData->sootRate_np1}) {
-      for (int lev = 0; lev <= finest_level; ++lev) {
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      for (auto* v : {&diffData->sootSrc, &diffData->sootRate_n}) {
         v->emplace_back(
           grids[lev], dmap[lev], NVAR, m_extSource[lev]->nGrowVect(),
           amrex::MFInfo(), *m_factory[lev]);
-        (*v)[lev].setVal(0.0);
       }
+      diffData->sootRate_n[lev].setVal(0.0);
     }
     computeSootRate(a_timestamp_old, diffData->sootRate_n);
     computeSootSourceSDC(diffData, false);
@@ -543,7 +542,9 @@ PeleLM::assembleExternalSources(
 // soot_SDC: extSrc_n / extSrc_np1 carry the instantaneous soot rates (for
 // divU), while m_extSource carries the soot source integrated over the step.
 // a_inSDC re-integrates it from the t^{n+1,k} iterate; after the SDC loop it
-// is kept, so that the velocity sees the mass source the scalars used.
+// is kept, so that the velocity sees the mass source the scalars used. The
+// t^{n+1,k} viscosity must be current: in the SDC loop it is computed here,
+// after it by the advance.
 void
 PeleLM::updateExternalSourcesSDC(
   const std::unique_ptr<AdvanceDiffData>& diffData, const bool a_inSDC)
@@ -557,37 +558,29 @@ PeleLM::updateExternalSourcesSDC(
   bool soot_SDC = false;
 #ifdef PELE_USE_SOOT
   soot_SDC = m_soot_SDC;
-  if (soot_SDC) {
-    // The soot integration and rate need the viscosity at t^{n+1,k}, which
-    // the advance only computes for the velocity solve
+  if (soot_SDC && a_inSDC) {
     calcViscosity(AmrNewTime);
-    if (a_inSDC) {
-      computeSootSourceSDC(diffData, true);
-    }
-    for (int lev = 0; lev <= finest_level; ++lev) {
-      diffData->sootRate_np1[lev].setVal(0.0);
-    }
-    computeSootRate(AmrNewTime, diffData->sootRate_np1);
+    computeSootSourceSDC(diffData, true);
   }
 #endif
   for (int lev = 0; lev <= finest_level; ++lev) {
     auto& ext = *m_extSource[lev];
     const auto ng = ext.nGrowVect();
     std::swap(ext, diffData->extSrc_np1[lev]);
-    if (soot_SDC) {
-      amrex::MultiFab::Add(
-        diffData->extSrc_np1[lev], diffData->sootRate_np1[lev], 0, 0, NVAR,
-        ng);
-    }
     amrex::MultiFab::LinComb(
       ext, 0.5, diffData->extSrc_n[lev], 0, 0.5, diffData->extSrc_np1[lev], 0,
       0, NVAR, ng);
     if (soot_SDC) {
+      // Scalars: the integrated soot source instead of the rate at t^n
       amrex::MultiFab::Saxpy(
         ext, -0.5, diffData->sootRate_n[lev], 0, 0, NVAR, ng);
-      amrex::MultiFab::Saxpy(
-        ext, -0.5, diffData->sootRate_np1[lev], 0, 0, NVAR, ng);
       amrex::MultiFab::Add(ext, diffData->sootSrc[lev], 0, 0, NVAR, ng);
     }
   }
+#ifdef PELE_USE_SOOT
+  if (soot_SDC) {
+    // divU^{n+1}: the instantaneous soot rate at t^{n+1,k}
+    computeSootRate(AmrNewTime, diffData->extSrc_np1);
+  }
+#endif
 }

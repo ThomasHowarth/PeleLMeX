@@ -239,6 +239,9 @@ PeleLM::Advance(const int is_initIter)
     }
 #endif
 
+    // New-time viscosity, for the velocity solve and the soot sources below
+    calcViscosity(AmrNewTime);
+
     // S^{n+1} from the final state, for divU^{n+1} and the velocity forcing
     if (m_ext_sources_SDC) {
       updateExternalSourcesSDC(diffData, false);
@@ -262,10 +265,6 @@ PeleLM::Advance(const int is_initIter)
   amrex::Real VelAdvStart = 0.0;
   if (m_verbose > 1) {
     VelAdvStart = amrex::ParallelDescriptor::second();
-  }
-  // Re-evaluate viscosity only if scalar updated
-  if (m_incompressible == 0) {
-    calcViscosity(AmrNewTime);
   }
 
   // Compute t^{n+1/2} velocity advection term

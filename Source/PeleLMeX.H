@@ -281,11 +281,10 @@ public:
 
     // soot_SDC only: the soot source used by the current SDC iteration,
     // integrated over the step from t^n with the forcing of the previous
-    // iterate, and the instantaneous soot rate at t^n and t^(n+1,k), which
-    // are part of extSrc_n / extSrc_np1 (for divU)
+    // iterate, and the instantaneous soot rate at t^n, which is part of
+    // extSrc_n (for divU; extSrc_np1 likewise holds the rate at t^(n+1,k))
     amrex::Vector<amrex::MultiFab> sootSrc;
     amrex::Vector<amrex::MultiFab> sootRate_n;
-    amrex::Vector<amrex::MultiFab> sootRate_np1;
   };
   /**
    * \brief Advance function data container for advection term
