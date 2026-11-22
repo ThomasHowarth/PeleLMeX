@@ -12,38 +12,6 @@
 #endif
 
 //
-// Extract temp
-//
-void
-pelelmex_dertemp(
-  PeleLM* a_pelelm,
-  const amrex::Box& bx,
-  amrex::FArrayBox& derfab,
-  int dcomp,
-  int ncomp,
-  const amrex::FArrayBox& statefab,
-  const amrex::FArrayBox& /*reactfab*/,
-  const amrex::FArrayBox& /*pressfab*/,
-  const amrex::Geometry& /*geom*/,
-  amrex::Real /*time*/,
-  const amrex::Vector<amrex::BCRec>& /*bcrec*/,
-  int /*level*/)
-
-{
-  amrex::ignore_unused(a_pelelm, ncomp);
-  AMREX_ASSERT(derfab.box().contains(bx));
-  AMREX_ASSERT(statefab.box().contains(bx));
-  AMREX_ASSERT(derfab.nComp() >= dcomp + ncomp);
-  AMREX_ASSERT(!a_pelelm->m_incompressible);
-  auto const in_dat = statefab.array();
-  auto der = derfab.array(dcomp);
-  amrex::ParallelFor(
-    bx, [der, in_dat] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      der(i, j, k) = in_dat(i, j, k, TEMP);
-    });
-}
-
-//
 // Compute heat release
 //
 void
