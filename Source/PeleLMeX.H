@@ -256,7 +256,9 @@ public:
       const int a_use_wbar,
       const int a_use_soret,
       const int a_nAux,
-      const int is_init = 0);
+      const int is_init = 0,
+      const bool a_ext_sources_SDC = false,
+      const int a_nGrowExt = 0);
     amrex::Vector<amrex::MultiFab> Dn;   // Diffusion term t^n
     amrex::Vector<amrex::MultiFab> Dnp1; // Diffusion term t^(n+1,k)
     amrex::Vector<amrex::MultiFab> Dhat; // Diffusion term t^(n+1,k+1)
@@ -785,24 +787,6 @@ public:
    */
   void diffuseVelocity();
 
-  // Whether the -u extrho external momentum source is split Crank-Nicolson
-  // between updateVelocity and the implicit velocity solve: low Mach runs
-  // with a source that can add mass (user defined, spray, soot)
-  [[nodiscard]] bool useImplicitExtRho() const
-  {
-    if (m_incompressible != 0) {
-      return false;
-    }
-    bool mass_source = m_user_defined_ext_sources;
-#ifdef PELE_USE_SPRAY
-    mass_source = mass_source || do_spray_particles;
-#endif
-#ifdef PELE_USE_SOOT
-    mass_source = mass_source || do_soot_solve;
-#endif
-    return mass_source;
-  }
-
   /**
    * \brief Return LinOpBC for the scalar diffusion operator
    * \param a_side AMReX orientation
@@ -1001,7 +985,11 @@ public:
     const int is_initIter, const PeleLM::TimeStamp a_timestamp);
 
   // External sources at t^0 into m_extSource, for the initial divU
-  void initDivUExternalSources(amrex::Real a_dt);
+  void calcInitDivU(amrex::Real a_dt);
+  void addUserExternalSources(
+    const PeleLM::TimeStamp a_timestamp_eval,
+    const PeleLM::TimeStamp a_timestamp_new,
+    const amrex::Real a_dt);
 
   void assembleExternalSources(
     const int is_initIter,
@@ -1056,13 +1044,15 @@ public:
    * using the one already precompute and available in diffData
    * \param a_time state time to work with
    * \param diffData container for the diffusion terms
+   * \param a_extSrc external sources at a_time (extRhoY, extRhoH used)
    */
   void calcDivU(
     const int is_init,
     const int computeDiff,
     const int do_avgDown,
     const PeleLM::TimeStamp a_time,
-    const std::unique_ptr<AdvanceDiffData>& diffData);
+    const std::unique_ptr<AdvanceDiffData>& diffData,
+    const amrex::Vector<const amrex::MultiFab*>& a_extSrc);
 
   /**
    * \brief Compute the pressure drift term using RhoRT and
