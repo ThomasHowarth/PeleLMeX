@@ -18,17 +18,6 @@ MLABecCecLaplacian::MLABecCecLaplacian(
   define(a_geom, a_grids, a_dmap, a_info, a_factory);
 }
 
-MLABecCecLaplacian::MLABecCecLaplacian(
-  const Vector<Geometry>& a_geom,
-  const Vector<BoxArray>& a_grids,
-  const Vector<DistributionMapping>& a_dmap,
-  const Vector<iMultiFab const*>& a_overset_mask,
-  const LPInfo& a_info,
-  const Vector<FabFactory<FArrayBox> const*>& a_factory)
-{
-  define(a_geom, a_grids, a_dmap, a_overset_mask, a_info, a_factory);
-}
-
 void
 MLABecCecLaplacian::define(
   const Vector<Geometry>& a_geom,
@@ -39,23 +28,7 @@ MLABecCecLaplacian::define(
 {
   BL_PROFILE("MLABecCecLaplacian::define()");
 
-  MLCellABecCecLap::define(a_geom, a_grids, a_dmap, a_info, a_factory);
-  define_abc_coeffs();
-}
-
-void
-MLABecCecLaplacian::define(
-  const Vector<Geometry>& a_geom,
-  const Vector<BoxArray>& a_grids,
-  const Vector<DistributionMapping>& a_dmap,
-  const Vector<iMultiFab const*>& a_overset_mask,
-  const LPInfo& a_info,
-  const Vector<FabFactory<FArrayBox> const*>& a_factory)
-{
-  BL_PROFILE("MLABecCecLaplacian::define(overset)");
-
-  MLCellABecCecLap::define(
-    a_geom, a_grids, a_dmap, a_overset_mask, a_info, a_factory);
+  MLCellABecLapT<MultiFab>::define(a_geom, a_grids, a_dmap, a_info, a_factory);
   define_abc_coeffs();
 }
 
@@ -239,49 +212,6 @@ MLABecCecLaplacian::averageDownCoeffsSameAmrLevel(
     amrex::average_down_faces(fine, crse, ratio, 0);
     amrex::average_down_faces(finec, crsec, ratio, 0);
   }
-
-  for (int mglev = 1; mglev < nmglevs; ++mglev) {
-    if (m_overset_mask[amrlev][mglev]) {
-      const Real fac = static_cast<Real>(1 << mglev); // 2**mglev
-      const Real osfac = 2.0 * fac / (fac + 1.0);
-      const int ncomp = getNComp();
-#ifdef _OPENMP
-#pragma omp parallel if (Gpu::notInLaunchRegion())
-#endif
-      for (MFIter mfi(a[mglev], TilingIfNotGPU()); mfi.isValid(); ++mfi) {
-        AMREX_D_TERM(
-          Box const& xbx = mfi.nodaltilebox(0);
-          , Box const& ybx = mfi.nodaltilebox(1);
-          , Box const& zbx = mfi.nodaltilebox(2));
-        AMREX_D_TERM(
-          Array4<Real> const& bx = b[mglev][0].array(mfi);
-          , Array4<Real> const& by = b[mglev][1].array(mfi);
-          , Array4<Real> const& bz = b[mglev][2].array(mfi));
-        AMREX_D_TERM(
-          Array4<Real> const& cx = c[mglev][0].array(mfi);
-          , Array4<Real> const& cy = c[mglev][1].array(mfi);
-          , Array4<Real> const& cz = c[mglev][2].array(mfi));
-        Array4<int const> const& osm =
-          m_overset_mask[amrlev][mglev]->const_array(mfi);
-        AMREX_LAUNCH_HOST_DEVICE_LAMBDA_DIM(
-          xbx, t_xbx,
-          {
-            overset_rescale_bcoef_x(t_xbx, bx, osm, ncomp, osfac);
-            overset_rescale_bcoef_x(t_xbx, cx, osm, ncomp, osfac);
-          },
-          ybx, t_ybx,
-          {
-            overset_rescale_bcoef_y(t_ybx, by, osm, ncomp, osfac);
-            overset_rescale_bcoef_y(t_ybx, cy, osm, ncomp, osfac);
-          },
-          zbx, t_zbx,
-          {
-            overset_rescale_bcoef_z(t_zbx, bz, osm, ncomp, osfac);
-            overset_rescale_bcoef_z(t_zbx, cz, osm, ncomp, osfac);
-          });
-      }
-    }
-  }
 }
 
 void
@@ -329,7 +259,7 @@ MLABecCecLaplacian::prepareForSolve()
 {
   BL_PROFILE("MLABecCecLaplacian::prepareForSolve()");
 
-  MLCellABecCecLap::prepareForSolve();
+  MLCellABecLapT<MultiFab>::prepareForSolve();
 
 #if (AMREX_SPACEDIM != 3)
   applyMetricTermsCoeffs();
@@ -343,8 +273,7 @@ MLABecCecLaplacian::prepareForSolve()
   auto ithi = std::find(m_hibc[0].begin(), m_hibc[0].end(), BCType::Dirichlet);
   if (itlo == m_lobc[0].end() && ithi == m_hibc[0].end()) { // No Dirichlet
     for (int alev = 0; alev < m_num_amr_levels; ++alev) {
-      // For now this assumes that overset regions are treated as Dirichlet bc's
-      if (m_domain_covered[alev] && !m_overset_mask[alev][0]) {
+      if (m_domain_covered[alev]) {
         if (m_a_scalar == 0.0) {
           m_is_singular[alev] = true;
         } else {
@@ -399,22 +328,12 @@ MLABecCecLaplacian::Fapply(
       const auto& cxfab = cxcoef.array(mfi);
       , const auto& cyfab = cycoef.array(mfi);
       , const auto& czfab = czcoef.array(mfi););
-    if (m_overset_mask[amrlev][mglev]) {
-      const auto& osm = m_overset_mask[amrlev][mglev]->array(mfi);
-      AMREX_LAUNCH_HOST_DEVICE_LAMBDA(bx, tbx, {
-        mlabecceclap_adotx_os(
-          tbx, yfab, xfab, afab, AMREX_D_DECL(bxfab, byfab, bzfab),
-          AMREX_D_DECL(cxfab, cyfab, czfab), osm, dxinv, ascalar, bscalar,
-          cscalar, ncomp);
-      });
-    } else {
-      AMREX_LAUNCH_HOST_DEVICE_LAMBDA(bx, tbx, {
-        mlabecceclap_adotx(
-          tbx, yfab, xfab, afab, AMREX_D_DECL(bxfab, byfab, bzfab),
-          AMREX_D_DECL(cxfab, cyfab, czfab), dxinv, ascalar, bscalar, cscalar,
-          ncomp);
-      });
-    }
+    AMREX_LAUNCH_HOST_DEVICE_LAMBDA(bx, tbx, {
+      mlabecceclap_adotx(
+        tbx, yfab, xfab, afab, AMREX_D_DECL(bxfab, byfab, bzfab),
+        AMREX_D_DECL(cxfab, cyfab, czfab), dxinv, ascalar, bscalar, cscalar,
+        ncomp);
+    });
   }
 }
 
@@ -576,59 +495,7 @@ MLABecCecLaplacian::Fsmooth(
 #endif
 #endif
 
-#ifdef AMREX_USE_DPCPP
-    // xxxxx DPCPP todo: kernel size
-    Vector<Array4<Real const>> ha(2 * AMREX_SPACEDIM);
-    ha[0] = f0fab;
-    ha[1] = f1fab;
-#if (AMREX_SPACEDIM > 1)
-    ha[2] = f2fab;
-    ha[3] = f3fab;
-#if (AMREX_SPACEDIM == 3)
-    ha[4] = f4fab;
-    ha[5] = f5fab;
-#endif
-#endif
-    Gpu::AsyncArray<Array4<Real const>> aa(ha.data(), 2 * AMREX_SPACEDIM);
-    auto dp = aa.data();
-
-    if (m_overset_mask[amrlev][mglev]) {
-      const auto& osm = m_overset_mask[amrlev][mglev]->array(mfi);
-      AMREX_LAUNCH_HOST_DEVICE_LAMBDA(tbx, thread_box, {
-        abeccec_gsrb_os(
-          thread_box, solnfab, rhsfab, alpha, omega, afab,
-          AMREX_D_DECL(dhxsq, dhysq, dhzsq), AMREX_D_DECL(dhx, dhy, dhz),
-          AMREX_D_DECL(bxfab, byfab, bzfab), AMREX_D_DECL(cxfab, cyfab, czfab),
-          AMREX_D_DECL(m0, m2, m4), AMREX_D_DECL(m1, m3, m5),
-          AMREX_D_DECL(dp[0], dp[2], dp[4]), AMREX_D_DECL(dp[1], dp[3], dp[5]),
-          osm, vbx, redblack, nc);
-      });
-    } else if (regular_coarsening) {
-      AMREX_LAUNCH_HOST_DEVICE_LAMBDA(tbx, thread_box, {
-        abeccec_gsrb(
-          thread_box, solnfab, rhsfab, alpha, omega, afab,
-          AMREX_D_DECL(dhxsq, dhysq, dhzsq), AMREX_D_DECL(dhx, dhy, dhz),
-          AMREX_D_DECL(bxfab, byfab, bzfab), AMREX_D_DECL(cxfab, cyfab, czfab),
-          AMREX_D_DECL(m0, m2, m4), AMREX_D_DECL(m1, m3, m5),
-          AMREX_D_DECL(dp[0], dp[2], dp[4]), AMREX_D_DECL(dp[1], dp[3], dp[5]),
-          vbx, redblack, nc);
-      });
-    } else {
-      Abort("Line GS not available for ABecCecLap");
-    }
-#else
-    if (m_overset_mask[amrlev][mglev]) {
-      const auto& osm = m_overset_mask[amrlev][mglev]->array(mfi);
-      AMREX_LAUNCH_HOST_DEVICE_LAMBDA(tbx, thread_box, {
-        abeccec_gsrb_os(
-          thread_box, solnfab, rhsfab, alpha, omega, afab,
-          AMREX_D_DECL(dhxsq, dhysq, dhzsq), AMREX_D_DECL(dhx, dhy, dhz),
-          AMREX_D_DECL(bxfab, byfab, bzfab), AMREX_D_DECL(cxfab, cyfab, czfab),
-          AMREX_D_DECL(m0, m2, m4), AMREX_D_DECL(m1, m3, m5),
-          AMREX_D_DECL(f0fab, f2fab, f4fab), AMREX_D_DECL(f1fab, f3fab, f5fab),
-          osm, vbx, redblack, nc);
-      });
-    } else if (regular_coarsening) {
+    if (regular_coarsening) {
       AMREX_LAUNCH_HOST_DEVICE_LAMBDA(tbx, thread_box, {
         abeccec_gsrb(
           thread_box, solnfab, rhsfab, alpha, omega, afab,
@@ -641,62 +508,6 @@ MLABecCecLaplacian::Fsmooth(
     } else {
       Abort("Line GS not available for ABecCecLap");
     }
-#endif
-  }
-}
-
-void
-MLABecCecLaplacian::checkDiagonalDominance(int amrlev, int mglev)
-{
-  BL_PROFILE("MLABecCecLaplacian::checkDiagonalDominance()");
-
-  const MultiFab& acoef = m_a_coeffs[amrlev][mglev];
-  AMREX_D_TERM(
-    const MultiFab& bxcoef = m_b_coeffs[amrlev][mglev][0];
-    , const MultiFab& bycoef = m_b_coeffs[amrlev][mglev][1];
-    , const MultiFab& bzcoef = m_b_coeffs[amrlev][mglev][2];);
-  AMREX_D_TERM(
-    const MultiFab& cxcoef = m_c_coeffs[amrlev][mglev][0];
-    , const MultiFab& cycoef = m_c_coeffs[amrlev][mglev][1];
-    , const MultiFab& czcoef = m_c_coeffs[amrlev][mglev][2];);
-
-  const int nc = getNComp();
-  const Real* h = m_geom[amrlev][mglev].CellSize();
-  AMREX_D_TERM(
-    const Real dhxsq = m_b_scalar / (h[0] * h[0]);
-    , const Real dhysq = m_b_scalar / (h[1] * h[1]);
-    , const Real dhzsq = m_b_scalar / (h[2] * h[2]));
-  AMREX_D_TERM(
-    const Real dhx = m_c_scalar / (h[0]);, const Real dhy = m_c_scalar / (h[1]);
-    , const Real dhz = m_c_scalar / (h[2]));
-  const Real alpha = m_a_scalar;
-
-  MFItInfo mfi_info;
-  if (Gpu::notInLaunchRegion())
-    mfi_info.EnableTiling().SetDynamic(true);
-
-#ifdef _OPENMP
-#pragma omp parallel if (Gpu::notInLaunchRegion())
-#endif
-  for (MFIter mfi(acoef, mfi_info); mfi.isValid(); ++mfi) {
-    const Box& tbx = mfi.tilebox();
-
-    const auto& afab = acoef.array(mfi);
-    AMREX_D_TERM(
-      const auto& bxfab = bxcoef.array(mfi);
-      , const auto& byfab = bycoef.array(mfi);
-      , const auto& bzfab = bzcoef.array(mfi););
-    AMREX_D_TERM(
-      const auto& cxfab = cxcoef.array(mfi);
-      , const auto& cyfab = cycoef.array(mfi);
-      , const auto& czfab = czcoef.array(mfi););
-
-    AMREX_LAUNCH_HOST_DEVICE_LAMBDA(tbx, thread_box, {
-      abeccec_chkdiag(
-        thread_box, alpha, afab, AMREX_D_DECL(dhxsq, dhysq, dhzsq),
-        AMREX_D_DECL(dhx, dhy, dhz), AMREX_D_DECL(bxfab, byfab, bzfab),
-        AMREX_D_DECL(cxfab, cyfab, czfab), nc);
-    });
   }
 }
 
@@ -754,65 +565,6 @@ MLABecCecLaplacian::getDiagonal(int amrlev, MultiFab& diag)
         thread_box, alpha, afab, AMREX_D_DECL(dhxsq, dhysq, dhzsq),
         AMREX_D_DECL(dhx, dhy, dhz), AMREX_D_DECL(bxfab, byfab, bzfab),
         AMREX_D_DECL(cxfab, cyfab, czfab), nc, adiag);
-    });
-  }
-}
-
-void
-MLABecCecLaplacian::getNetFaceCoeff(MultiFab& coeffs_dir, int dir)
-{
-  BL_PROFILE("MLABecCecLaplacian::getNetFaceCoeff()");
-
-  int amrlev = 0.0;
-  int mglev = 0.0;
-
-  const MultiFab& acoef = m_a_coeffs[amrlev][mglev];
-  AMREX_D_TERM(
-    const MultiFab& bxcoef = m_b_coeffs[amrlev][mglev][0];
-    , const MultiFab& bycoef = m_b_coeffs[amrlev][mglev][1];
-    , const MultiFab& bzcoef = m_b_coeffs[amrlev][mglev][2];);
-  AMREX_D_TERM(
-    const MultiFab& cxcoef = m_c_coeffs[amrlev][mglev][0];
-    , const MultiFab& cycoef = m_c_coeffs[amrlev][mglev][1];
-    , const MultiFab& czcoef = m_c_coeffs[amrlev][mglev][2];);
-
-  const int nc = getNComp();
-  const Real* h = m_geom[amrlev][mglev].CellSize();
-  AMREX_D_TERM(
-    const Real dhxsq = m_b_scalar / (h[0] * h[0]);
-    , const Real dhysq = m_b_scalar / (h[1] * h[1]);
-    , const Real dhzsq = m_b_scalar / (h[2] * h[2]));
-  AMREX_D_TERM(
-    const Real dhx = m_c_scalar / (h[0]);, const Real dhy = m_c_scalar / (h[1]);
-    , const Real dhz = m_c_scalar / (h[2]));
-  const Real alpha = m_a_scalar;
-
-  MFItInfo mfi_info;
-  if (Gpu::notInLaunchRegion())
-    mfi_info.EnableTiling().SetDynamic(true);
-
-#ifdef _OPENMP
-#pragma omp parallel if (Gpu::notInLaunchRegion())
-#endif
-  for (MFIter mfi(acoef, mfi_info); mfi.isValid(); ++mfi) {
-    const Box& tbx = mfi.tilebox();
-
-    const auto& afab = acoef.array(mfi);
-    AMREX_D_TERM(
-      const auto& bxfab = bxcoef.array(mfi);
-      , const auto& byfab = bycoef.array(mfi);
-      , const auto& bzfab = bzcoef.array(mfi););
-    AMREX_D_TERM(
-      const auto& cxfab = cxcoef.array(mfi);
-      , const auto& cyfab = cycoef.array(mfi);
-      , const auto& czfab = czcoef.array(mfi););
-    const auto& coeffd = coeffs_dir.array(mfi);
-
-    AMREX_LAUNCH_HOST_DEVICE_LAMBDA(tbx, thread_box, {
-      abeccec_getnetfcoeff(
-        thread_box, alpha, afab, AMREX_D_DECL(dhxsq, dhysq, dhzsq),
-        AMREX_D_DECL(dhx, dhy, dhz), AMREX_D_DECL(bxfab, byfab, bzfab),
-        AMREX_D_DECL(cxfab, cyfab, czfab), nc, dir, coeffd);
     });
   }
 }
@@ -923,8 +675,8 @@ MLABecCecLaplacian::FFlux(
 void
 MLABecCecLaplacian::update()
 {
-  if (MLCellABecCecLap::needsUpdate())
-    MLCellABecCecLap::update();
+  if (MLCellABecLapT<MultiFab>::needsUpdate())
+    MLCellABecLapT<MultiFab>::update();
 
 #if (AMREX_SPACEDIM != 3)
   applyMetricTermsCoeffs();
@@ -938,8 +690,7 @@ MLABecCecLaplacian::update()
   auto ithi = std::find(m_hibc[0].begin(), m_hibc[0].end(), BCType::Dirichlet);
   if (itlo == m_lobc[0].end() && ithi == m_hibc[0].end()) { // No Dirichlet
     for (int alev = 0; alev < m_num_amr_levels; ++alev) {
-      // For now this assumes that overset regions are treated as Dirichlet bc's
-      if (m_domain_covered[alev] && !m_overset_mask[alev][0]) {
+      if (m_domain_covered[alev]) {
         if (m_a_scalar == 0.0) {
           m_is_singular[alev] = true;
         } else {
