@@ -62,6 +62,11 @@ PeleLM::SprayReadParameters()
   // Must change dtmod to 1 since we only do MKD
   SprayParticleContainer::getSprayData()->dtmod = 1.;
   pp.query("spray_SDC", m_spray_SDC);
+  if (
+    m_spray_SDC != 0 &&
+    SprayParticleContainer::getSprayData()->time_order != 2) {
+    amrex::Abort("peleLM.spray_SDC needs particles.time_order = 2");
+  }
 }
 
 void
