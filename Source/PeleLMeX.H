@@ -933,17 +933,23 @@ public:
   // t^n to the t^{n+1,k} iterate. a_rateOnly: deposit the instantaneous
   // exchange rates at the current particles and gas (t^{n+1,k} with
   // a_useNewState, otherwise t^n), without updating or moving the particles.
+  // The source is added to a_dst (m_extSource if empty); with a_rateEnd
+  // (advance with a_useNewState, SprayParticleContainer::advanceGivesEndRate)
+  // the end-of-step rate is added to it.
   void SprayMKD(
     const amrex::Real time,
     const amrex::Real dt,
     const bool a_useNewState = false,
-    const bool a_rateOnly = false);
+    const bool a_rateOnly = false,
+    const amrex::Vector<amrex::MultiFab*>& a_dst = {},
+    const amrex::Vector<amrex::MultiFab*>& a_rateEnd = {});
   void SprayMKDLevel(
     const int level,
     const amrex::Real time,
     const amrex::Real dt,
     const bool a_useNewState = false,
-    const bool a_rateOnly = false);
+    const bool a_rateOnly = false,
+    amrex::MultiFab* a_sourceEnd = nullptr);
   // spray_SDC: add the instantaneous spray rate at the current time to
   // m_extSource, for the initial divU
   void SprayInitDivURate(amrex::Real a_dt);
@@ -956,7 +962,9 @@ public:
   void SprayInjectRedist();
   void SprayPostRegrid();
   void SpraySetState(const amrex::Real& a_flow_dt);
-  void SprayAddSource(const int level);
+  // Add the spray source (num_spray_src components) to an NVAR source
+  void
+  SprayAddSource(const amrex::MultiFab& source, amrex::MultiFab& extsource);
   static int num_spray_src;
   static bool do_spray_particles;
   static std::unique_ptr<SprayParticleContainer> SprayPC;

@@ -243,11 +243,10 @@ PeleLM::SpraySetState(const amrex::Real& a_flow_dt)
 }
 
 void
-PeleLM::SprayAddSource(const int level)
+PeleLM::SprayAddSource(
+  const amrex::MultiFab& source, amrex::MultiFab& extsource)
 {
   int N_pc = SprayParticleContainer::m_sprayData->N_pc;
-  amrex::MultiFab& source = *(m_spraysource[level]);
-  amrex::MultiFab& extsource = *(m_extSource[level]);
   const int eghosts = extsource.nGrow();
   SprayComps scomps = SprayParticleContainer::getSprayComps();
   amrex::MultiFab::Add(
@@ -276,11 +275,14 @@ PeleLM::SprayMKD(
   const amrex::Real time,
   const amrex::Real dt,
   const bool a_useNewState,
-  const bool a_rateOnly)
+  const bool a_rateOnly,
+  const amrex::Vector<amrex::MultiFab*>& a_dst,
+  const amrex::Vector<amrex::MultiFab*>& a_rateEnd)
 {
   if (!do_spray_particles) {
     return;
   }
+  const bool rate_end = !a_rateEnd.empty();
   if (spray_verbose != 0) {
     amrex::Print()
       << "moveKickDrift ... updating particle positions and velocity\n";
@@ -293,8 +295,20 @@ PeleLM::SprayMKD(
       amrex::Print() << "SprayMKDLevel " << lev << "\n";
     }
     m_spraysource[lev]->setVal(0.);
-    SprayMKDLevel(lev, time, dt, a_useNewState, a_rateOnly);
-    SprayAddSource(lev);
+    std::unique_ptr<amrex::MultiFab> source_end;
+    if (rate_end) {
+      const auto& src = *m_spraysource[lev];
+      source_end = std::make_unique<amrex::MultiFab>(
+        src.boxArray(), src.DistributionMap(), src.nComp(), src.nGrowVect(),
+        amrex::MFInfo(), src.Factory());
+      source_end->setVal(0.);
+    }
+    SprayMKDLevel(lev, time, dt, a_useNewState, a_rateOnly, source_end.get());
+    SprayAddSource(
+      *m_spraysource[lev], a_dst.empty() ? *m_extSource[lev] : *a_dst[lev]);
+    if (rate_end) {
+      SprayAddSource(*source_end, *a_rateEnd[lev]);
+    }
     removeGhostParticles(lev);
     removeVirtualParticles(lev);
   }
@@ -306,7 +320,8 @@ PeleLM::SprayMKDLevel(
   const amrex::Real time,
   const amrex::Real dt,
   const bool a_useNewState,
-  const bool a_rateOnly)
+  const bool a_rateOnly,
+  amrex::MultiFab* a_sourceEnd)
 {
   if (level < finest_level) {
     // Make a copy of the particles on this level into ghost particles
@@ -336,14 +351,15 @@ PeleLM::SprayMKDLevel(
   // Do the valid particles themselves
   SprayPC->moveKickDrift(
     state, source, level, dt, time, isVirt, isGhost, state_ghosts,
-    source_ghosts, doMove, ltransparm, spray_cfl[level], state_end, a_rateOnly);
+    source_ghosts, doMove, ltransparm, spray_cfl[level], state_end, a_rateOnly,
+    a_sourceEnd);
   if (level < finest_level) {
     isVirt = true;
     isGhost = false;
     VirtPC->moveKickDrift(
       state, source, level, dt, time, isVirt, isGhost, state_ghosts,
       source_ghosts, doMove, ltransparm, spray_cfl[level], state_end,
-      a_rateOnly);
+      a_rateOnly, a_sourceEnd);
   }
   if (GhostPC != nullptr && level != 0) {
     isVirt = false;
@@ -351,9 +367,12 @@ PeleLM::SprayMKDLevel(
     GhostPC->moveKickDrift(
       state, source, level, dt, time, isVirt, isGhost, state_ghosts,
       source_ghosts, doMove, ltransparm, spray_cfl[level], state_end,
-      a_rateOnly);
+      a_rateOnly, a_sourceEnd);
   }
   source.SumBoundary(geom[level].periodicity());
+  if (a_sourceEnd != nullptr) {
+    a_sourceEnd->SumBoundary(geom[level].periodicity());
+  }
 }
 
 void
