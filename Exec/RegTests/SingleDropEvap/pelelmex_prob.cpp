@@ -16,6 +16,8 @@ PeleLM::readProbParm()
   pp.query("P_mean", PeleLM::prob_parm->P_mean);
   pp.query("T0_gas", PeleLM::prob_parm->T0_gas);
   pp.query("vel_gas", PeleLM::prob_parm->vel_gas);
+  pp.query("blob_dT", PeleLM::prob_parm->blob_dT);
+  pp.query("blob_sigma", PeleLM::prob_parm->blob_sigma);
   pp.query("N2_gas", PeleLM::prob_parm->Y_N2);
   pp.query("O2_gas", PeleLM::prob_parm->Y_O2);
 

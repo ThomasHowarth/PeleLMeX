@@ -206,6 +206,26 @@ function(add_test_rt TEST_NAME TEST_EXE_DIR)
     set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 18000 PROCESSORS ${PELE_NP} WORKING_DIRECTORY "${CURRENT_TEST_BINARY_DIR}/" LABELS "regression;verification" ATTACHED_FILES "${CURRENT_TEST_BINARY_DIR}/${TEST_NAME}.log")
 endfunction(add_test_rt)
 
+# Temporal convergence test: run the case on a fixed grid to END_TIME in n
+# steps of amr.fixed_dt = END_TIME / n for each n in LIST_OF_STEPS (in
+# subdirectories n<steps>), then check the convergence rates with the case's
+# test.py. max_step ends each run: stop_time is set past END_TIME, so that
+# round-off in the accumulated time cannot shorten the last step.
+function(add_test_dt TEST_NAME TEST_EXE_DIR END_TIME LIST_OF_STEPS)
+    setup_test()
+    unset(MASTER_RUN_COMMAND)
+    set(LOGS "")
+    foreach(NSTEPS IN LISTS LIST_OF_STEPS)
+      set(RUN_DIR ${CURRENT_TEST_BINARY_DIR}/n${NSTEPS})
+      file(MAKE_DIRECTORY ${RUN_DIR})
+      set(DT_COMMAND "$(awk 'BEGIN{printf \"%.17g\", ${END_TIME}/${NSTEPS}}')")
+      string(APPEND MASTER_RUN_COMMAND "cd ${RUN_DIR} && rm -rf temporals && ${MPI_COMMANDS} ${CURRENT_TEST_EXE} ${MPIEXEC_POSTFLAGS} ${CURRENT_TEST_BINARY_DIR}/${TEST_NAME}.inp ${RUNTIME_OPTIONS} amr.stop_time=$(awk 'BEGIN{print 2*${END_TIME}}') amr.max_step=${NSTEPS} amr.fixed_dt=${DT_COMMAND} 2>&1 | tee ${TEST_NAME}.log && ")
+      list(APPEND LOGS "${RUN_DIR}/${TEST_NAME}.log")
+    endforeach()
+    add_test(${TEST_NAME} bash -c "set -o pipefail && ${MASTER_RUN_COMMAND}cd ${CURRENT_TEST_BINARY_DIR} && nosetests ${CURRENT_TEST_BINARY_DIR}/test.py")
+    set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 18000 PROCESSORS ${PELE_NP} WORKING_DIRECTORY "${CURRENT_TEST_BINARY_DIR}/" LABELS "regression;verification" ATTACHED_FILES "${LOGS}")
+endfunction(add_test_dt)
+
 # Regression tests excluded from CI
 function(add_test_re TEST_NAME TEST_EXE_DIR)
     add_test_r(${TEST_NAME} ${TEST_EXE_DIR})
@@ -325,6 +345,10 @@ if(NOT PELE_ENABLE_EB)
   endif()
   if(PELE_ENABLE_PARTICLES)
     add_test_r(single-drop-evap-gcm-test SingleDropEvap EXTRA_FILES ref_files)
+    if(PELE_DIM EQUAL 2)
+      # spray_SDC: second order in time for the spray coupling
+      add_test_dt(spray-sdc-2d SingleDropEvap 0.2 "4;8;16;32")
+    endif()
   endif()
   if(PELE_DIM EQUAL 2)
     add_test_r(tripleflame-${PELE_DIM}d TripleFlame)

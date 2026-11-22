@@ -37,6 +37,9 @@ SprayParticleContainer::InitSprayParticles(const bool init_parts)
   amrex::Real partDia, partTemp;
   pp.get("part_dia", partDia);
   pp.get("part_temp", partTemp);
+  // Number of droplets each parcel represents
+  amrex::Real numPPP = 1.0;
+  pp.query("num_ppp", numPPP);
 
   // Get composition of liquid
   std::array<amrex::Real, SPRAY_FUEL_NUM> partY = {0.0};
@@ -84,5 +87,6 @@ SprayParticleContainer::InitSprayParticles(const bool init_parts)
 
   // Initialize particles using uniform distribution
   uniformSprayInit(
-    partNum, partVel, partDia, partTemp, partY.begin(), level, numRedist);
+    partNum, partVel, partDia, partTemp, partY.begin(), level, numRedist,
+    numPPP);
 }

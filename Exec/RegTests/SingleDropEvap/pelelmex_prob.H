@@ -22,6 +22,10 @@ struct MyProbParm : public ProbParmDefault
   amrex::Real Y_N2 = 0.767;
   amrex::Real vel_gas = 0.;
   amrex::Real part_Re = -1.;
+  // Optional Gaussian hot spot in the initial gas temperature, centred in
+  // the domain (blob_dT = 0: uniform T0_gas)
+  amrex::Real blob_dT = 0.;
+  amrex::Real blob_sigma = 0.1;
   pele::physics::eos::EosParm<pele::physics::PhysicsType::eos_type> const*
     eosparm;
   // Mesh-mapping scaling factors (read from ConstantMap.scaling_factor).
@@ -44,7 +48,7 @@ struct MyProblemSpecificFunctions : public DefaultProblemSpecificFunctions
     int /*is_incompressible*/,
     amrex::Array4<amrex::Real> const& state,
     amrex::Array4<amrex::Real> const& /*aux*/,
-    amrex::GeometryData const& /*geomdata*/,
+    amrex::GeometryData const& geomdata,
     MyProbParm const& prob_parm,
     pele::physics::PMF::PmfData::DataContainer const* /*pmf_data*/)
   {
@@ -58,6 +62,22 @@ struct MyProblemSpecificFunctions : public DefaultProblemSpecificFunctions
     massfrac[O2_ID] = prob_parm.Y_O2;
 #endif
     state(i, j, k, TEMP) = prob_parm.T0_gas;
+    if (prob_parm.blob_dT != 0.0) {
+      const amrex::Real* plo = geomdata.ProbLo();
+      const amrex::Real* phi = geomdata.ProbHi();
+      const amrex::Real* dx = geomdata.CellSize();
+      const amrex::Real fac[2] = {prob_parm.fac_x, prob_parm.fac_y};
+      const int ic[2] = {i, j};
+      amrex::Real r2 = 0.0;
+      for (int d = 0; d < 2; ++d) {
+        const amrex::Real x = plo[d] + (ic[d] + 0.5) * dx[d] * fac[d];
+        const amrex::Real xc = plo[d] + 0.5 * (phi[d] - plo[d]) * fac[d];
+        r2 += (x - xc) * (x - xc);
+      }
+      const amrex::Real sig = prob_parm.blob_sigma;
+      state(i, j, k, TEMP) +=
+        prob_parm.blob_dT * std::exp(-r2 / (2.0 * sig * sig));
+    }
     state(i, j, k, VELX) = prob_parm.vel_gas;
 #if (AMREX_SPACEDIM == 2)
     state(i, j, k, VELY) = 0.0;
