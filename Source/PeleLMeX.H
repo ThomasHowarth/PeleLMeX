@@ -944,11 +944,11 @@ public:
     const amrex::Real dt,
     const bool a_useNewState = false,
     const bool a_rateOnly = false);
-  // spray_SDC: keep the particles at t^n, put them back, and fill the gas
-  // state at t^{n+1,k} that the particles see at the end of the step
   // spray_SDC: add the instantaneous spray rate at the current time to
   // m_extSource, for the initial divU
-  void SprayInitDivURate();
+  void SprayInitDivURate(amrex::Real a_dt);
+  // spray_SDC: keep the particles at t^n, put them back, and fill the gas
+  // state at t^{n+1,k} that the particles see at the end of the step
   void SpraySaveParticles();
   void SprayRestoreParticles();
   void SprayFillNewState();

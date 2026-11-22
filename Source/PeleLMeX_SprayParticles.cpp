@@ -355,17 +355,18 @@ PeleLM::SprayMKDLevel(
 }
 
 void
-PeleLM::SprayInitDivURate()
+PeleLM::SprayInitDivURate(const amrex::Real a_dt)
 {
   if (!do_spray_particles || !m_spray_SDC) {
     return;
   }
   // The particles are not moved or updated: the dt only sets the ghost cells
-  // and the deposition normalisation
-  SpraySetState(m_dt);
+  // and the deposition normalisation (m_dt is not set yet at the first
+  // initial projection)
+  SpraySetState(a_dt);
   constexpr bool oldState = false;
   constexpr bool rateOnly = true;
-  SprayMKD(m_cur_time, m_dt, oldState, rateOnly);
+  SprayMKD(m_cur_time, a_dt, oldState, rateOnly);
 }
 
 void

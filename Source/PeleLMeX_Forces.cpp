@@ -530,7 +530,7 @@ PeleLM::calcInitDivU(const amrex::Real a_dt)
     m_extSource[lev]->setVal(0.0);
   }
 #ifdef PELE_USE_SPRAY
-  SprayInitDivURate();
+  SprayInitDivURate(a_dt);
 #endif
   if (m_n_sparks > 0) {
     addSpark(AmrNewTime);
