@@ -103,7 +103,6 @@ function(build_pele_exe pele_exe_name pele_physics_lib_name)
     set(PLASMA_DIR ${SRC_DIR}/Plasma)
     target_compile_definitions(${pele_exe_name} PRIVATE PELE_USE_PLASMA)
     target_include_directories(${pele_exe_name} PRIVATE ${PLASMA_DIR})
-    target_include_directories(${pele_exe_name} PRIVATE ${PLASMA_DIR}/GMRES)
     target_include_directories(${pele_exe_name} PRIVATE ${PLASMA_DIR}/LinOps)
     target_sources(${pele_exe_name}
       PRIVATE
@@ -120,8 +119,6 @@ function(build_pele_exe pele_exe_name pele_physics_lib_name)
         ${PLASMA_DIR}/PeleLMeX_EFTimeStep.cpp
         ${PLASMA_DIR}/PeleLMeX_EFTransport.cpp
         ${PLASMA_DIR}/PeleLMeX_EFUtils.cpp
-        ${PLASMA_DIR}/GMRES/MLGMRES.H
-        ${PLASMA_DIR}/GMRES/MLGMRES.cpp
         ${PLASMA_DIR}/LinOps/PrecondOp.H
         ${PLASMA_DIR}/LinOps/PrecondOp.cpp
         ${PLASMA_DIR}/LinOps/AMReX_MLCellABecCecLap.H

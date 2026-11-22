@@ -47,7 +47,7 @@ endif
 LMdirs := Source Source/Mesh
 ifeq ($(USE_PLASMA),TRUE)
    DEFINES += -DPELE_USE_PLASMA
-   LMdirs += Source/Plasma Source/Plasma/GMRES Source/Plasma/LinOps
+   LMdirs += Source/Plasma Source/Plasma/LinOps
 endif
 ifeq ($(USE_PARTICLES), TRUE)
    ifdef SPRAY_FUEL_NUM

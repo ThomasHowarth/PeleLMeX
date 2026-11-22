@@ -1869,8 +1869,14 @@ public:
     amrex::Array4<const amrex::Real> const& phiV,
     amrex::Array4<const amrex::Real> const& nE);
 
-  void
-  nlSolveNorm(const amrex::Vector<amrex::MultiFab*>& a_MF, amrex::Real& norm);
+  // Masked dot product of the non-linear solve vectors (all components, cells
+  // covered by a finer level excluded), and its square root
+  amrex::Real
+  nlSolveDot(
+    const amrex::Vector<const amrex::MultiFab*>& a_MF1,
+    const amrex::Vector<const amrex::MultiFab*>& a_MF2) const;
+  void nlSolveNorm(
+    const amrex::Vector<const amrex::MultiFab*>& a_MF, amrex::Real& norm) const;
 
   int testExitNewton(
     const int newtonIter,
@@ -1900,13 +1906,13 @@ public:
     const amrex::Array<const amrex::MultiFab*, AMREX_SPACEDIM>& ecVel);
 
   void jTimesV(
-    const amrex::Vector<amrex::MultiFab*>& a_x,
+    const amrex::Vector<const amrex::MultiFab*>& a_x,
     const amrex::Vector<amrex::MultiFab*>& a_Ax);
 
   void setUpPrecond(
     const amrex::Real a_dt, const amrex::Vector<const amrex::MultiFab*>& a_nE);
   void applyPrecond(
-    const amrex::Vector<amrex::MultiFab*>& a_v,
+    const amrex::Vector<const amrex::MultiFab*>& a_v,
     const amrex::Vector<amrex::MultiFab*>& a_Pv);
 
   void ionsBalance();

@@ -38,7 +38,6 @@ amrex::Real FphiV_scale = 1.0; // phiV residual scale
 
 // non-linear / linear solve
 int m_ef_maxNewtonIter = 5;
-int m_ef_use_PETSC_direct = 0;
 int m_ef_PC_approx = 1;
 int m_ef_diffT_jfnk = 1;
 amrex::Real m_ABecCecOmega = 0.9;
@@ -46,6 +45,12 @@ amrex::Real m_ef_lambda_jfnk = 1.0e-7;
 amrex::Real m_ef_newtonTol = std::pow(1.0e-13, 2.0 / 3.0);
 amrex::Real m_ef_GMRES_reltol = 1.0e-6;
 amrex::Real m_ef_GMRES_abstol = 1.0e-12;
+// amrex::GMRES restart length, number of restarts and verbosity (gmres.*)
+int m_ef_GMRES_restart_length = 10;
+int m_ef_GMRES_max_restart = 1;
+int m_ef_GMRES_verbose = 0;
+// Precondition on the left (1, the default) or the right (0)
+int m_ef_GMRES_left_precond = 1;
 amrex::Real m_ef_PC_MG_Tol = 1.0e-6;
 
 // Species charge per unit mass

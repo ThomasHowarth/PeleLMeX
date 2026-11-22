@@ -980,6 +980,17 @@ PeleLM::readParameters()
   AMREX_ASSERT(m_ef_diffT_jfnk == 1 || m_ef_diffT_jfnk == 2);
   ppef.query("GMRES_rel_tol", m_ef_GMRES_reltol);
   ppef.query("GMRES_abs_tol", m_ef_GMRES_abstol);
+  {
+    amrex::ParmParse ppgmres("gmres");
+    ppgmres.query("krylovBasis_size", m_ef_GMRES_restart_length);
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+      m_ef_GMRES_restart_length > 0, "gmres.krylovBasis_size must be positive");
+    ppgmres.query("max_restart", m_ef_GMRES_max_restart);
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+      m_ef_GMRES_max_restart > 0, "gmres.max_restart must be positive");
+    ppgmres.query("verbose", m_ef_GMRES_verbose);
+    ppgmres.query("left_precond", m_ef_GMRES_left_precond);
+  }
   ppef.query("PC_approx", m_ef_PC_approx);
   ppef.query("PC_damping", m_ABecCecOmega);
   ppef.query("advection_scheme_order", m_nEAdvOrder);

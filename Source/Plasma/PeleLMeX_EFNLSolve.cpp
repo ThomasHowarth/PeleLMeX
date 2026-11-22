@@ -1,10 +1,144 @@
 #include <PeleLMeX.H>
 #include <PeleLMeX_K.H>
 #include <PeleLMeX_EF_K.H>
-#include <MLGMRES.H>
 #include <PeleLMeX_DiffusionOp.H>
 #include <PeleLMeX_Utils.H>
 #include <hydro_utils.H>
+#include <AMReX_GMRES.H>
+
+namespace {
+
+// Newton direction, residual and Krylov vectors: (nE, phiV) on every level
+using EFVec = amrex::Vector<amrex::MultiFab>;
+
+// The linear system of a Newton iteration for amrex::GMRES: the
+// finite-difference Jacobian-vector product jTimesV, preconditioned by
+// applyPrecond. Dot products and norms are those of nlSolveDot, which skip the
+// cells covered by a finer level.
+//
+// amrex::GMRES preconditions on the right. With a_left, the operator is
+// P^-1 J instead and the solver's preconditioner the identity, so GMRES
+// minimizes the preconditioned residual P^-1 (r - J x); the right-hand side
+// must then be P^-1 r (leftPrecondRHS). The nE and phiV residuals differ by
+// orders of magnitude, and on IonizedAirWave right preconditioning stagnates
+// where left preconditioning converges in a few iterations.
+class EFKrylovOp
+{
+public:
+  using RT = amrex::Real;
+
+  EFKrylovOp(PeleLM& a_pelelm, bool a_left) : m_pelelm(a_pelelm), m_left(a_left)
+  {
+    if (m_left) {
+      m_tmp = makeVecRHS();
+    }
+  }
+
+  void apply(EFVec& a_Ax, EFVec const& a_x)
+  {
+    if (m_left) {
+      m_pelelm.jTimesV(
+        amrex::GetVecOfConstPtrs(a_x), amrex::GetVecOfPtrs(m_tmp));
+      m_pelelm.applyPrecond(
+        amrex::GetVecOfConstPtrs(m_tmp), amrex::GetVecOfPtrs(a_Ax));
+    } else {
+      m_pelelm.jTimesV(
+        amrex::GetVecOfConstPtrs(a_x), amrex::GetVecOfPtrs(a_Ax));
+    }
+  }
+
+  void precond(EFVec& a_lhs, EFVec const& a_rhs)
+  {
+    if (m_left) {
+      assign(a_lhs, a_rhs);
+    } else {
+      m_pelelm.applyPrecond(
+        amrex::GetVecOfConstPtrs(a_rhs), amrex::GetVecOfPtrs(a_lhs));
+    }
+  }
+
+  // The right-hand side of the system GMRES solves for the residual a_r
+  void systemRHS(EFVec& a_rhs, amrex::Vector<amrex::MultiFab*> const& a_r)
+  {
+    if (m_left) {
+      m_pelelm.applyPrecond(
+        amrex::GetVecOfConstPtrs(a_r), amrex::GetVecOfPtrs(a_rhs));
+    } else {
+      for (int lev = 0; lev < a_rhs.size(); ++lev) {
+        amrex::MultiFab::Copy(a_rhs[lev], *a_r[lev], 0, 0, ncomp, 0);
+      }
+    }
+  }
+
+  static void assign(EFVec& a_lhs, EFVec const& a_rhs)
+  {
+    for (int lev = 0; lev < a_lhs.size(); ++lev) {
+      amrex::MultiFab::Copy(a_lhs[lev], a_rhs[lev], 0, 0, ncomp, 0);
+    }
+  }
+
+  RT dotProduct(EFVec const& a_v1, EFVec const& a_v2) const
+  {
+    return m_pelelm.nlSolveDot(
+      amrex::GetVecOfConstPtrs(a_v1), amrex::GetVecOfConstPtrs(a_v2));
+  }
+
+  RT norm2(EFVec const& a_v) const { return std::sqrt(dotProduct(a_v, a_v)); }
+
+  static void increment(EFVec& a_lhs, EFVec const& a_rhs, RT a)
+  {
+    for (int lev = 0; lev < a_lhs.size(); ++lev) {
+      amrex::MultiFab::Saxpy(a_lhs[lev], a, a_rhs[lev], 0, 0, ncomp, 0);
+    }
+  }
+
+  static void
+  linComb(EFVec& a_lhs, RT a, EFVec const& a_x, RT b, EFVec const& a_y)
+  {
+    for (int lev = 0; lev < a_lhs.size(); ++lev) {
+      amrex::MultiFab::LinComb(
+        a_lhs[lev], a, a_x[lev], 0, b, a_y[lev], 0, 0, ncomp, 0);
+    }
+  }
+
+  static void scale(EFVec& a_v, RT a_fac)
+  {
+    for (auto& mf : a_v) {
+      mf.mult(a_fac, 0, ncomp, 0);
+    }
+  }
+
+  static void setToZero(EFVec& a_v)
+  {
+    for (auto& mf : a_v) {
+      mf.setVal(0.0);
+    }
+  }
+
+  // One ghost cell: applyPrecond takes the boundary values of its MLMG
+  // solves from the ghost cells of its output
+  [[nodiscard]] EFVec makeVecRHS() const
+  {
+    EFVec r;
+    r.reserve(m_pelelm.finestLevel() + 1);
+    for (int lev = 0; lev <= m_pelelm.finestLevel(); ++lev) {
+      r.emplace_back(
+        m_pelelm.boxArray(lev), m_pelelm.DistributionMap(lev), ncomp, 1,
+        amrex::MFInfo(), m_pelelm.Factory(lev));
+    }
+    return r;
+  }
+
+  [[nodiscard]] EFVec makeVecLHS() const { return makeVecRHS(); }
+
+private:
+  static constexpr int ncomp = 2;
+  PeleLM& m_pelelm;
+  bool m_left;
+  EFVec m_tmp; // J x, before the left preconditioning
+};
+
+} // namespace
 
 PrecondOp*
 PeleLM::getPrecondOp()
@@ -64,18 +198,14 @@ PeleLM::implicitNonLinearSolve(
     }
   }
 
-  // Setup MLGMRES
-  MLGMRESSolver gmres;
+  // Krylov solver of the Newton iterations
+  EFKrylovOp krylovOp(*this, m_ef_GMRES_left_precond != 0);
+  amrex::GMRES<EFVec, EFKrylovOp> gmres;
+  gmres.define(krylovOp);
+  gmres.setRestartLength(m_ef_GMRES_restart_length);
+  gmres.setMaxIters(m_ef_GMRES_restart_length * m_ef_GMRES_max_restart);
+  gmres.setVerbose(m_ef_GMRES_verbose);
   int GMRES_tot_count = 0;
-  if (!m_ef_use_PETSC_direct) {
-    gmres.define(this, 2, 1);
-    MLJtimesVFunc jtv = &PeleLM::jTimesV;
-    gmres.setJtimesV(jtv);
-    MLNormFunc normF = &PeleLM::nlSolveNorm;
-    gmres.setNorm(normF);
-    MLPrecondFunc prec = &PeleLM::applyPrecond;
-    gmres.setPrecond(prec);
-  }
 
   //------------------------------------------------------------------------
   // Outer subcycling loop
@@ -104,7 +234,7 @@ PeleLM::implicitNonLinearSolve(
 
     // Newton initial guess
     // TODO newton initial guess
-    nlSolveNorm(getNLstateVect(), nl_stateNorm);
+    nlSolveNorm(GetVecOfConstPtrs(getNLstateVect()), nl_stateNorm);
 
     // Initial NL residual: update residual scaling and preconditioner
     int update_scaling = 1;
@@ -112,7 +242,7 @@ PeleLM::implicitNonLinearSolve(
     nonLinearResidual(
       dtsub, getNLstateVect(), getNLresidVect(), update_scaling,
       update_precond);
-    nlSolveNorm(getNLresidVect(), nl_residNorm);
+    nlSolveNorm(GetVecOfConstPtrs(getNLresidVect()), nl_residNorm);
     // WriteDebugPlotFile(GetVecOfConstPtrs(getNLresidVect()),"NLResInit");
 
     // Check for convergence
@@ -139,35 +269,33 @@ PeleLM::implicitNonLinearSolve(
                        << ". Linf residual: " << max_nlres << "\n";
       }
 
-      // Solve for Newton direction
-      amrex::Vector<amrex::MultiFab> newtonDir;
-      newtonDir.reserve(finest_level + 1);
-      for (int lev = 0; lev <= finest_level; ++lev) {
-        newtonDir.emplace_back(
-          grids[lev], dmap[lev], 2, 1, amrex::MFInfo(), Factory(lev));
-        newtonDir[lev].setVal(0.0, 0, 2, 1);
-      }
-      if (!m_ef_use_PETSC_direct) {
-        const amrex::Real S_tol = m_ef_GMRES_reltol;
-        const amrex::Real S_tol_abs = m_ef_GMRES_abstol;
-        GMRES_tot_count += gmres.solve(
-          GetVecOfPtrs(newtonDir), getNLresidVect(), S_tol_abs, S_tol);
-      } else {
+      // Solve for Newton direction, from a zero initial guess
+      EFVec newtonDir = krylovOp.makeVecLHS();
+      {
+        EFVec rhs = krylovOp.makeVecRHS();
+        krylovOp.systemRHS(rhs, getNLresidVect());
+        gmres.solve(newtonDir, rhs, m_ef_GMRES_reltol, m_ef_GMRES_abstol);
+        GMRES_tot_count += gmres.getNumIters();
+        if ((ef_verbose != 0) && (gmres.getStatus() != 0)) {
+          amrex::Print() << " GMRES did not converge in " << gmres.getNumIters()
+                         << " iterations, residual " << gmres.getResidualNorm()
+                         << "\n";
+        }
       }
       // WriteDebugPlotFile(GetVecOfConstPtrs(newtonDir),"newtonDir_"+std::to_string(NK_ite));
       amrex::Real newtonDir_Norm;
-      nlSolveNorm(GetVecOfPtrs(newtonDir), newtonDir_Norm);
+      nlSolveNorm(GetVecOfConstPtrs(newtonDir), newtonDir_Norm);
       // Print() << " newtonDir_Norm " << newtonDir_Norm << "\n";
 
       // Linesearch & update state TODO
       updateNLState(GetVecOfPtrs(newtonDir));
-      nlSolveNorm(getNLstateVect(), nl_stateNorm);
+      nlSolveNorm(GetVecOfConstPtrs(getNLstateVect()), nl_stateNorm);
       update_scaling = 0;
       update_precond = 1;
       nonLinearResidual(
         dtsub, getNLstateVect(), getNLresidVect(), update_scaling,
         update_precond);
-      nlSolveNorm(getNLresidVect(), nl_residNorm);
+      nlSolveNorm(GetVecOfConstPtrs(getNLresidVect()), nl_residNorm);
       getNLResidScaling(scaledResnE, scaledResphiV);
       max_nlres = amrex::max<amrex::Real>(scaledResnE, scaledResphiV);
       // WriteDebugPlotFile(GetVecOfConstPtrs(getNLstateVect()),"NLState_"+std::to_string(NK_ite));
@@ -206,7 +334,7 @@ PeleLM::implicitNonLinearSolve(
     amrex::Real run_time = amrex::ParallelDescriptor::second() - strt_time;
     amrex::ParallelDescriptor::ReduceRealMax(
       run_time, amrex::ParallelDescriptor::IOProcessorNumber());
-    if ((m_ef_use_PETSC_direct == 0) && (NK_tot_count > 0)) {
+    if (NK_tot_count > 0) {
       amrex::Real avgGMRES = (float)GMRES_tot_count / (float)NK_tot_count;
       amrex::Print() << "  [" << sdcIter << "] dt: " << a_dt
                      << " - Avg GMRES/Newton: " << avgGMRES << "\n";
@@ -562,7 +690,7 @@ PeleLM::nonLinearResidual(
   scaleNLResid(a_nlresid, FnE_scale, FphiV_scale);
 
   // Update the preconditioning LinOps
-  if (updatePrecond && !m_ef_use_PETSC_direct) {
+  if (updatePrecond) {
     setUpPrecond(a_dt, GetVecOfConstPtrs(nE));
   }
 }
@@ -1112,7 +1240,7 @@ PeleLM::getUpwindedEdge(
 
 void
 PeleLM::jTimesV(
-  const amrex::Vector<amrex::MultiFab*>& a_v,
+  const amrex::Vector<const amrex::MultiFab*>& a_v,
   const amrex::Vector<amrex::MultiFab*>& a_Jv)
 {
   amrex::Real vNorm;
@@ -1208,7 +1336,7 @@ PeleLM::jTimesV(
 
 void
 PeleLM::applyPrecond(
-  const amrex::Vector<amrex::MultiFab*>& a_v,
+  const amrex::Vector<const amrex::MultiFab*>& a_v,
   const amrex::Vector<amrex::MultiFab*>& a_Pv)
 {
   BL_PROFILE("PeleLMeX::applyPrecond()");
@@ -1288,23 +1416,32 @@ PeleLM::applyPrecond(
   }
 }
 
-void
-PeleLM::nlSolveNorm(const amrex::Vector<amrex::MultiFab*>& a_MF, amrex::Real& r)
+amrex::Real
+PeleLM::nlSolveDot(
+  const amrex::Vector<const amrex::MultiFab*>& a_MF1,
+  const amrex::Vector<const amrex::MultiFab*>& a_MF2) const
 {
-  r = 0.0;
-  const int nComp = a_MF[0]->nComp();
-  for (int comp = 0; comp < nComp; ++comp) {
-    amrex::Real norm = 0.0;
-    for (int lev = 0; lev < a_MF.size(); ++lev) {
-      // TODO : norm not weighted by cell size, should it ?
-      if (lev != a_MF.size() - 1) {
-        norm += amrex::MultiFab::Dot(
-          *m_coveredMask[lev], *a_MF[lev], comp, *a_MF[lev], comp, 1, 0);
-      } else {
-        norm += amrex::MultiFab::Dot(*a_MF[lev], comp, *a_MF[lev], comp, 1, 0);
-      }
+  // TODO : not weighted by cell size, should it ?
+  const int nComp = a_MF1[0]->nComp();
+  const int nlev = static_cast<int>(a_MF1.size());
+  constexpr bool local = true;
+  amrex::Real r = 0.0;
+  for (int lev = 0; lev < nlev; ++lev) {
+    if (lev != nlev - 1) {
+      r += amrex::MultiFab::Dot(
+        *m_coveredMask[lev], *a_MF1[lev], 0, *a_MF2[lev], 0, nComp, 0, local);
+    } else {
+      r += amrex::MultiFab::Dot(
+        *a_MF1[lev], 0, *a_MF2[lev], 0, nComp, 0, local);
     }
-    r += norm;
   }
-  r = std::sqrt(r);
+  amrex::ParallelAllReduce::Sum(r, amrex::ParallelContext::CommunicatorSub());
+  return r;
+}
+
+void
+PeleLM::nlSolveNorm(
+  const amrex::Vector<const amrex::MultiFab*>& a_MF, amrex::Real& r) const
+{
+  r = std::sqrt(nlSolveDot(a_MF, a_MF));
 }
