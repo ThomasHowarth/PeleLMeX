@@ -193,6 +193,8 @@ PeleLM::SpraySetState(const amrex::Real& a_flow_dt)
   // particle for when ghost and virtual particles are present
   amrex::Real max_vel = 0.;
   spray_state_ghosts[0] = 0;
+  // spray_SDC spreads the deposit over the interpolation stencil
+  const int depos_width = m_spray_SDC ? 1 : 0;
   for (int lev = 0; lev <= finest_level; ++lev) {
     auto const dx = geom[lev].CellSizeArray();
     // Extract velocity and CFL from a given spray CFL
@@ -214,14 +216,14 @@ PeleLM::SpraySetState(const amrex::Real& a_flow_dt)
       // Note: Ghost particles made during level N depend on information at
       // level N+1
       spray_ghost_num[lev] = SprayParticleContainer::getGhostPartCells(
-        lev + 1, finest_level, 1, spray_cfl[lev + 1]);
+        lev + 1, finest_level, 1, spray_cfl[lev + 1], depos_width);
     } else {
       spray_ghost_num[lev] = 0;
     }
     int state_ghosts = SprayParticleContainer::getStateGhostCells(
-      lev, finest_level, 1, spray_cfl[lev]);
+      lev, finest_level, 1, spray_cfl[lev], 1, depos_width);
     int source_ghosts = SprayParticleContainer::getSourceGhostCells(
-      lev, finest_level, 1, spray_cfl[lev]);
+      lev, finest_level, 1, spray_cfl[lev], depos_width);
     spray_state_ghosts[lev] = state_ghosts;
     spray_source_ghosts[lev] = source_ghosts;
     if (
