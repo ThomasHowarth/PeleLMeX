@@ -361,6 +361,13 @@ PeleLM::velocityProjection(
   constexpr int nGhost = 0;
   const int incremental = (is_initIter) != 0 ? 1 : 0;
 
+  // Density at a_rhoTime (low-Mach only), shared by the sigma build and the
+  // gp correction below; the projection only changes velocity.
+  amrex::Vector<std::unique_ptr<amrex::MultiFab>> rhoHalf;
+  if (m_incompressible == 0) {
+    rhoHalf = getDensityVect(a_rhoTime);
+  }
+
   // Get sigma.  Shape:
   //   - standard path:   1 component, value dt/rho    (incompressible uses
   //                       a constant sigma built downstream in doNodalProject)
@@ -372,11 +379,6 @@ PeleLM::velocityProjection(
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> sigma(finest_level + 1);
   const int sigma_ncomp = m_mesh_mapping ? AMREX_SPACEDIM : 1;
   if ((m_incompressible == 0) || m_mesh_mapping) {
-    // rhoHalf only needed for the low-Mach path
-    amrex::Vector<std::unique_ptr<amrex::MultiFab>> rhoHalf;
-    if (m_incompressible == 0) {
-      rhoHalf = getDensityVect(a_rhoTime);
-    }
     for (int lev = 0; lev <= finest_level; ++lev) {
 
       sigma[lev] = std::make_unique<amrex::MultiFab>(
@@ -438,8 +440,6 @@ PeleLM::velocityProjection(
   // only the diagonal 1/fac_i part survives the face-aligned mapping.
   if (incremental == 0) {
     if (m_incompressible == 0) {
-      amrex::Vector<std::unique_ptr<amrex::MultiFab>> rhoHalf =
-        getDensityVect(a_rhoTime);
       for (int lev = 0; lev <= finest_level; ++lev) {
         auto* ldataOld_p = getLevelDataPtr(lev, AmrOldTime);
         auto* ldataNew_p = getLevelDataPtr(lev, AmrNewTime);
