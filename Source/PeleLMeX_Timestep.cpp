@@ -83,6 +83,38 @@ PeleLM::computeDt(const int is_init, const TimeStamp a_time)
     }
   }
 
+  //----------------------------------------------------------------
+  // A fixed dt bypasses every stability estimate: still evaluate them and
+  // say so when the step about to be taken is larger than the solver's own.
+  if (m_fixed_dt > 0.0 && is_init == 0) {
+    const amrex::Real dtconv = estConvectiveDt(a_time);
+    amrex::Real dtdivU = 1.0e200;
+    if ((m_incompressible == 0) && (m_has_divu != 0)) {
+      dtdivU = estDivUDt(a_time);
+    }
+    amrex::Real dtlimit = amrex::min<amrex::Real>(dtconv, dtdivU);
+#ifdef PELE_USE_PLASMA
+    const amrex::Real dtions = estEFIonsDt(a_time);
+    dtlimit = amrex::min<amrex::Real>(dtlimit, dtions);
+#endif
+#ifdef PELE_USE_SPRAY
+    const amrex::Real dtspray = SprayEstDt();
+    dtlimit = amrex::min<amrex::Real>(dtlimit, dtspray);
+#endif
+    if (estdt > dtlimit) {
+      amrex::Print() << " WARNING: fixed dt " << estdt
+                     << " exceeds the estimated time step - Conv: " << dtconv
+                     << ", divu: " << dtdivU
+#ifdef PELE_USE_PLASMA
+                     << ", ions: " << dtions
+#endif
+#ifdef PELE_USE_SPRAY
+                     << ", sprays: " << dtspray
+#endif
+                     << "\n";
+    }
+  }
+
   if (estdt < m_min_dt) {
     amrex::Print() << "\n";
     amrex::Print() << " ###################################### \n";

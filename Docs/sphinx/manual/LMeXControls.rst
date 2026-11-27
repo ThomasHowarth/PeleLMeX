@@ -96,7 +96,7 @@ Time stepping parameters
     amr.stop_time     = 0.001              # Maximum simulation time [s]
     amr.max_wall_time = 1.0                # Maximum wall clock time [hr]
     amr.cfl           = 0.5                # [OPT, DEF=0.7] CFL for advection-controlled dt estimate
-    amr.fixed_dt      = 1e-6               # [OPT] optional fixed dt (override CFL condition)
+    amr.fixed_dt      = 1e-6               # [OPT] optional fixed dt (overrides the CFL and divU limits; a warning is printed each step it exceeds them)
     amr.min_dt        = 1e-11              # [OPT, DEF=1e-12] small time step size limit triggering simulation termination
     amr.init_dt       = 1e-6               # [OPT] optional initial dt (override CFL condition upon initialization)
     amr.dt_shrink     = 0.0001             # [OPT, DEF=1.0] dt factor upon initialization
